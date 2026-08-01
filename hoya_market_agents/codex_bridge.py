@@ -46,6 +46,9 @@ _THREAD_FIELDS = frozenset(
         "runtime_policy_receipt",
     }
 )
+_RUNTIME_POLICY_RECEIPT_FIELDS = frozenset(
+    {"receipt_id", "dispatch_id", "tool_policy_sha256"}
+)
 SEAT_TOOL_POLICY = MappingProxyType({
     "allowed_tools": [],
     "filesystem_access": False,
@@ -186,8 +189,8 @@ def build_codex_handoff(run_id, package, core, threads, created_at_utc):
                 "dispatch_id": metadata["dispatch_id"],
                 "tool_policy": dict(metadata["tool_policy"]),
                 "tool_policy_confirmed": metadata["tool_policy_confirmed"],
-                "runtime_policy_receipt": metadata["runtime_policy_receipt"],
-                "runtime_policy_receipt_sha256": _sha256_text(
+                "runtime_policy_receipt": dict(metadata["runtime_policy_receipt"]),
+                "runtime_policy_receipt_sha256": _sha256_json(
                     metadata["runtime_policy_receipt"]
                 ),
                 "tool_policy_sha256": dispatch_policy_hash,
@@ -426,6 +429,9 @@ def _validate_threads(threads):
     if not isinstance(threads, dict) or set(threads) != set(CODEX_SEAT_IDS):
         raise PreflightNotReadyError("必須恰好提供三個固定 GPT seat/thread。")
     thread_ids = []
+    dispatch_ids = []
+    receipt_ids = []
+    expected_policy_sha256 = _sha256_json(dict(SEAT_TOOL_POLICY))
     for seat_id in CODEX_SEAT_IDS:
         metadata = threads[seat_id]
         if not isinstance(metadata, dict):
@@ -444,17 +450,39 @@ def _validate_threads(threads):
             "dispatch_id"
         ].strip():
             raise PreflightNotReadyError("{} dispatch_id 未確認。".format(seat_id))
+        dispatch_ids.append(metadata["dispatch_id"])
         if metadata.get("tool_policy") != dict(SEAT_TOOL_POLICY):
             raise PreflightNotReadyError("{} 未證明 no-tool dispatch policy。".format(seat_id))
         if metadata.get("tool_policy_confirmed") is not True:
             raise PreflightNotReadyError("{} tool policy 未由 runtime 確認。".format(seat_id))
         receipt = metadata.get("runtime_policy_receipt")
-        if not isinstance(receipt, str) or not receipt.strip():
+        if (
+            not isinstance(receipt, dict)
+            or set(receipt) != _RUNTIME_POLICY_RECEIPT_FIELDS
+        ):
             raise PreflightNotReadyError(
                 "{} 缺少 runtime tool-policy receipt。".format(seat_id)
             )
+        receipt_id = receipt.get("receipt_id")
+        if not isinstance(receipt_id, str) or not receipt_id.strip():
+            raise PreflightNotReadyError(
+                "{} runtime receipt_id 未確認。".format(seat_id)
+            )
+        receipt_ids.append(receipt_id)
+        if receipt.get("dispatch_id") != metadata["dispatch_id"]:
+            raise PreflightNotReadyError(
+                "{} runtime receipt 未綁定自己的 dispatch_id。".format(seat_id)
+            )
+        if receipt.get("tool_policy_sha256") != expected_policy_sha256:
+            raise PreflightNotReadyError(
+                "{} runtime receipt 未綁定 no-tool policy。".format(seat_id)
+            )
     if len(set(thread_ids)) != len(CODEX_SEAT_IDS):
         raise PreflightNotReadyError("三個 GPT 席必須使用不同 persistent threads。")
+    if len(set(dispatch_ids)) != len(CODEX_SEAT_IDS):
+        raise PreflightNotReadyError("三個 GPT 席必須使用不同 dispatch_id。")
+    if len(set(receipt_ids)) != len(CODEX_SEAT_IDS):
+        raise PreflightNotReadyError("三個 GPT 席必須使用不同 runtime receipts。")
 
 
 def _sha256_json(value):

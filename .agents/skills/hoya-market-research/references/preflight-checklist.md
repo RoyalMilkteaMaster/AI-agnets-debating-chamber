@@ -15,8 +15,10 @@ unit test can substitute for it, and no unit test in this repo has performed it.
    Root, and that the run directory exists.
 5. **Dispatch policy** — use runtime-enforced `allowed_tools=[]`, no filesystem
    or secret access, and public-structured-response-only mode. Record the
-   runtime dispatch ID and receipt. If the runtime cannot enforce or expose
-   this, stop: prompt text and Python helper claims do not prove isolation.
+   runtime dispatch ID and receipt. Require unique dispatch and receipt IDs per
+   seat, and require every receipt to bind its dispatch ID and exact policy
+   hash. If the runtime cannot enforce or expose this, stop: prompt text and
+   Python helper claims do not prove isolation.
 6. **Threads** — create exactly three persistent Codex subagent threads, one
    per fixed seat. For each, record `seat_id`, `thread_id` and the **actual**
    model reported by the thread. Any thread that cannot confirm `gpt-5.6-sol` or

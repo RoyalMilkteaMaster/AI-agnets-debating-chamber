@@ -14,8 +14,10 @@ stores metadata; it never creates or impersonates an agent.
 - Each seat: unique non-empty `thread_id`, `actual_model=gpt-5.6-sol`, and
   `model_confirmed`, `capability_confirmed`, `persistent` all `true`.
 - Each seat dispatch: unique `dispatch_id`, exact no-tool `tool_policy`,
-  `tool_policy_confirmed=true`, and a non-empty runtime-provided policy receipt.
-  Python records and hashes the receipt but never creates it.
+  `tool_policy_confirmed=true`, and a runtime-provided policy receipt with
+  unique `receipt_id`. The receipt's `dispatch_id` and `tool_policy_sha256`
+  must bind it to that seat's dispatch and exact policy. Python records and
+  hashes the receipt but never creates it.
 - Missing, extra, unconfirmed, non-persistent or wrong-model metadata is
   `NOT READY`; there is no silent fallback.
 

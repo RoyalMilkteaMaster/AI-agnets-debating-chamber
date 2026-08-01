@@ -60,7 +60,18 @@ def threads(**overrides):
             "dispatch_id": "dispatch-{}".format(seat_id),
             "tool_policy": dict(SEAT_TOOL_POLICY),
             "tool_policy_confirmed": True,
-            "runtime_policy_receipt": "runtime-receipt-{}".format(seat_id),
+            "runtime_policy_receipt": {
+                "receipt_id": "runtime-receipt-{}".format(seat_id),
+                "dispatch_id": "dispatch-{}".format(seat_id),
+                "tool_policy_sha256": hashlib.sha256(
+                    json.dumps(
+                        dict(SEAT_TOOL_POLICY),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            },
         }
         for seat_id in CODEX_SEAT_IDS
     }
@@ -224,12 +235,42 @@ class CodexHandoffTest(unittest.TestCase):
         cases = (
             {"tool_policy": {**SEAT_TOOL_POLICY, "allowed_tools": ["filesystem"]}},
             {"tool_policy_confirmed": False},
-            {"runtime_policy_receipt": ""},
+            {"runtime_policy_receipt": {}},
         )
         for override in cases:
             with self.subTest(override=override):
                 broken = threads()
                 broken["onchain"] = dict(broken["onchain"], **override)
+                with self.assertRaises(PreflightNotReadyError):
+                    self.build(threads=broken)
+
+    def test_dispatch_and_runtime_receipt_identity_are_unique_and_bound(self):
+        duplicate_dispatch = threads()
+        duplicate_dispatch["onchain"]["dispatch_id"] = duplicate_dispatch[
+            "derivatives"
+        ]["dispatch_id"]
+        duplicate_dispatch["onchain"]["runtime_policy_receipt"][
+            "dispatch_id"
+        ] = duplicate_dispatch["derivatives"]["dispatch_id"]
+
+        duplicate_receipt = threads()
+        duplicate_receipt["onchain"]["runtime_policy_receipt"][
+            "receipt_id"
+        ] = duplicate_receipt["derivatives"]["runtime_policy_receipt"][
+            "receipt_id"
+        ]
+
+        wrong_binding = threads()
+        wrong_binding["onchain"]["runtime_policy_receipt"][
+            "dispatch_id"
+        ] = "dispatch-derivatives"
+
+        for label, broken in (
+            ("duplicate-dispatch", duplicate_dispatch),
+            ("duplicate-receipt", duplicate_receipt),
+            ("wrong-binding", wrong_binding),
+        ):
+            with self.subTest(label=label):
                 with self.assertRaises(PreflightNotReadyError):
                     self.build(threads=broken)
 
@@ -243,7 +284,9 @@ class CodexHandoffTest(unittest.TestCase):
             self.assertFalse(seat["tool_policy"]["filesystem_access"])
             self.assertFalse(seat["tool_policy"]["secret_access"])
             self.assertTrue(seat["tool_policy_confirmed"])
-            self.assertTrue(seat["runtime_policy_receipt"])
+            self.assertEqual(
+                seat["dispatch_id"], seat["runtime_policy_receipt"]["dispatch_id"]
+            )
             self.assertRegex(
                 seat["runtime_policy_receipt_sha256"], r"^[0-9a-f]{64}$"
             )

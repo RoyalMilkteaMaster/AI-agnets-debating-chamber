@@ -36,8 +36,10 @@ non-persistent thread.
 3. The Data Root is a separate directory from the Code Root.
 4. The runtime enforces `allowed_tools=[]`, no filesystem access, no secret
    access, and public-structured-response-only mode for every seat. Preserve
-   each runtime dispatch receipt in preflight. A prompt instruction or a helper
-   assertion is not enforcement proof.
+   each runtime dispatch receipt in preflight. Every seat needs a unique
+   `dispatch_id` and unique receipt ID; the receipt must bind that seat's
+   dispatch ID and the exact no-tool policy hash. A prompt instruction or a
+   helper assertion is not enforcement proof.
 5. All three threads exist, are persistent, report an **actual model** of
    `gpt-5.6-sol`, and expose an auditable `thread_id`.
 6. You wrote the handoff artifact `preflight/codex-handoff.json` into the run
