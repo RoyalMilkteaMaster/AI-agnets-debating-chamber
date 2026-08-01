@@ -29,7 +29,7 @@ SCHEMA = {
 }
 
 
-def stream_success(model=MODEL, structured_output=None):
+def stream_success(model=MODEL, structured_output=None, search_done=True):
     structured_output = structured_output or {"answer": "ready"}
     events = [
         {
@@ -37,6 +37,20 @@ def stream_success(model=MODEL, structured_output=None):
             "conversation_id": "fixture-conversation",
             "init": {"model": model, "tools": ["search_web", "view_file"]},
         },
+    ]
+    if search_done:
+        events.append(
+            {
+                "event": "step_update",
+                "step_update": {
+                    "state": "DONE",
+                    "step_type": "tool",
+                    "tool_name": "search_web",
+                    "duration_seconds": 0.5,
+                },
+            }
+        )
+    events.append(
         {
             "event": "result",
             "result": {
@@ -45,8 +59,8 @@ def stream_success(model=MODEL, structured_output=None):
                 "duration_seconds": 2.5,
                 "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
             },
-        },
-    ]
+        }
+    )
     return "\n".join(json.dumps(event) for event in events) + "\n"
 
 
@@ -59,6 +73,7 @@ class FakeRunner:
         models_returncode=0,
         models_stderr="",
         models_output=MODEL + "\n",
+        log_text=None,
     ):
         self.stream = stream or stream_success()
         self.stream_returncode = stream_returncode
@@ -66,6 +81,7 @@ class FakeRunner:
         self.models_returncode = models_returncode
         self.models_stderr = models_stderr
         self.models_output = models_output
+        self.log_text = log_text
         self.calls = []
 
     def __call__(self, argv, cwd, timeout):
@@ -75,6 +91,10 @@ class FakeRunner:
         if argv[1:] == ["models"]:
             return subprocess.CompletedProcess(
                 argv, self.models_returncode, self.models_output, self.models_stderr
+            )
+        if self.log_text is not None:
+            Path(argv[argv.index("--log-file") + 1]).write_text(
+                self.log_text, encoding="utf-8"
             )
         return subprocess.CompletedProcess(
             argv, self.stream_returncode, self.stream, self.stream_stderr
@@ -115,6 +135,7 @@ class AntigravityAdapterTest(unittest.TestCase):
         self.assertEqual(MODEL, result.actual_model)
         self.assertEqual("high", result.effort)
         self.assertTrue(result.search_available)
+        self.assertTrue(result.search_succeeded)
         self.assertEqual({"answer": "ready"}, result.structured_output)
         self.assertEqual(2.5, result.duration_seconds)
         self.assertEqual(14, result.usage["total_tokens"])
@@ -207,6 +228,7 @@ class AntigravityAdapterTest(unittest.TestCase):
             FakeRunner(models_output="gemini-3.1-pro-low\n"),
             FakeRunner(stream=stream_success(model="other-model")),
             FakeRunner(stream=stream_success().replace("search_web", "no_search")),
+            FakeRunner(stream=stream_success(search_done=False)),
         )):
             adapter = AntigravityAdapter(
                 cli_path=self.cli,
@@ -216,6 +238,71 @@ class AntigravityAdapterTest(unittest.TestCase):
             )
             with self.assertRaises(AntigravityNotReady):
                 adapter.preflight(self.attempt_dir("not-ready-{}".format(index)))
+
+    def test_init_tool_listing_without_successful_search_event_is_not_ready(self):
+        runner = FakeRunner(stream=stream_success(search_done=False))
+        with self.assertRaises(AntigravityNotReady):
+            self._adapter(runner).preflight(self.attempt_dir("no-search-event"))
+
+    def test_raw_cli_log_is_sanitized_and_temp_removed(self):
+        sensitive = (
+            "account=user@example.com token=top-secret "
+            "Authorization: Bearer bearer-secret "
+            "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature\n"
+        )
+        attempt = self.attempt_dir("sanitized-log")
+
+        self._adapter(FakeRunner(log_text=sensitive)).invoke("prompt", SCHEMA, attempt)
+
+        persisted = (attempt / "agy.log").read_text(encoding="utf-8")
+        for secret in (
+            "user@example.com",
+            "top-secret",
+            "bearer-secret",
+            "eyJhbGciOiJIUzI1NiJ9",
+        ):
+            self.assertNotIn(secret, persisted)
+        self.assertIn("[REDACTED]", persisted)
+        self.assertEqual([], list(attempt.glob(".agy-unredacted-*")))
+
+    def test_timeout_sanitizes_log_and_removes_temp(self):
+        attempt = self.attempt_dir("timeout-log")
+
+        def timeout_runner(argv, cwd, timeout):
+            Path(argv[argv.index("--log-file") + 1]).write_text(
+                "email=user@example.com refresh_token=top-secret", encoding="utf-8"
+            )
+            raise subprocess.TimeoutExpired(argv, timeout)
+
+        adapter = AntigravityAdapter(
+            cli_path=self.cli,
+            code_root=self.code_root,
+            data_root=self.data_root,
+            runner=timeout_runner,
+        )
+        with self.assertRaises(AntigravityTimeout):
+            adapter.invoke("prompt", SCHEMA, attempt)
+
+        persisted = (attempt / "agy.log").read_text(encoding="utf-8")
+        self.assertNotIn("user@example.com", persisted)
+        self.assertNotIn("top-secret", persisted)
+        self.assertEqual([], list(attempt.glob(".agy-unredacted-*")))
+
+    def test_process_error_sanitizes_log_and_removes_temp(self):
+        attempt = self.attempt_dir("error-log")
+        runner = FakeRunner(
+            stream_returncode=1,
+            stream_stderr="provider failed",
+            log_text="account=user@example.com access_token=top-secret",
+        )
+
+        with self.assertRaises(AntigravityNotReady):
+            self._adapter(runner).invoke("prompt", SCHEMA, attempt)
+
+        persisted = (attempt / "agy.log").read_text(encoding="utf-8")
+        self.assertNotIn("user@example.com", persisted)
+        self.assertNotIn("top-secret", persisted)
+        self.assertEqual([], list(attempt.glob(".agy-unredacted-*")))
 
     def test_timeout_non_success_malformed_schema_and_late_are_distinct(self):
         def timeout_runner(argv, cwd, timeout):
@@ -293,6 +380,7 @@ class EnvelopeParserTest(unittest.TestCase):
         self.assertEqual(MODEL, parsed.actual_model)
         self.assertEqual({"answer": "ok"}, parsed.structured_output)
         self.assertTrue(parsed.search_available)
+        self.assertFalse(parsed.search_succeeded)
 
     def test_rejects_missing_structured_output(self):
         raw = json.dumps({"status": "SUCCESS", "actual_model": MODEL})

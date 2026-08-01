@@ -3,7 +3,9 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,9 +22,12 @@ PREFLIGHT_SCHEMA = {
     "additionalProperties": False,
 }
 PREFLIGHT_PROMPT = (
-    "Return the required JSON with answer set to ready. Do not reveal account, OAuth, "
-    "cookie, token, environment data, or hidden reasoning. Do not read or write files "
-    "and do not run terminal commands."
+    "Use search_web exactly once to search for the official Google Antigravity CLI "
+    "documentation page. This is a low-risk capability smoke only. After search_web "
+    "returns successfully, return the required JSON with answer set to ready. If the "
+    "search cannot complete, do not claim ready. Do not reveal account, OAuth, cookie, "
+    "token, environment data, or hidden reasoning. Do not read or write files and do "
+    "not run terminal commands."
 )
 
 
@@ -62,6 +67,7 @@ class ParsedEnvelope:
     duration_seconds: float | int | None
     usage: dict
     search_available: bool
+    search_succeeded: bool
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,7 @@ class AdapterResult:
     duration_seconds: float | int | None
     usage: dict
     search_available: bool
+    search_succeeded: bool
     schema_path: Path
     schema_sha256: str
 
@@ -83,6 +90,7 @@ class PreflightResult:
     actual_model: str
     effort: str
     search_available: bool
+    search_succeeded: bool
     structured_output: object
     duration_seconds: float | int | None
     usage: dict
@@ -121,7 +129,12 @@ class AntigravityAdapter:
         if self.model not in models:
             raise AntigravityNotReady("指定模型不存在：{}".format(self.model))
 
-        result = self.invoke(PREFLIGHT_PROMPT, PREFLIGHT_SCHEMA, attempt_dir)
+        result = self.invoke(
+            PREFLIGHT_PROMPT,
+            PREFLIGHT_SCHEMA,
+            attempt_dir,
+            require_search=True,
+        )
         if result.structured_output != {"answer": "ready"}:
             raise AntigravityNotReady("Antigravity structured preflight contract 不符")
         return PreflightResult(
@@ -131,6 +144,7 @@ class AntigravityAdapter:
             actual_model=result.actual_model,
             effort=self.effort,
             search_available=True,
+            search_succeeded=True,
             structured_output=result.structured_output,
             duration_seconds=result.duration_seconds,
             usage=result.usage,
@@ -138,12 +152,20 @@ class AntigravityAdapter:
             schema_sha256=result.schema_sha256,
         )
 
-    def invoke(self, prompt, schema, attempt_dir, late_check=None):
+    def invoke(
+        self,
+        prompt,
+        schema,
+        attempt_dir,
+        late_check=None,
+        require_search=False,
+    ):
         self._require_cli()
         attempt_dir = self._attempt_dir(attempt_dir)
         schema_path, schema_sha256 = _write_schema(attempt_dir, schema)
         raw_path = attempt_dir / "raw-envelope.jsonl"
         log_path = attempt_dir / "agy.log"
+        raw_log_path = _temporary_log_path(attempt_dir)
         argv = [
             str(self.cli_path),
             "--print",
@@ -163,7 +185,7 @@ class AntigravityAdapter:
             "--sandbox",
             "--disable-slash-commands",
             "--log-file",
-            str(log_path),
+            str(raw_log_path),
         ]
         try:
             completed = self.runner(
@@ -173,6 +195,8 @@ class AntigravityAdapter:
             raise AntigravityTimeout(
                 "Antigravity 超過 {} 秒".format(self.timeout_seconds)
             ) from exc
+        finally:
+            _persist_sanitized_log(raw_log_path, log_path)
 
         raw = completed.stdout or ""
         _write_once(raw_path, raw.encode("utf-8"))
@@ -192,6 +216,8 @@ class AntigravityAdapter:
             )
         if not parsed.search_available:
             raise AntigravityNotReady("Antigravity session 未提供 search_web")
+        if require_search and not parsed.search_succeeded:
+            raise AntigravityNotReady("Antigravity search_web smoke 未成功")
         if late_check is not None and late_check():
             raise AntigravityLateResult("Antigravity result 到達時接收窗口已關閉")
         return AdapterResult(
@@ -200,6 +226,7 @@ class AntigravityAdapter:
             duration_seconds=parsed.duration_seconds,
             usage=parsed.usage,
             search_available=parsed.search_available,
+            search_succeeded=parsed.search_succeeded,
             schema_path=schema_path,
             schema_sha256=schema_sha256,
         )
@@ -246,6 +273,7 @@ def parse_envelope(raw):
 
     init = None
     envelope = None
+    search_succeeded = False
     for record in records:
         if not isinstance(record, dict):
             raise AntigravityEnvelopeError("Antigravity envelope 必須為 JSON 物件")
@@ -253,6 +281,15 @@ def parse_envelope(raw):
             init = record.get("init")
         elif record.get("event") == "result":
             envelope = record.get("result")
+        elif record.get("event") == "step_update":
+            update = record.get("step_update")
+            if (
+                isinstance(update, dict)
+                and update.get("step_type") == "tool"
+                and update.get("tool_name") == SEARCH_TOOL
+                and update.get("state") == "DONE"
+            ):
+                search_succeeded = True
     if envelope is None and len(records) == 1:
         envelope = records[0]
     if not isinstance(envelope, dict):
@@ -284,6 +321,7 @@ def parse_envelope(raw):
         duration_seconds=duration,
         usage=usage,
         search_available=search_available,
+        search_succeeded=search_succeeded,
     )
 
 
@@ -306,6 +344,57 @@ def _write_once(path, content):
             handle.write(content)
     except FileExistsError as exc:
         raise AntigravityBoundaryError("attempt artifact 不得覆寫：{}".format(path)) from exc
+
+
+def _temporary_log_path(attempt_dir):
+    descriptor, name = tempfile.mkstemp(prefix=".agy-unredacted-", dir=attempt_dir)
+    os.close(descriptor)
+    return Path(name)
+
+
+def _persist_sanitized_log(raw_path, safe_path):
+    try:
+        raw = raw_path.read_text(encoding="utf-8", errors="replace")
+        _atomic_write_once(safe_path, _sanitize_log(raw).encode("utf-8"))
+    finally:
+        raw_path.unlink(missing_ok=True)
+
+
+def _sanitize_log(text):
+    text = re.sub(
+        r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        "[REDACTED]",
+        text,
+    )
+    text = re.sub(r"(?i)\bbearer\s+[A-Z0-9._~+/-]+=*", "Bearer [REDACTED]", text)
+    text = re.sub(
+        r"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*\b",
+        "[REDACTED]",
+        text,
+    )
+    return re.sub(
+        r"(?i)([\"']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|oauth|"
+        r"token|cookie|jwt|authorization|credential|client[_-]?secret|password|"
+        r"account|email|username|user)[\"']?\s*[:=]\s*)"
+        r"(?:[\"'][^\"']*[\"']|[^\s,;]+)",
+        r"\1[REDACTED]",
+        text,
+    )
+
+
+def _atomic_write_once(path, content):
+    if path.exists():
+        raise AntigravityBoundaryError("attempt artifact 不得覆寫：{}".format(path))
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".safe-log-", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _run_process(argv, cwd, timeout):

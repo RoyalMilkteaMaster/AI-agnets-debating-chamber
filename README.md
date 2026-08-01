@@ -60,7 +60,7 @@ python3 -m unittest tests.test_antigravity_adapter -v
 ## Antigravity 單席 preflight
 
 以下指令會使用 WSL 既有的 Google OAuth 登入，驗證 `agy` 版本、
-`gemini-3.1-pro-high`、high effort、`search_web` 與 structured output：
+`gemini-3.1-pro-high`、high effort、實際完成一次低風險 `search_web` 與 structured output：
 
 ```bash
 # WSL
@@ -68,7 +68,8 @@ cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
 python3 -m hoya_market_agents preflight --provider antigravity --seats 1
 ```
 
-Schema、CLI log 與 raw envelope 只會寫到 Data Root；輸出不包含 OAuth token 或帳號資料。
+Schema、遮罩後的 CLI log 與 raw envelope 只會寫到 Data Root；未遮罩 temp log 會在
+success、timeout 或 error 後清除，輸出不包含 OAuth token 或帳號資料。
 
 ## 執行一次分析
 

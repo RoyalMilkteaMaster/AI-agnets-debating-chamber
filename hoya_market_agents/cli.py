@@ -121,6 +121,7 @@ def _preflight(args, out, err):
         "actual_model": result.actual_model,
         "effort": result.effort,
         "search_available": result.search_available,
+        "search_smoke_succeeded": result.search_succeeded,
         "duration_seconds": result.duration_seconds,
         "usage": result.usage,
         "structured_contract_valid": result.structured_output == {"answer": "ready"},
