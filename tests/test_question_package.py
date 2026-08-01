@@ -65,6 +65,33 @@ class QuestionPackageTest(unittest.TestCase):
                 with self.assertRaises(UnsupportedQuestionError):
                     build_question_package(question)
 
+    def test_lowercase_unsupported_ticker_in_market_or_event_context_fails_closed(self):
+        for question in (
+            "評估 doge 升級事件對加密市場的影響",
+            "分析 doge 市場狀態",
+        ):
+            with self.subTest(question=question):
+                with self.assertRaises(UnsupportedQuestionError) as caught:
+                    build_question_package(question)
+
+                self.assertIn("DOGE", str(caught.exception))
+
+    def test_comparison_assets_follow_first_appearance_without_duplicates(self):
+        package = build_question_package("比較 BTC 與 ETH，BTC 相對 ETH 誰較強？")
+
+        self.assertEqual(("BTC", "ETH"), package.assets)
+
+    def test_chinese_week_periods_are_explicit(self):
+        one_week = build_question_package("分析 BTC 過去一週市場狀態")
+        two_weeks = build_question_package("分析 BTC 過去兩週市場狀態")
+
+        self.assertEqual((7, True), (one_week.period_days, one_week.period_stated))
+        self.assertEqual((14, True), (two_weeks.period_days, two_weeks.period_stated))
+
+    def test_unparseable_explicit_period_hint_fails_closed(self):
+        with self.assertRaises(UnsupportedQuestionError):
+            build_question_package("分析 BTC 過去幾週市場狀態")
+
 
 if __name__ == "__main__":
     unittest.main()

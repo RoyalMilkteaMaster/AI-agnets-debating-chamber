@@ -98,6 +98,9 @@ def _is_event(question):
 
 
 def _asset_order(question):
-    return tuple(
-        match.group(1).upper() for match in _SUPPORTED_ASSET_PATTERN.finditer(question)
-    )
+    ordered = []
+    for match in _SUPPORTED_ASSET_PATTERN.finditer(question):
+        asset = match.group(1).upper()
+        if asset not in ordered:
+            ordered.append(asset)
+    return tuple(ordered)

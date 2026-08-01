@@ -148,6 +148,9 @@ def _shared_section(scope, phase, evidence_snapshot, debate_snapshot, research_s
         "- 至少主動尋找一項反駁自己初步立場的證據。",
         "- 社群／KOL／重要帳戶不可單獨支撐方向性結論。",
         "- 同源轉載不得計為獨立來源。",
+        "- Tier 1：交易所／區塊鏈原始資料／官方／監管。",
+        "- Tier 2：可信資料聚合商／具名新聞機構。",
+        "- Tier 3：社群／KOL／重要帳戶。",
         "",
         "## EvidenceCard 輸出 contract",
         "- 每張卡必須包含 evidence_id、run_id、seat_id、attempt_id、phase、"

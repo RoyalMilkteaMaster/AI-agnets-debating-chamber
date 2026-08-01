@@ -25,6 +25,32 @@ _COMPARISON_PAIR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _PERIOD_PATTERN = re.compile(r"(\d{1,3})\s*(?:日|天|days?)", re.IGNORECASE)
+_WEEK_PERIOD_PATTERN = re.compile(r"(\d{1,3})\s*(?:週|周|weeks?)", re.IGNORECASE)
+_CHINESE_WEEK_PERIOD_PATTERN = re.compile(r"([一二兩三四五六七八九十])\s*(?:週|周)")
+_PERIOD_HINT_PATTERN = re.compile(
+    r"(?:過去|最近|近)\s*[^\s，。！？,;；]{0,8}?(?:日|天|週|周|星期|月|年)"
+)
+_CONTEXTUAL_ASSET_PATTERNS = (
+    re.compile(r"(?:分析|評估|研究|關注)\s*([A-Za-z]{2,5})(?![A-Za-z])", re.IGNORECASE),
+    re.compile(
+        r"(?<![A-Za-z])([A-Za-z]{2,5})(?![A-Za-z])\s*"
+        r"(?:代幣|幣種|升級(?:事件)?|市場狀態|價格(?:走勢)?|鏈上)",
+        re.IGNORECASE,
+    ),
+)
+_CHINESE_WEEK_COUNTS = {
+    "一": 1,
+    "二": 2,
+    "兩": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
 
 
 class UnsupportedQuestionError(ValueError):
@@ -74,6 +100,7 @@ def inspect_question(question):
         if token not in SUPPORTED_ASSETS
     }
     unsupported.update(_unsupported_comparison_assets(text))
+    unsupported.update(_unsupported_contextual_assets(text))
     if unsupported:
         raise UnsupportedQuestionError(
             "題目包含未核准資產或無法辨識的代號 {}；僅支援 {}，fail closed。".format(
@@ -102,11 +129,36 @@ def _unsupported_comparison_assets(text):
     return unsupported
 
 
+def _unsupported_contextual_assets(text):
+    candidates = {
+        match.group(1).upper()
+        for pattern in _CONTEXTUAL_ASSET_PATTERNS
+        for match in pattern.finditer(text)
+    }
+    return candidates.difference(SUPPORTED_ASSETS)
+
+
 def _read_period(text):
     match = _PERIOD_PATTERN.search(text)
-    if not match:
-        return DEFAULT_PERIOD_DAYS, False
-    days = int(match.group(1))
+    if match:
+        return _positive_period(int(match.group(1)))
+
+    match = _WEEK_PERIOD_PATTERN.search(text)
+    if match:
+        return _positive_period(int(match.group(1)) * 7)
+
+    match = _CHINESE_WEEK_PERIOD_PATTERN.search(text)
+    if match:
+        return _positive_period(_CHINESE_WEEK_COUNTS[match.group(1)] * 7)
+
+    if _PERIOD_HINT_PATTERN.search(text):
+        raise UnsupportedQuestionError(
+            "題目包含無法解析的分析期間；請使用明確日數或週數，fail closed。"
+        )
+    return DEFAULT_PERIOD_DAYS, False
+
+
+def _positive_period(days):
     if days <= 0:
         raise UnsupportedQuestionError("分析期間必須為正整數日數；fail closed。")
     return days, True
