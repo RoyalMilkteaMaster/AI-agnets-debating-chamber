@@ -84,6 +84,27 @@ class SystemCliTest(unittest.TestCase):
             if item["check_id"] == "codex_runtime_receipts"
         ))
 
+    def test_not_ready_provider_preflight_does_not_issue_competition_authorization(self):
+        code, out, err = self.run_cli(
+            "preflight",
+            "--provider", "system",
+            "--seats", "7",
+            "--mode", "real",
+            "--preflight-id", "not-authorized",
+            "--competition-run-id", "20260801T020000Z-btc-abc123",
+            "--competition-challenge", "competition-challenge-1234567890",
+            "--data-root", str(self.data_root),
+        )
+
+        self.assertEqual(1, code)
+        self.assertEqual("", err)
+        payload = json.loads(out)
+        self.assertFalse(payload["provider_capabilities_ready"])
+        self.assertEqual("NOT_AUTHORIZED", payload["competition_authorization"]["status"])
+        self.assertFalse(
+            (self.data_root / "preflight" / "not-authorized" / "competition-authorization.json").exists()
+        )
+
     def test_unsafe_preflight_id_is_rejected_before_any_probe_write(self):
         code, out, err = self.run_cli(
             "preflight",

@@ -86,8 +86,8 @@ fixture 即使全數通過仍輸出 `NOT_READY`；`simulation_status=PASS` 只�
 `NOT_READY`。
 
 真實 preflight 必須從 fresh Codex Task 取得 `<CODEX_RUN_ID>` 與該次 one-time
-`<CODEX_CHALLENGE>`；若已有真實七席演練才再
-提供 `<REAL_DRILL_RUN_ID>`：
+`<CODEX_CHALLENGE>`。Operator 也必須在 provider preflight 前預先指定尚未使用的
+`<COMPETITION_RUN_ID>` 與 `<COMPETITION_CHALLENGE>`：
 
 ```bash
 # WSL
@@ -95,11 +95,18 @@ cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
 python3 -m hoya_market_agents preflight --provider system --seats 7 \
   --mode real --codex-run-id <CODEX_RUN_ID> \
   --codex-challenge <CODEX_CHALLENGE> \
-  --drill-run-id <REAL_DRILL_RUN_ID>
+  --competition-run-id <COMPETITION_RUN_ID> \
+  --competition-challenge <COMPETITION_CHALLENGE>
 ```
 
 缺少任何登入、actual model、七席搜尋 receipt、權限、T+4:45 contract、T+5 seal 或
 T+13 report 證據時都輸出機器可讀 `NOT_READY` manifest。
+預授權階段允許 `search`、`seven_seat_timeline`、`report_deadline` 三項 run-scoped
+blocker；此時必須同時有 `provider_capabilities_ready=true` 與 write-once
+`competition_authorization.status=AUTHORIZED`。最終是否可宣稱 competition READY
+只由該授權 run 的 `verify-run` 結果決定。
+real run 還必須逐席保存綁定預授權 run/challenge 的 dispatch、completion、search、
+public transcript 與 structured output receipts；缺任一 artifact 或 hash 即拒絕。
 
 只執行 Claude Adapter 單元測試（WSL）：
 

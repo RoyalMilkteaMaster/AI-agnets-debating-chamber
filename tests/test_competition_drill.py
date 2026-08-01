@@ -8,6 +8,7 @@ from pathlib import Path
 
 from hoya_market_agents.competition_drill import run_fake_competition_drill
 from hoya_market_agents.run_verifier import RunVerificationError, verify_run
+from hoya_market_agents.system_preflight import REQUIRED_CHECK_IDS, build_preflight_manifest
 
 
 class CompetitionDrillTest(unittest.TestCase):
@@ -87,6 +88,101 @@ class CompetitionDrillTest(unittest.TestCase):
 
                 with self.assertRaises(RunVerificationError):
                     verify_run(root, result.run_id)
+
+    def test_hash_matching_preflight_cannot_promote_shipped_fake_artifacts(self):
+        result = run_fake_competition_drill(
+            data_root=self.data_root,
+            question="分析 BTC 過去 14 日市場狀態",
+            token="d36666",
+        )
+        manifest_path = result.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        challenge = "competition-challenge-1234567890"
+        preflight_id = "forged-provider-preflight"
+        preflight_dir = self.data_root / "preflight" / preflight_id
+        preflight_dir.mkdir(parents=True)
+        authorization = {
+            "schema_version": "1.0.0",
+            "status": "AUTHORIZED",
+            "system_preflight_id": preflight_id,
+            "authorized_run_id": result.run_id,
+            "competition_challenge": challenge,
+            "issued_at_utc": "2026-08-01T01:59:00Z",
+        }
+        authorization_bytes = (
+            json.dumps(authorization, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        authorization_path = preflight_dir / "competition-authorization.json"
+        authorization_path.write_bytes(authorization_bytes)
+
+        checks = [
+            {
+                "check_id": check_id,
+                "ok": check_id
+                not in ("search", "seven_seat_timeline", "report_deadline"),
+                "target": "required",
+                "actual": "forged reviewer reproduction",
+                "evidence": "hash matching but synthetic",
+            }
+            for check_id in REQUIRED_CHECK_IDS
+        ]
+        preflight = build_preflight_manifest(
+            checks=checks,
+            mode="real",
+            generated_at_utc="2026-08-01T01:59:00Z",
+            code_root="/code",
+            data_root=self.data_root,
+        )
+        actual_models = {
+            "spot-technical": "gpt-5.6-sol",
+            "derivatives": "gpt-5.6-sol",
+            "onchain": "gpt-5.6-sol",
+            "official-events": "claude-opus-5",
+            "news": "claude-opus-5",
+            "social-macro": "claude-opus-5",
+            "counter-evidence": "gemini-3.1-pro-high",
+        }
+        preflight["provider_matrix"] = [{
+            "seat_id": "core",
+            "provider": "codex",
+            "target_model": "gpt-5.6-sol",
+            "actual_model": "gpt-5.6-sol",
+        }] + [
+            {
+                "seat_id": seat["seat_id"],
+                "provider": seat["provider"],
+                "target_model": seat["target_model"],
+                "actual_model": actual_models[seat["seat_id"]],
+            }
+            for seat in manifest["seats"]
+        ]
+        preflight["competition_authorization"] = {
+            "status": "AUTHORIZED",
+            "authorized_run_id": result.run_id,
+            "competition_challenge_sha256": hashlib.sha256(challenge.encode()).hexdigest(),
+            "path": "preflight/{}/competition-authorization.json".format(preflight_id),
+            "sha256": hashlib.sha256(authorization_bytes).hexdigest(),
+        }
+        preflight_path = preflight_dir / "manifest.json"
+        preflight_bytes = (json.dumps(preflight, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        preflight_path.write_bytes(preflight_bytes)
+
+        manifest["provider_mode"] = "real-subscription"
+        manifest["competition_ready"] = True
+        for seat in manifest["seats"]:
+            seat["actual_model"] = actual_models[seat["seat_id"]]
+        manifest["provider_preflight_lineage"] = {
+            "system_preflight_id": preflight_id,
+            "manifest_path": "preflight/{}/manifest.json".format(preflight_id),
+            "sha256": hashlib.sha256(preflight_bytes).hexdigest(),
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(RunVerificationError):
+            verify_run(self.data_root, result.run_id)
 
     def test_verify_run_rejects_late_seat_late_report_and_snapshot_tamper(self):
         for failure in ("seat", "report", "snapshot"):

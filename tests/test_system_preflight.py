@@ -10,8 +10,10 @@ from hoya_market_agents.claude_adapter import CLAUDE_SEAT_SESSIONS
 from hoya_market_agents.codex_bridge import CODEX_SEAT_IDS
 from hoya_market_agents.system_preflight import (
     REQUIRED_CHECK_IDS,
+    build_competition_authorization,
     build_preflight_manifest,
     load_frozen_roster,
+    write_competition_authorization,
     write_preflight_manifest,
 )
 
@@ -116,16 +118,19 @@ class SystemPreflightManifestTest(unittest.TestCase):
                 self.assertFalse(manifest["ready"])
                 self.assertIn(broken, manifest["blockers"])
 
-    def test_provider_capabilities_can_be_proven_before_timeline_drill(self):
+    def test_provider_capabilities_can_be_proven_before_run_scoped_receipts(self):
         checks = passing_checks()
-        for check_id in ("seven_seat_timeline", "report_deadline"):
+        for check_id in ("search", "seven_seat_timeline", "report_deadline"):
             next(item for item in checks if item["check_id"] == check_id)["ok"] = False
 
         manifest = self.build(checks)
 
         self.assertEqual("NOT_READY", manifest["status"])
         self.assertTrue(manifest["provider_capabilities_ready"])
-        self.assertEqual(["seven_seat_timeline", "report_deadline"], manifest["blockers"])
+        self.assertEqual(
+            ["search", "seven_seat_timeline", "report_deadline"],
+            manifest["blockers"],
+        )
 
     def test_missing_required_check_fails_closed(self):
         manifest = self.build(passing_checks()[:-1])
@@ -163,6 +168,27 @@ class SystemPreflightManifestTest(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 write_preflight_manifest(data_root, "escape", self.build())
+
+    def test_competition_authorization_is_run_scoped_and_write_once(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            authorization = build_competition_authorization(
+                preflight_id="provider-preflight-1",
+                run_id="20260801T020000Z-btc-abc123",
+                competition_challenge="competition-challenge-1234567890",
+                issued_at_utc="2026-08-01T01:59:00Z",
+            )
+
+            lineage = write_competition_authorization(
+                Path(temporary_directory), "provider-preflight-1", authorization
+            )
+
+            self.assertEqual("AUTHORIZED", lineage["status"])
+            self.assertEqual("20260801T020000Z-btc-abc123", lineage["authorized_run_id"])
+            self.assertRegex(lineage["sha256"], r"^[0-9a-f]{64}$")
+            with self.assertRaises(ValueError):
+                write_competition_authorization(
+                    Path(temporary_directory), "provider-preflight-1", authorization
+                )
 
 
 if __name__ == "__main__":

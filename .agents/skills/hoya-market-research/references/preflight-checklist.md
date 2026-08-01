@@ -10,6 +10,8 @@ unit test can substitute for it, and no unit test in this repo has performed it.
    URL-safe nonce. Pass it unchanged as `preflight_challenge` when building the
    handoff. A missing, altered, older-than-300-second or already-bound handoff
    is `NOT_READY`.
+   Also require one preselected, unused competition run ID and a distinct
+   competition challenge before provider smoke begins.
 3. **Core identity** — confirm your role is `core` and your runtime model is
    confirmed as `gpt-5.6-sol`. Record what you actually observed, not what was
    requested. Unconfirmed → NOT_READY, no fallback.
@@ -39,22 +41,27 @@ unit test can substitute for it, and no unit test in this repo has performed it.
    Exit `1` prints the NOT_READY reason on stderr.
 10. **Provider bridge checkpoint** — do not send the market question yet. A
    Codex bridge READY result is only one input to system readiness.
-11. **Aggregate gate** — run:
+11. **Provider authorization** — before dispatching the competition run, run:
 
     ```bash
-    python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --drill-run-id REAL_DRILL_RUN_ID --data-root DATA_ROOT
+    python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --competition-run-id COMPETITION_RUN_ID --competition-challenge COMPETITION_CHALLENGE --data-root DATA_ROOT
     ```
 
-    Require the write-once system manifest to say `READY`; any failed or
-    missing required check means `NOT_READY`.
+    Require `provider_capabilities_ready=true` and the write-once competition
+    authorization to say `AUTHORIZED`. Only `search`, `seven_seat_timeline`
+    and `report_deadline` may remain as pre-run blockers.
 12. **Search receipt gate** — require live receipts for three independent GPT
-    search executions. The current no-tool Codex receipt does not prove this,
-    so the honest current result is `NOT_READY(search)`. Do not substitute a
-    prompt claim, fixture, fake receipt, different model or fewer seats.
+    search executions in the authorized run. The current no-tool Codex handoff
+    does not prove this. Do not substitute a prompt claim, fixture, fake
+    receipt, different model or fewer seats.
 13. **Live drill and launch** — require a verifier-passing drill marked
     `provider_mode=real-subscription` and `competition_ready=true`. A fake drill
-    tests orchestration only. Send the byte-identical shared prompt only after
-    the aggregate manifest says `READY`.
+    tests orchestration only. Dispatch only the exact preauthorized run ID and
+    challenge. Final competition readiness comes from `verify-run`, not a
+    second preflight that would create circular lineage.
+    Every real seat must also return its run-scoped dispatch/completion receipt,
+    provider search receipt, public transcript hash and structured output hash;
+    all receipt paths/hashes must be present in the run artifact index.
 
 Known limitation: steps 1, 3, 6 and 7 depend on live Codex runtime capability and
 are the parts unit tests cannot prove. Record the observed `thread_id` and

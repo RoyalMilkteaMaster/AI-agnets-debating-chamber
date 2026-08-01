@@ -3,13 +3,17 @@
 import hashlib
 import json
 import re
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timedelta
+from pathlib import Path, PurePosixPath
 
 from .report_contract import ReportContractError, validate_market_report
 from .report_renderer import render_market_html, render_market_markdown
 from .seats import SEAT_IDS
-from .system_preflight import REQUIRED_CHECK_IDS, load_frozen_roster
+from .system_preflight import (
+    REQUIRED_CHECK_IDS,
+    RUN_SCOPED_CHECK_IDS,
+    load_frozen_roster,
+)
 
 
 REQUIRED_ARTIFACTS = (
@@ -25,6 +29,54 @@ _FORBIDDEN_HTML_DEPENDENCIES = (
     re.compile(r"<link\b", re.IGNORECASE),
     re.compile(r"\bsrc\s*=\s*[\"']https?://", re.IGNORECASE),
     re.compile(r"@import\b", re.IGNORECASE),
+)
+_REAL_RECEIPT_FIELDS = {
+    "schema_version",
+    "receipt_id",
+    "system_preflight_id",
+    "run_id",
+    "competition_challenge",
+    "seat_id",
+    "attempt_id",
+    "provider",
+    "target_model",
+    "actual_model",
+    "dispatch",
+    "completion",
+    "search_receipt_path",
+    "search_receipt_sha256",
+    "raw_transcript_path",
+    "raw_transcript_sha256",
+    "output_path",
+    "output_sha256",
+}
+_PHASE_RECEIPT_FIELDS = {"receipt_id", "at_utc", "elapsed_ms"}
+_SEARCH_RECEIPT_FIELDS = {
+    "schema_version",
+    "receipt_id",
+    "run_id",
+    "seat_id",
+    "attempt_id",
+    "provider",
+    "competition_challenge",
+    "tool",
+    "succeeded",
+    "completed_at_utc",
+    "elapsed_ms",
+}
+_SEARCH_TOOLS = {
+    "codex": "web_search",
+    "claude": "WebSearch",
+    "antigravity": "search_web",
+}
+_SHIPPED_FAKE_MARKERS = (
+    "fake-competition-drill",
+    "fake.invalid",
+    "fake-source:",
+    "fixture:",
+    "fake drill",
+    "deterministic fixture",
+    "不得作為真實市場或訂閱 provider ready 證據",
 )
 
 
@@ -111,7 +163,21 @@ def verify_run(data_root, run_id):
         _verify_report_lineage(run_dir, evidence, debate, votes)
         _verify_competition_timeline(run_dir, manifest, votes, timeline)
     if declares_real:
-        _verify_real_provider_lineage(root, manifest)
+        authorization = _verify_real_provider_lineage(root, manifest)
+        receipt_payloads = _verify_real_run_receipts(
+            run_dir,
+            manifest,
+            artifact_index,
+            timeline,
+            authorization,
+        )
+        _reject_shipped_fake_markers(
+            manifest,
+            evidence,
+            debate,
+            _read_json(run_dir / "report.json"),
+            receipt_payloads,
+        )
 
     return {
         "schema_version": "1.0.0",
@@ -328,7 +394,7 @@ def _verify_real_provider_lineage(data_root, manifest):
         or preflight.get("status") != ("READY" if expected_ready else "NOT_READY")
     ):
         raise RunVerificationError("provider preflight READY 狀態與 blockers 不一致。")
-    failed_provider_checks = set(failed) - {"seven_seat_timeline", "report_deadline"}
+    failed_provider_checks = set(failed) - RUN_SCOPED_CHECK_IDS
     if failed_provider_checks:
         raise RunVerificationError("provider preflight 仍有 capability blocker。")
     preflight_generated = _parse_utc(preflight.get("generated_at_utc"), "provider preflight time")
@@ -343,6 +409,91 @@ def _verify_real_provider_lineage(data_root, manifest):
                     seat["seat_id"]
                 )
             )
+    return _verify_competition_authorization(
+        data_root,
+        manifest,
+        preflight_id,
+        preflight,
+        preflight_generated,
+        run_started,
+    )
+
+
+def _verify_competition_authorization(
+    data_root,
+    run_manifest,
+    preflight_id,
+    preflight,
+    preflight_generated,
+    run_started,
+):
+    lineage = preflight.get("competition_authorization")
+    required = {
+        "status",
+        "authorized_run_id",
+        "competition_challenge_sha256",
+        "path",
+        "sha256",
+    }
+    if not isinstance(lineage, dict) or set(lineage) != required:
+        raise RunVerificationError("provider preflight 缺少 competition authorization lineage。")
+    run_id = run_manifest["run_id"]
+    expected_path = "preflight/{}/competition-authorization.json".format(preflight_id)
+    if (
+        lineage.get("status") != "AUTHORIZED"
+        or lineage.get("authorized_run_id") != run_id
+        or lineage.get("path") != expected_path
+    ):
+        raise RunVerificationError("competition authorization 未綁定本次 run。")
+    path = data_root / expected_path
+    _require_regular_file(path, data_root)
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != lineage.get("sha256"):
+        raise RunVerificationError("competition authorization hash 不一致。")
+    authorization = _read_json(path)
+    expected_fields = {
+        "schema_version",
+        "status",
+        "system_preflight_id",
+        "authorized_run_id",
+        "competition_challenge",
+        "issued_at_utc",
+    }
+    if not isinstance(authorization, dict) or set(authorization) != expected_fields:
+        raise RunVerificationError("competition authorization contract 不完整。")
+    challenge = authorization.get("competition_challenge")
+    if (
+        authorization.get("schema_version") != "1.0.0"
+        or authorization.get("status") != "AUTHORIZED"
+        or authorization.get("system_preflight_id") != preflight_id
+        or authorization.get("authorized_run_id") != run_id
+        or not _valid_challenge(challenge)
+        or hashlib.sha256(challenge.encode("utf-8")).hexdigest()
+        != lineage.get("competition_challenge_sha256")
+    ):
+        raise RunVerificationError("competition authorization identity/challenge 不符。")
+    issued = _parse_utc(authorization.get("issued_at_utc"), "authorization issued time")
+    if issued != preflight_generated or issued > run_started:
+        raise RunVerificationError("competition authorization 時間與 preflight/run 不一致。")
+
+    matching_authorizations = 0
+    preflight_root = data_root / "preflight"
+    for candidate in preflight_root.glob("*/competition-authorization.json"):
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        try:
+            candidate_value = _read_json(candidate)
+        except RunVerificationError:
+            continue
+        if candidate_value.get("authorized_run_id") == run_id:
+            matching_authorizations += 1
+    if matching_authorizations != 1:
+        raise RunVerificationError("competition run_id 必須只有一份 preflight authorization。")
+    return {
+        "system_preflight_id": preflight_id,
+        "run_id": run_id,
+        "competition_challenge": challenge,
+    }
 
 
 def _verify_provider_matrix(matrix, roster):
@@ -375,6 +526,278 @@ def _verify_provider_matrix(matrix, roster):
         ):
             raise RunVerificationError("provider matrix {} model 不符。".format(seat_id))
     return by_seat
+
+
+def _verify_real_run_receipts(run_dir, manifest, artifact_index, timeline, authorization):
+    lineage = manifest.get("provider_receipts")
+    if (
+        not isinstance(lineage, list)
+        or len(lineage) != len(SEAT_IDS)
+        or [item.get("seat_id") for item in lineage if isinstance(item, dict)]
+        != list(SEAT_IDS)
+    ):
+        raise RunVerificationError("real run 必須提供固定七席 provider receipt lineage。")
+    seats = {seat["seat_id"]: seat for seat in manifest["seats"]}
+    started = _parse_utc(manifest.get("started_at_utc"), "run start time")
+    unique_ids = {
+        name: set()
+        for name in ("attempt", "receipt", "dispatch", "completion", "search")
+    }
+    unique_paths = set()
+    payloads = []
+
+    for item in lineage:
+        if set(item) != {"seat_id", "path", "sha256"}:
+            raise RunVerificationError("provider receipt lineage 欄位不符。")
+        seat_id = item["seat_id"]
+        expected_receipt_path = "provider-receipts/{}.json".format(seat_id)
+        if item.get("path") != expected_receipt_path:
+            raise RunVerificationError("{} provider receipt path 不一致。".format(seat_id))
+        receipt_path = run_dir / expected_receipt_path
+        _verify_indexed_artifact(
+            receipt_path,
+            run_dir,
+            artifact_index,
+            expected_receipt_path,
+            item.get("sha256"),
+        )
+        receipt = _read_json(receipt_path)
+        if set(receipt) != _REAL_RECEIPT_FIELDS or receipt.get("schema_version") != "1.0.0":
+            raise RunVerificationError("{} provider receipt contract 不完整。".format(seat_id))
+        seat = seats[seat_id]
+        attempt_id = seat.get("attempt_id")
+        if not _safe_segment(attempt_id):
+            raise RunVerificationError("{} real run 缺少安全 attempt_id。".format(seat_id))
+        _add_unique(unique_ids["attempt"], attempt_id, "real attempt_id")
+        expected_values = {
+            "system_preflight_id": authorization["system_preflight_id"],
+            "run_id": authorization["run_id"],
+            "competition_challenge": authorization["competition_challenge"],
+            "seat_id": seat_id,
+            "attempt_id": attempt_id,
+            "provider": seat["provider"],
+            "target_model": seat["target_model"],
+            "actual_model": seat["actual_model"],
+        }
+        if any(receipt.get(field) != value for field, value in expected_values.items()):
+            raise RunVerificationError("{} provider receipt 未綁定 run/seat/model/challenge。".format(seat_id))
+        _add_unique(unique_ids["receipt"], receipt.get("receipt_id"), "provider receipt_id")
+        _verify_phase_receipt(
+            receipt.get("dispatch"),
+            unique_ids["dispatch"],
+            started,
+            expected_elapsed=0,
+            label="{} dispatch".format(seat_id),
+        )
+        completion_elapsed = timeline["seat_completion_ms"][seat_id]
+        _verify_phase_receipt(
+            receipt.get("completion"),
+            unique_ids["completion"],
+            started,
+            expected_elapsed=completion_elapsed,
+            label="{} completion".format(seat_id),
+        )
+
+        attempt_root = "agents/{}/attempts/{}/".format(seat_id, attempt_id)
+        search = _verify_search_receipt(
+            run_dir,
+            artifact_index,
+            receipt,
+            expected_values,
+            started,
+            completion_elapsed,
+            unique_ids["search"],
+            attempt_root,
+            unique_paths,
+        )
+        raw_text = _verify_receipt_payload(
+            run_dir,
+            artifact_index,
+            receipt,
+            "raw_transcript_path",
+            "raw_transcript_sha256",
+            attempt_root,
+            unique_paths,
+        )
+        output_text = _verify_receipt_payload(
+            run_dir,
+            artifact_index,
+            receipt,
+            "output_path",
+            "output_sha256",
+            attempt_root,
+            unique_paths,
+        )
+        payloads.extend((receipt, search, raw_text, output_text))
+    return payloads
+
+
+def _verify_phase_receipt(value, unique_ids, started, expected_elapsed, label):
+    if not isinstance(value, dict) or set(value) != _PHASE_RECEIPT_FIELDS:
+        raise RunVerificationError("{} receipt contract 不完整。".format(label))
+    _add_unique(unique_ids, value.get("receipt_id"), "{} receipt_id".format(label))
+    elapsed = value.get("elapsed_ms")
+    if type(elapsed) is not int or elapsed != expected_elapsed:
+        raise RunVerificationError("{} elapsed 與正式 timeline 不一致。".format(label))
+    observed = _parse_utc(value.get("at_utc"), "{} time".format(label))
+    if observed != started + timedelta(milliseconds=elapsed):
+        raise RunVerificationError("{} timestamp 與 monotonic elapsed 不一致。".format(label))
+
+
+def _verify_search_receipt(
+    run_dir,
+    artifact_index,
+    receipt,
+    expected_values,
+    started,
+    completion_elapsed,
+    unique_ids,
+    attempt_root,
+    unique_paths,
+):
+    path_value = receipt.get("search_receipt_path")
+    _require_attempt_artifact_path(path_value, attempt_root, "search receipt")
+    if path_value in unique_paths:
+        raise RunVerificationError("real receipt payload path 重複。")
+    unique_paths.add(path_value)
+    path = run_dir / path_value
+    _verify_indexed_artifact(
+        path,
+        run_dir,
+        artifact_index,
+        path_value,
+        receipt.get("search_receipt_sha256"),
+    )
+    search = _read_json(path)
+    if set(search) != _SEARCH_RECEIPT_FIELDS or search.get("schema_version") != "1.0.0":
+        raise RunVerificationError("search receipt contract 不完整。")
+    for field in (
+        "run_id",
+        "seat_id",
+        "attempt_id",
+        "provider",
+        "competition_challenge",
+    ):
+        if search.get(field) != expected_values[field]:
+            raise RunVerificationError("search receipt 未綁定 {}。".format(field))
+    _add_unique(unique_ids, search.get("receipt_id"), "search receipt_id")
+    elapsed = search.get("elapsed_ms")
+    if (
+        search.get("succeeded") is not True
+        or search.get("tool") != _SEARCH_TOOLS[expected_values["provider"]]
+        or type(elapsed) is not int
+        or not 0 <= elapsed <= completion_elapsed
+    ):
+        raise RunVerificationError("search receipt 未證明該席在截止前完成搜尋。")
+    observed = _parse_utc(search.get("completed_at_utc"), "search completion time")
+    if observed != started + timedelta(milliseconds=elapsed):
+        raise RunVerificationError("search receipt timestamp 與 elapsed 不一致。")
+    return search
+
+
+def _verify_receipt_payload(
+    run_dir,
+    artifact_index,
+    receipt,
+    path_field,
+    hash_field,
+    attempt_root,
+    unique_paths,
+):
+    path_value = receipt.get(path_field)
+    _require_attempt_artifact_path(path_value, attempt_root, path_field)
+    if path_value in unique_paths:
+        raise RunVerificationError("real receipt payload path 重複。")
+    unique_paths.add(path_value)
+    path = run_dir / path_value
+    _verify_indexed_artifact(
+        path,
+        run_dir,
+        artifact_index,
+        path_value,
+        receipt.get(hash_field),
+    )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeError as exc:
+        raise RunVerificationError("real receipt payload 必須為 UTF-8 公開內容。") from exc
+    if not text.strip():
+        raise RunVerificationError("real receipt payload 不得為空。")
+    return text
+
+
+def _require_attempt_artifact_path(path_value, attempt_root, label):
+    if not isinstance(path_value, str) or "\\" in path_value:
+        raise RunVerificationError("{} 不在該席 attempt 目錄。".format(label))
+    path = PurePosixPath(path_value)
+    root = PurePosixPath(attempt_root)
+    if (
+        path.is_absolute()
+        or ".." in path.parts
+        or len(path.parts) <= len(root.parts)
+        or path.parts[: len(root.parts)] != root.parts
+    ):
+        raise RunVerificationError("{} 不在該席 attempt 目錄。".format(label))
+
+
+def _verify_indexed_artifact(path, run_dir, artifact_index, relative, expected_sha):
+    _require_regular_file(path, run_dir)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    indexed = artifact_index.get(relative)
+    if (
+        not isinstance(indexed, dict)
+        or indexed.get("path") != relative
+        or indexed.get("sha256") != digest
+        or expected_sha != digest
+    ):
+        raise RunVerificationError("run receipt artifact hash/index 不一致：{}".format(relative))
+
+
+def _add_unique(values, value, label):
+    if not isinstance(value, str) or not value or value in values:
+        raise RunVerificationError("{} 缺少或重複。".format(label))
+    values.add(value)
+
+
+def _reject_shipped_fake_markers(*values):
+    if any(_contains_fake_marker(value) for value in values):
+        raise RunVerificationError("real competition bundle 含 shipped fake/fixture marker。")
+
+
+def _contains_fake_marker(value):
+    if isinstance(value, dict):
+        return any(
+            _contains_fake_marker(key) or _contains_fake_marker(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_fake_marker(item) for item in value)
+    if isinstance(value, str):
+        lowered = value.lower()
+        return any(marker in lowered for marker in _SHIPPED_FAKE_MARKERS)
+    return False
+
+
+def _valid_challenge(value):
+    return (
+        isinstance(value, str)
+        and 24 <= len(value) <= 128
+        and all(
+            character.isascii() and (character.isalnum() or character in "-_")
+            for character in value
+        )
+    )
+
+
+def _safe_segment(value):
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value not in (".", "..")
+        and Path(value).name == value
+        and "/" not in value
+        and "\\" not in value
+    )
 
 
 def _actual_model_matches(expected, actual_model):

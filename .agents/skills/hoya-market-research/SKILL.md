@@ -60,6 +60,9 @@ non-persistent thread.
 2. The operator supplied a fresh 24-128 character URL-safe
    `preflight_challenge`. Put that exact nonce in `build_codex_handoff(...)`;
    never invent, reuse or alter it.
+   The operator also preselected one unused competition run ID and a distinct
+   `competition_challenge`; all seven real seats and provider receipts must
+   carry those exact values.
 3. The question passes `question_package.build_question_package` — an
    unapproved question type is rejected before launch.
 4. The Data Root is a separate directory from the Code Root.
@@ -73,14 +76,18 @@ non-persistent thread.
    `gpt-5.6-sol`, and expose an auditable `thread_id`.
 7. You wrote the handoff artifact `preflight/codex-handoff.json` into the run
    directory and `verify-preflight` reports READY.
-8. You ran the aggregate real gate within 300 seconds of handoff creation:
+8. You ran the provider authorization preflight within 300 seconds of handoff
+   creation, before dispatching the competition run:
 
    ```bash
-   python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --drill-run-id REAL_DRILL_RUN_ID --data-root DATA_ROOT
+   python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --competition-run-id COMPETITION_RUN_ID --competition-challenge COMPETITION_CHALLENGE --data-root DATA_ROOT
    ```
 
-9. The resulting write-once `preflight/system-*/manifest.json` says `READY`.
-   A provider-specific READY result is necessary but cannot replace this gate.
+9. The resulting write-once manifest has `provider_capabilities_ready=true`
+   and `competition_authorization.status=AUTHORIZED`. The overall manifest may
+   remain `NOT_READY` only for the run-scoped `search`, `seven_seat_timeline`
+   and `report_deadline` blockers; those are proven by the authorized run's
+   seven receipts and final `verify-run`, not by circular pre-run claims.
 
 See `references/codex-bridge-contract.md` for the exact artifact shape and
 `references/preflight-checklist.md` for the fresh-task checklist.
@@ -96,10 +103,11 @@ persistent thread identity, enforceable tool restrictions, or a dispatch
 receipt, record `NOT READY` and stop. Never synthesize the receipt in Python.
 
 The current Codex handoff proves no-tool dispatches but does not prove three
-independent GPT search executions. Until a fresh receipt proves those searches,
-the aggregate gate must remain `NOT_READY` with a `search` blocker. Do not use a
-fixture, fake drill, prompt assertion, relaxed verifier, different model, or a
-Core-selected conclusion to turn that blocker into READY.
+independent GPT search executions. It can therefore support provider
+preauthorization, but no real run can pass `verify-run` until each of the seven
+run-scoped receipts proves its provider-specific search. Do not use a fixture,
+fake drill, prompt assertion, relaxed verifier, different model, or a
+Core-selected conclusion to replace those receipts.
 
 ## What every seat receives
 
@@ -134,6 +142,11 @@ is Core-only audit metadata and must not grant the seat filesystem access.
   thread and attempt mapping to match it exactly before writing.
 - Only Core, through the Python validator/sealer, writes the fixed seat attempt
   target in Data Root.
+- For a real competition run, preserve one indexed provider receipt per seat.
+  It must bind the authorized run/challenge, seat/attempt/provider/models,
+  unique dispatch and completion receipts, a successful search receipt
+  artifact, and SHA-256-indexed public transcript and structured output files.
+  Missing or duplicate lineage is `NOT_READY`; Python never manufactures it.
 
 ## Verify
 

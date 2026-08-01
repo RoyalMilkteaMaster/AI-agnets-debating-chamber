@@ -1,6 +1,8 @@
 """Fail-closed aggregate readiness manifest for the competition roster."""
 
+import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
 from .seats import ROSTER_PATH, SEAT_IDS
@@ -23,6 +25,7 @@ REQUIRED_CHECK_IDS = (
     "seven_seat_timeline",
     "report_deadline",
 )
+RUN_SCOPED_CHECK_IDS = frozenset(("search", "seven_seat_timeline", "report_deadline"))
 PROVIDER_COUNTS = {"claude": 3, "codex": 3, "antigravity": 1}
 EXPECTED_SEATS = {
     "spot-technical": ("codex", "gpt-5.6-sol", []),
@@ -33,6 +36,7 @@ EXPECTED_SEATS = {
     "social-macro": ("claude", "opus", ["WebSearch", "WebFetch"]),
     "counter-evidence": ("antigravity", "gemini-3.1-pro-high", ["search_web"]),
 }
+COMPETITION_AUTHORIZATION_NAME = "competition-authorization.json"
 
 
 class PreflightError(ValueError):
@@ -146,7 +150,7 @@ def build_preflight_manifest(*, checks, mode, generated_at_utc, code_root, data_
     simulation_status = "PASS" if not blockers else "FAIL"
     provider_blockers = [
         blocker for blocker in blockers
-        if blocker not in ("seven_seat_timeline", "report_deadline")
+        if blocker not in RUN_SCOPED_CHECK_IDS
     ]
     provider_capabilities_ready = mode == "real" and not provider_blockers
     if mode == "fixture":
@@ -186,6 +190,52 @@ def preflight_manifest_path(data_root, preflight_id):
     return target_directory / "manifest.json"
 
 
+def build_competition_authorization(
+    *,
+    preflight_id,
+    run_id,
+    competition_challenge,
+    issued_at_utc,
+):
+    _require_safe_segment(preflight_id, "preflight_id")
+    _require_safe_segment(run_id, "competition run_id")
+    _require_challenge(competition_challenge)
+    _require_utc(issued_at_utc, "authorization issued_at_utc")
+    return {
+        "schema_version": "1.0.0",
+        "status": "AUTHORIZED",
+        "system_preflight_id": preflight_id,
+        "authorized_run_id": run_id,
+        "competition_challenge": competition_challenge,
+        "issued_at_utc": issued_at_utc,
+    }
+
+
+def write_competition_authorization(data_root, preflight_id, authorization):
+    manifest_path = preflight_manifest_path(data_root, preflight_id)
+    target = manifest_path.parent / COMPETITION_AUTHORIZATION_NAME
+    content = json.dumps(authorization, ensure_ascii=False, indent=2) + "\n"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if preflight_manifest_path(data_root, preflight_id).parent != target.parent:
+        raise PreflightError("competition authorization target 逃出 preflight 目錄。")
+    try:
+        with target.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+    except FileExistsError as exc:
+        raise PreflightError("competition authorization 已簽發，不得覆寫。") from exc
+    return {
+        "status": "AUTHORIZED",
+        "authorized_run_id": authorization["authorized_run_id"],
+        "competition_challenge_sha256": hashlib.sha256(
+            authorization["competition_challenge"].encode("utf-8")
+        ).hexdigest(),
+        "path": "preflight/{}/{}".format(
+            preflight_id, COMPETITION_AUTHORIZATION_NAME
+        ),
+        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    }
+
+
 def write_preflight_manifest(data_root, preflight_id, manifest):
     target = preflight_manifest_path(data_root, preflight_id)
     target_directory = target.parent
@@ -196,3 +246,36 @@ def write_preflight_manifest(data_root, preflight_id, manifest):
     with target.open("x", encoding="utf-8", newline="\n") as handle:
         handle.write(content)
     return target
+
+
+def _require_safe_segment(value, label):
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in (".", "..")
+        or Path(value).name != value
+        or "/" in value
+        or "\\" in value
+    ):
+        raise PreflightError("{} 不得包含路徑。".format(label))
+
+
+def _require_challenge(value):
+    if (
+        not isinstance(value, str)
+        or not 24 <= len(value) <= 128
+        or any(
+            not (character.isascii() and (character.isalnum() or character in "-_"))
+            for character in value
+        )
+    ):
+        raise PreflightError("competition challenge 必須為 24 至 128 字元 URL-safe nonce。")
+
+
+def _require_utc(value, label):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise PreflightError("{} 必須為 UTC ISO-8601。".format(label))
+    try:
+        datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise PreflightError("{} 必須為有效 UTC ISO-8601。".format(label)) from exc

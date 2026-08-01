@@ -42,9 +42,11 @@ from .prompt_builder import load_research_snapshot
 from .system_preflight import (
     REQUIRED_CHECK_IDS,
     PreflightError,
+    build_competition_authorization,
     build_preflight_manifest,
     load_frozen_roster,
     preflight_manifest_path,
+    write_competition_authorization,
     write_preflight_manifest,
 )
 
@@ -103,6 +105,14 @@ def build_parser():
         help="啟動 fresh Core Task 前產生並交給它的 URL-safe one-time nonce",
     )
     preflight.add_argument("--drill-run-id", help="已通過 verify-run 的七席演練 run_id")
+    preflight.add_argument(
+        "--competition-run-id",
+        help="provider preflight 要一次性預授權的未來 competition run_id",
+    )
+    preflight.add_argument(
+        "--competition-challenge",
+        help="綁定未來 competition run 與七席 receipts 的 one-time nonce",
+    )
     preflight.add_argument("--preflight-id", help="唯一 preflight artifact 目錄名稱")
     preflight.add_argument(
         "--fixture-failure",
@@ -245,6 +255,24 @@ def _system_preflight(args, out, err):
     except PreflightError as exc:
         print("NOT READY：{}".format(exc), file=err)
         return EXIT_FAILED
+    authorization = None
+    if args.mode == "real" and (args.competition_run_id or args.competition_challenge):
+        if not (args.competition_run_id and args.competition_challenge):
+            print(
+                "NOT READY：--competition-run-id 與 --competition-challenge 必須同時提供",
+                file=err,
+            )
+            return EXIT_FAILED
+        try:
+            authorization = build_competition_authorization(
+                preflight_id=preflight_id,
+                run_id=args.competition_run_id,
+                competition_challenge=args.competition_challenge,
+                issued_at_utc=generated,
+            )
+        except PreflightError as exc:
+            print("NOT READY：{}".format(exc), file=err)
+            return EXIT_FAILED
     provider_matrix = []
     checks = _fixture_system_checks()
     if args.mode == "real":
@@ -272,6 +300,19 @@ def _system_preflight(args, out, err):
         )
         manifest["manifest_path"] = str(manifest_path)
         manifest["provider_matrix"] = provider_matrix
+        if manifest["provider_capabilities_ready"] and authorization is not None:
+            manifest["competition_authorization"] = write_competition_authorization(
+                Path(args.data_root), preflight_id, authorization
+            )
+        else:
+            manifest["competition_authorization"] = {
+                "status": "NOT_AUTHORIZED",
+                "reason": (
+                    "provider capabilities are not ready"
+                    if authorization is not None
+                    else "competition run_id/challenge not supplied"
+                ),
+            }
         write_preflight_manifest(Path(args.data_root), preflight_id, manifest)
     except (OSError, PreflightError) as exc:
         print("NOT READY：{}".format(exc), file=err)
