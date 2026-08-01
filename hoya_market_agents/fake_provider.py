@@ -123,13 +123,15 @@ class FakeProvider:
         cards = []
         for index, card in enumerate(_SEAT_SCRIPT[call.seat_id][2], start=1):
             category, statement, direction, source_tier, source_path, excerpt = card
+            source_url = _SOURCE_HOST + source_path.format(**fields)
             cards.append(
                 {
                     "asset": fields["asset"],
                     "category": category,
                     "statement": statement.format(**fields),
                     "direction": direction,
-                    "source_url": _SOURCE_HOST + source_path.format(**fields),
+                    "source_url": source_url,
+                    "source_origin": source_url,
                     "source_tier": source_tier,
                     "published_at_utc": iso_utc(call.now_utc - timedelta(hours=index)),
                     "excerpt": excerpt.format(**fields),

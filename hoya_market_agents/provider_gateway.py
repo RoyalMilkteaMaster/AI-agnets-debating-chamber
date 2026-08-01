@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from .clock import iso_utc
 from .contract_validator import (
     CONTRACT_VERSION,
+    ContractViolationError,
     validate_debate_turn,
     validate_evidence_card,
     validate_vote,
@@ -55,6 +56,22 @@ class ProviderGateway:
         call = self._call(seat, scope, prompt, "research")
         cards = []
         for index, content in enumerate(self.provider.research(call), start=1):
+            content = _provider_content(
+                content,
+                (
+                    "asset",
+                    "category",
+                    "statement",
+                    "direction",
+                    "source_url",
+                    "source_origin",
+                    "source_tier",
+                    "published_at_utc",
+                    "excerpt",
+                    "credibility_note",
+                ),
+                "research",
+            )
             stamp = self._stamp(seat.seat_id, "research")
             card = {
                 "evidence_id": "{}-{:02d}".format(seat.seat_id, index),
@@ -64,6 +81,7 @@ class ProviderGateway:
                 "statement": content["statement"],
                 "direction": content["direction"],
                 "source_url": content["source_url"],
+                "source_origin": content["source_origin"],
                 "source_tier": content["source_tier"],
                 "published_at_utc": content["published_at_utc"],
                 "retrieved_at_utc": stamp["created_at_utc"],
@@ -76,7 +94,17 @@ class ProviderGateway:
 
     def collect_debate_turn(self, seat, scope, prompt, evidence_snapshot, round_number):
         call = self._call(seat, scope, prompt, "debate", evidence_snapshot=evidence_snapshot)
-        content = self.provider.debate(call)
+        content = _provider_content(
+            self.provider.debate(call),
+            (
+                "stance",
+                "public_reason",
+                "evidence_ids",
+                "responds_to",
+                "stance_change_reason",
+            ),
+            "debate",
+        )
         turn = {
             "turn_id": "{}-r{}".format(seat.seat_id, round_number),
             **self._stamp(seat.seat_id, "debate"),
@@ -101,7 +129,11 @@ class ProviderGateway:
             evidence_snapshot=evidence_snapshot,
             debate_snapshot=debate_snapshot,
         )
-        content = self.provider.vote(call)
+        content = _provider_content(
+            self.provider.vote(call),
+            ("stance", "public_reason", "evidence_ids", "stance_change_reason"),
+            "vote",
+        )
         record = {
             **self._stamp(seat.seat_id, "vote"),
             "round": round_number,
@@ -148,3 +180,12 @@ class ProviderGateway:
                 "record_count": record_count,
             }
         )
+
+
+def _provider_content(content, fields, phase):
+    """Keep only provider-owned fields and let the contract report omissions."""
+    if not isinstance(content, dict):
+        raise ContractViolationError(
+            "{} provider output".format(phase), ["payload 必須為 JSON 物件"]
+        )
+    return {field: content.get(field) for field in fields}

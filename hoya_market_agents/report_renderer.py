@@ -327,6 +327,7 @@ def _evidence_view(card):
             "statement",
             "direction",
             "source_url",
+            "source_origin",
             "source_tier",
             "published_at_utc",
             "retrieved_at_utc",

@@ -1,6 +1,8 @@
 """Ticket #4 versioned contract behavior through public validators."""
 
+import copy
 import unittest
+from types import SimpleNamespace
 
 from hoya_market_agents.contract_validator import (
     CONTRACT_VERSION,
@@ -13,6 +15,10 @@ from hoya_market_agents.contract_validator import (
     validate_run_manifest,
     validate_vote,
 )
+from hoya_market_agents.provider_gateway import ProviderGateway
+from hoya_market_agents.run_store import deduplicate_evidence
+from hoya_market_agents.seats import load_roster
+from tests.fakes import FixedClock
 
 
 RUN_ID = "20260801T073000Z-btc-8f3a2c"
@@ -64,6 +70,38 @@ def position(**overrides):
     return value
 
 
+def report_contract(**overrides):
+    value = {
+        "schema_version": CONTRACT_VERSION,
+        "run_id": RUN_ID,
+        "question": "分析 BTC",
+        "assets": ["BTC"],
+        "period_days": 14,
+        "provider_mode": "fake",
+        "started_at_utc": STAMP,
+        "generated_at_utc": STAMP,
+        "confidence": {"icon": "white", "label": "unknown", "reason": "fake"},
+        "conclusion": {"available": False, "reason": "fake"},
+        "seat_count": 1,
+        "tally": {"bullish": 1, "bearish": 0, "neutral": 0},
+        "seats": [
+            {
+                "seat_id": "spot-technical",
+                "attempt_id": "spot-a1",
+                "stance": "bullish",
+                "public_reason": "reason",
+                "evidence_ids": ["spot-technical-01"],
+            }
+        ],
+        "evidence": [evidence_card()],
+        "debate": [],
+        "scope_limits": ["fake"],
+        "raw_records": [],
+    }
+    value.update(overrides)
+    return value
+
+
 class VersionedContractTest(unittest.TestCase):
     def test_every_contract_rejects_a_missing_or_unknown_schema_version(self):
         validators_and_values = (
@@ -104,6 +142,27 @@ class VersionedContractTest(unittest.TestCase):
             validate_question_package({**package, "assets": ["DOGE"], "period_days": "14"})
         self.assertIn("assets", str(caught.exception))
         self.assertIn("period_days", str(caught.exception))
+
+    def test_bool_never_satisfies_an_integer_contract(self):
+        cases = (
+            (validate_evidence_card, evidence_card(source_tier=True), "source_tier"),
+            (validate_evidence_card, evidence_card(elapsed_ms=True), "elapsed_ms"),
+            (validate_agent_position, position(round=True), "round"),
+        )
+        for validator, value, field in cases:
+            with self.subTest(field=field):
+                with self.assertRaises(ContractViolationError) as caught:
+                    validator(value)
+                self.assertIn(field, str(caught.exception))
+
+    def test_evidence_requires_canonical_source_origin(self):
+        card = evidence_card()
+        card.pop("source_origin")
+
+        with self.assertRaises(ContractViolationError) as caught:
+            validate_evidence_card(card)
+
+        self.assertIn("source_origin", str(caught.exception))
 
     def test_position_vote_and_debate_reject_unknown_evidence_ids(self):
         known = {"spot-technical-01"}
@@ -146,36 +205,90 @@ class VersionedContractTest(unittest.TestCase):
         self.assertIn("artifacts", str(caught.exception))
 
     def test_report_rejects_unknown_evidence_reference(self):
-        report = {
-            "schema_version": CONTRACT_VERSION,
-            "run_id": RUN_ID,
-            "question": "分析 BTC",
-            "assets": ["BTC"],
-            "period_days": 14,
-            "provider_mode": "fake",
-            "started_at_utc": STAMP,
-            "generated_at_utc": STAMP,
-            "confidence": {"icon": "white", "label": "unknown", "reason": "fake"},
-            "conclusion": {"available": False, "reason": "fake"},
-            "seat_count": 1,
-            "tally": {"bullish": 1, "bearish": 0, "neutral": 0},
-            "seats": [
-                {
-                    "seat_id": "spot-technical",
-                    "attempt_id": "spot-a1",
-                    "stance": "bullish",
-                    "public_reason": "reason",
-                    "evidence_ids": ["unknown"],
-                }
-            ],
-            "evidence": [evidence_card()],
-            "debate": [],
-            "scope_limits": ["fake"],
-            "raw_records": [],
-        }
+        report = report_contract()
+        report["seats"][0]["evidence_ids"] = ["unknown"]
         with self.assertRaises(ContractViolationError) as caught:
             validate_report(report)
         self.assertIn("unknown", str(caught.exception))
+
+    def test_report_nested_seat_fields_are_fail_closed(self):
+        cases = (
+            ("attempt_id", None, "attempt_id"),
+            ("stance", "maybe", "stance"),
+            ("evidence_ids", "spot-technical-01", "evidence_ids"),
+            ("evidence_ids", ["unknown"], "unknown"),
+        )
+        for field, replacement, expected in cases:
+            with self.subTest(field=field, replacement=replacement):
+                report = copy.deepcopy(report_contract())
+                if replacement is None:
+                    report["seats"][0].pop(field)
+                else:
+                    report["seats"][0][field] = replacement
+                with self.assertRaises(ContractViolationError) as caught:
+                    validate_report(report)
+                self.assertIn(expected, str(caught.exception))
+
+
+class ProviderContractBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        self.seat = load_roster()[0]
+        self.scope = SimpleNamespace(assets=("BTC",), period_days=14)
+
+    def gateway(self, provider):
+        return ProviderGateway(
+            provider=provider,
+            clock=FixedClock(),
+            run_id=RUN_ID,
+            start_monotonic_ms=0,
+        )
+
+    def test_missing_provider_field_becomes_contract_violation_not_key_error(self):
+        class MissingFieldProvider:
+            mode = "test"
+
+            def research(self, call):
+                return [{"asset": "BTC"}]
+
+        with self.assertRaises(ContractViolationError) as caught:
+            self.gateway(MissingFieldProvider()).collect_evidence(
+                self.seat, self.scope, prompt=None
+            )
+
+        self.assertIn("source_origin", str(caught.exception))
+
+    def test_gateway_preserves_origin_for_cross_url_syndication_dedupe(self):
+        class SyndicatedProvider:
+            mode = "test"
+
+            def research(self, call):
+                base = {
+                    "asset": "BTC",
+                    "category": "news",
+                    "statement": "same release",
+                    "direction": "support",
+                    "source_tier": 2,
+                    "published_at_utc": STAMP,
+                    "excerpt": "same release",
+                    "credibility_note": "syndicated",
+                    "source_origin": "press-release:abc",
+                }
+                return [
+                    {**base, "source_url": "https://wire.invalid/story"},
+                    {**base, "source_url": "https://publisher.invalid/repost"},
+                ]
+
+        cards = self.gateway(SyndicatedProvider()).collect_evidence(
+            self.seat, self.scope, prompt=None
+        )
+        unique, duplicates = deduplicate_evidence(cards)
+
+        self.assertEqual("press-release:abc", cards[0]["source_origin"])
+        self.assertEqual([cards[0]], unique)
+        self.assertEqual(
+            [{"evidence_id": cards[1]["evidence_id"], "duplicate_of": cards[0]["evidence_id"]}],
+            duplicates,
+        )
 
 
 if __name__ == "__main__":

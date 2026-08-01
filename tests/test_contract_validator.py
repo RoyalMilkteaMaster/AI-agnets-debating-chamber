@@ -29,6 +29,7 @@ def evidence_card(**overrides):
         "statement": "現貨收盤價較 14 日前上升 4.2%。",
         "direction": "support",
         "source_url": "https://fake.invalid/spot/btc",
+        "source_origin": "https://fake.invalid/spot/btc",
         "source_tier": 1,
         "published_at_utc": "2026-08-01T07:00:00Z",
         "retrieved_at_utc": "2026-08-01T07:30:05Z",

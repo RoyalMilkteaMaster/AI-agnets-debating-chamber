@@ -194,23 +194,38 @@ class RunDirectory:
         reason,
         operator,
     ):
-        """Record a format-only JSON repair, rejecting any decoded content change."""
+        """Record a narrow JSON format repair without changing decoded types."""
         repair_id = _safe_segment(repair_id, "repair_id")
         seat_id = _safe_segment(seat_id, "seat_id")
         source_attempt_id = _safe_segment(source_attempt_id, "source_attempt_id")
         repair_attempt_id = _safe_segment(repair_attempt_id, "repair_attempt_id")
-        if not reason.strip() or not operator.strip():
+        if not isinstance(reason, str) or not reason.strip():
+            raise RunStoreError("Format Repair 的 reason 不得為空。")
+        if not isinstance(operator, str) or not operator.strip():
             raise RunStoreError("Format Repair 的 reason 與 operator 不得為空。")
+        source_name = "agents/{}/attempts/{}/raw.txt".format(seat_id, source_attempt_id)
+        source_path = self.path / source_name
+        if not source_path.is_file():
+            raise RunStoreError(
+                "Format Repair 找不到 source attempt {}。".format(source_attempt_id)
+            )
+        source_bytes = source_path.read_bytes()
+        if not isinstance(before_text, str) or source_bytes != before_text.encode("utf-8"):
+            raise FormatRepairSemanticChangeError(
+                "before_text 與 source attempt raw output 不一致；fail closed。"
+            )
         try:
-            before_value = json.loads(before_text)
+            before_value = _load_json_with_trailing_comma_repair(before_text)
             after_value = json.loads(after_text)
         except (TypeError, json.JSONDecodeError) as exc:
             raise FormatRepairSemanticChangeError(
                 "無法解碼 before/after；不能證明只修改格式。"
             ) from exc
-        if before_value != after_value:
+        if _typed_json(before_value) != _typed_json(after_value):
             raise FormatRepairSemanticChangeError("Format Repair 改變市場語意；fail closed。")
 
+        record_name = "diagnostics/format-repairs/{}.json".format(repair_id)
+        source_sha256 = hashlib.sha256(source_bytes).hexdigest()
         payload = {
             "run_id": self.run_id,
             "repair_id": repair_id,
@@ -219,19 +234,24 @@ class RunDirectory:
             "operator": operator,
             "before": {
                 "text": before_text,
-                "sha256": hashlib.sha256(before_text.encode("utf-8")).hexdigest(),
+                "path": source_name,
+                "sha256": source_sha256,
             },
             "after": {
                 "text": after_text,
+                "path": record_name,
+                "json_pointer": "/after/text",
                 "sha256": hashlib.sha256(after_text.encode("utf-8")).hexdigest(),
             },
             "lineage": {
                 "source_attempt_id": source_attempt_id,
+                "source_path": source_name,
+                "source_sha256": source_sha256,
                 "repair_attempt_id": repair_attempt_id,
             },
         }
         return self.write_json(
-            "diagnostics/format-repairs/{}.json".format(repair_id),
+            record_name,
             payload,
             source="format repair lineage",
         )
@@ -406,3 +426,61 @@ def _remove_empty_attempt_temp(path):
     for child in path.iterdir():
         child.unlink()
     path.rmdir()
+
+
+def _load_json_with_trailing_comma_repair(text):
+    """Decode JSON after removing only commas directly before ``}`` or ``]``."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        repaired = _remove_trailing_commas(text)
+        if repaired == text:
+            raise
+        return json.loads(repaired)
+
+
+def _remove_trailing_commas(text):
+    output = []
+    in_string = False
+    escaped = False
+    for index, character in enumerate(text):
+        if in_string:
+            output.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            output.append(character)
+            continue
+        if character == ",":
+            following = index + 1
+            while following < len(text) and text[following].isspace():
+                following += 1
+            if following < len(text) and text[following] in "}]":
+                continue
+        output.append(character)
+    return "".join(output)
+
+
+def _typed_json(value):
+    if value is None:
+        return ("null",)
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        return ("int", value)
+    if isinstance(value, float):
+        return ("float", value)
+    if isinstance(value, str):
+        return ("str", value)
+    if isinstance(value, list):
+        return ("list", tuple(_typed_json(item) for item in value))
+    return (
+        "object",
+        tuple(sorted((key, _typed_json(item)) for key, item in value.items())),
+    )

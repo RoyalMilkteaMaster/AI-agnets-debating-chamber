@@ -45,6 +45,7 @@ def validate_evidence_card(card):
         "category",
         "statement",
         "source_url",
+        "source_origin",
         "excerpt",
         "credibility_note",
     ):
@@ -185,6 +186,15 @@ def validate_report(report):
         problems.append("conclusion 必須為物件")
     if not isinstance(report.get("tally"), dict):
         problems.append("tally 必須為物件")
+    else:
+        for stance, count in report["tally"].items():
+            if stance not in STANCES:
+                problems.append("tally 包含非法 stance {!r}".format(stance))
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                problems.append("tally[{!r}] 必須為 >= 0 的整數".format(stance))
+    seat_count = report.get("seat_count")
+    if not isinstance(seat_count, int) or isinstance(seat_count, bool) or seat_count < 0:
+        problems.append("seat_count 必須為 >= 0 的整數")
     for field in ("scope_limits", "raw_records", "debate", "seats", "evidence"):
         if not isinstance(report.get(field), list):
             problems.append("{} 必須為陣列".format(field))
@@ -200,6 +210,11 @@ def validate_report(report):
                 problems.append("evidence_id {} 重複".format(evidence_id))
             else:
                 known.add(evidence_id)
+            if isinstance(card, dict):
+                problems += [
+                    "evidence[{}].{}".format(index, problem)
+                    for problem in _non_empty_string_problem(card, "source_origin")
+                ]
 
     for collection in ("seats", "debate"):
         records = report.get(collection)
@@ -209,17 +224,48 @@ def validate_report(report):
             if not isinstance(record, dict):
                 problems.append("{}[{}] 必須為物件".format(collection, index))
                 continue
+            if collection == "seats":
+                for field in ("seat_id", "attempt_id", "public_reason"):
+                    problems += [
+                        "seats[{}].{}".format(index, problem)
+                        for problem in _non_empty_string_problem(record, field)
+                    ]
+                problems += [
+                    "seats[{}].{}".format(index, problem)
+                    for problem in _enum_problem(record, "seat_id", SEAT_IDS)
+                ]
+                problems += [
+                    "seats[{}].{}".format(index, problem)
+                    for problem in _enum_problem(record, "stance", STANCES)
+                ]
             evidence_ids = record.get("evidence_ids")
             if not isinstance(evidence_ids, list):
                 problems.append("{}[{}].evidence_ids 必須為陣列".format(collection, index))
                 continue
-            unknown = [item for item in evidence_ids if item not in known]
+            invalid_ids = [
+                item for item in evidence_ids if not isinstance(item, str) or not item.strip()
+            ]
+            if invalid_ids:
+                problems.append(
+                    "{}[{}].evidence_ids 只能包含非空字串".format(collection, index)
+                )
+            unknown = [
+                item for item in evidence_ids if isinstance(item, str) and item not in known
+            ]
             if unknown:
                 problems.append(
                     "{}[{}] 引用未知 evidence ID：{}".format(
                         collection, index, ", ".join(str(item) for item in unknown)
                     )
                 )
+    seats = report.get("seats")
+    if isinstance(seats, list) and isinstance(seat_count, int) and not isinstance(
+        seat_count, bool
+    ):
+        if seat_count != len(seats):
+            problems.append(
+                "seat_count {} 與 seats 數量 {} 不一致".format(seat_count, len(seats))
+            )
     return _result("report", report, problems)
 
 
@@ -256,7 +302,7 @@ def _evidence_reference_problems(record, known_evidence_ids):
     if not isinstance(evidence_ids, list):
         return []
     known = set(known_evidence_ids)
-    unknown = [item for item in evidence_ids if item not in known]
+    unknown = [item for item in evidence_ids if isinstance(item, str) and item not in known]
     if not unknown:
         return []
     return ["引用未知 evidence ID：{}".format(", ".join(str(item) for item in unknown))]
@@ -312,7 +358,8 @@ def _non_empty_string_problem(record, field):
 def _enum_problem(record, field, allowed):
     if field not in record:
         return ["缺少必要欄位 {}".format(field)]
-    if record[field] not in allowed:
+    value = record[field]
+    if not any(type(value) is type(item) and value == item for item in allowed):
         return [
             "{} 必須為 {} 之一，實際為 {!r}".format(
                 field, "/".join(str(item) for item in allowed), record[field]

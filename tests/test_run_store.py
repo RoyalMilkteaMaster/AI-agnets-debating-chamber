@@ -15,6 +15,7 @@ from hoya_market_agents.run_store import (
     ArtifactTamperedError,
     FormatRepairSemanticChangeError,
     RunAlreadyExistsError,
+    RunStoreError,
     RunStore,
     SnapshotSealedError,
     deduplicate_evidence,
@@ -195,13 +196,17 @@ class RunStoreTest(unittest.TestCase):
 
     def test_format_repair_preserves_before_after_and_rejects_semantic_change(self):
         run = self.store.create_run("20260801T073000Z-btc-aaa111", ["news"])
+        trailing_comma = '{"stance":"bullish","evidence_ids":["news-01"],}'
+        run.record_attempt(
+            "news", "news-a1", trailing_comma, {"records": ["pre-repair capture"]}
+        )
 
         path = run.record_format_repair(
             repair_id="repair-01",
             seat_id="news",
             source_attempt_id="news-a1",
             repair_attempt_id="format-repair-a1",
-            before_text='{"stance":"bullish","evidence_ids":["news-01"]}',
+            before_text=trailing_comma,
             after_text='{\n  "stance": "bullish",\n  "evidence_ids": ["news-01"]\n}',
             reason="normalize JSON formatting",
             operator="format-repair-agent",
@@ -210,18 +215,49 @@ class RunStoreTest(unittest.TestCase):
         self.assertIn("before", record)
         self.assertIn("after", record)
         self.assertEqual("news-a1", record["lineage"]["source_attempt_id"])
+        self.assertEqual(
+            "agents/news/attempts/news-a1/raw.txt", record["lineage"]["source_path"]
+        )
+        self.assertRegex(record["lineage"]["source_sha256"], r"^[0-9a-f]{64}$")
 
+        numeric = '{"value":1}'
+        run.record_attempt("news", "news-a2", numeric, {"records": []})
         with self.assertRaises(FormatRepairSemanticChangeError):
             run.record_format_repair(
                 repair_id="repair-02",
                 seat_id="news",
-                source_attempt_id="news-a1",
+                source_attempt_id="news-a2",
                 repair_attempt_id="format-repair-a2",
-                before_text='{"stance":"bullish"}',
+                before_text=numeric,
+                after_text='{"value":true}',
+                reason="must preserve JSON types",
+                operator="format-repair-agent",
+            )
+
+        with self.assertRaises(FormatRepairSemanticChangeError):
+            run.record_format_repair(
+                repair_id="repair-03",
+                seat_id="news",
+                source_attempt_id="news-a1",
+                repair_attempt_id="format-repair-a3",
+                before_text=trailing_comma,
                 after_text='{"stance":"bearish"}',
                 reason="not a format-only repair",
                 operator="format-repair-agent",
             )
+
+        with self.assertRaises(RunStoreError) as caught:
+            run.record_format_repair(
+                repair_id="repair-04",
+                seat_id="news",
+                source_attempt_id="news-missing",
+                repair_attempt_id="format-repair-a4",
+                before_text="{}",
+                after_text="{}",
+                reason="missing source",
+                operator="format-repair-agent",
+            )
+        self.assertIn("news-missing", str(caught.exception))
 
     def test_manifest_index_traces_hash_and_source_and_detects_tamper(self):
         run = self.store.create_run("20260801T073000Z-btc-aaa111", ["news"])
