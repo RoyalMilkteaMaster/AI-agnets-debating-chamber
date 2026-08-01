@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import tempfile
 import threading
 import time
@@ -16,19 +17,24 @@ from hoya_market_agents.claude_adapter import (
     ProcessOutput,
     mask_session_id,
     run_claude_preflight,
+    validate_smoke_output,
 )
 from hoya_market_agents.cli import main
 
 
-def envelope(seat_id, *, search_requests=1, model="claude-opus-5"):
+def envelope(
+    seat_id,
+    *,
+    search_requests=1,
+    model="claude-opus-5",
+    message="public smoke result",
+    structured_output=None,
+):
     return json.dumps(
         {
             "is_error": False,
-            "structured_output": {
-                "seat_id": seat_id,
-                "search_ok": True,
-                "message": "public smoke result",
-            },
+            "structured_output": structured_output
+            or {"seat_id": seat_id, "search_ok": True, "message": message},
             "usage": {
                 "input_tokens": 5,
                 "output_tokens": 7,
@@ -64,15 +70,26 @@ class ScriptedRunner:
 
 
 class CapabilityRunner:
-    def __init__(self, *, logged_in=True, model="claude-opus-5", search_requests=1):
+    def __init__(
+        self,
+        *,
+        logged_in=True,
+        model="claude-opus-5",
+        search_requests=1,
+        echo_resume=False,
+    ):
         self.logged_in = logged_in
         self.model = model
         self.search_requests = search_requests
+        self.echo_resume = echo_resume
         self.calls = []
+        self.inputs = []
+        self.markers = {}
 
     def run(self, args, *, input_text, cwd, timeout_seconds):
         args = tuple(args)
         self.calls.append(args)
+        self.inputs.append(input_text)
         if args[-1] == "--version":
             return completed("2.1.220 (Claude Code)\n")
         if "auth" in args:
@@ -90,11 +107,20 @@ class CapabilityRunner:
         seat_id = next(
             seat for seat, configured in CLAUDE_SEAT_SESSIONS.items() if configured == session_id
         )
+        marker_match = re.search(r"checkpoint_marker=([a-z0-9-]+)", input_text)
+        if marker_match:
+            self.markers[session_id] = marker_match.group(1)
+        message = (
+            "resume-ok"
+            if self.echo_resume and marker_match is None and "--resume" in args
+            else self.markers.get(session_id, "public smoke result")
+        )
         return completed(
             envelope(
                 seat_id,
                 search_requests=self.search_requests,
                 model=self.model,
+                message=message,
             )
         )
 
@@ -129,6 +155,7 @@ class ClaudeAdapterTest(unittest.TestCase):
             attempt_dir=attempt_dir,
             resume=resume,
             timeout_seconds=12,
+            validator=validate_smoke_output,
         )
 
     def adapter(self, runner):
@@ -215,6 +242,52 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual("invalid_schema", adapter.run(self.request()).status)
         self.assertEqual("invalid_schema", adapter.run(self.request()).status)
 
+    def test_general_attempt_uses_its_explicit_contract_not_smoke_fields(self):
+        structured = {"seat_id": "spot-technical", "cards": [{"evidence_id": "ev-1"}]}
+        called = []
+
+        def validate_cards(value):
+            called.append(value)
+            if not isinstance(value.get("cards"), list):
+                raise ValueError("cards required")
+
+        request = self.request()
+        request = ClaudeAttemptRequest(
+            seat_id=request.seat_id,
+            attempt_id=request.attempt_id,
+            prompt=request.prompt,
+            attempt_dir=request.attempt_dir,
+            timeout_seconds=request.timeout_seconds,
+            json_schema={"type": "object"},
+            validator=validate_cards,
+        )
+        adapter = self.adapter(
+            ScriptedRunner(
+                [completed(envelope("spot-technical", structured_output=structured))]
+            )
+        )
+
+        result = adapter.run(request)
+
+        self.assertEqual("ok", result.status)
+        self.assertEqual([structured], called)
+
+    def test_general_attempt_without_explicit_validator_fails_closed(self):
+        request = self.request()
+        request = ClaudeAttemptRequest(
+            seat_id=request.seat_id,
+            attempt_id=request.attempt_id,
+            prompt=request.prompt,
+            attempt_dir=request.attempt_dir,
+            validator=None,
+        )
+        result = self.adapter(
+            ScriptedRunner([completed(envelope("spot-technical"))])
+        ).run(request)
+
+        self.assertEqual("invalid_schema", result.status)
+        self.assertEqual("explicit_validator_required", result.error)
+
     def test_three_seats_run_concurrently_without_session_mixing(self):
         barrier = threading.Barrier(3)
         lock = threading.Lock()
@@ -290,6 +363,58 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual(["claude_ai_max_login_required"], logged_out["reasons"])
         self.assertIsNone(logged_out["auth"])
 
+    def test_preflight_rejects_unsafe_roots_before_creating_data_root(self):
+        for data_root in (self.code_root, self.code_root / "nested-data"):
+            runner = ScriptedRunner([])
+            report = run_claude_preflight(
+                seats=3,
+                cli_path="/fake/claude",
+                code_root=self.code_root,
+                data_root=data_root,
+                runner=runner,
+                environ={},
+                path_exists=lambda _: True,
+            )
+
+            self.assertFalse(report["ready"])
+            self.assertEqual(["data_root_inside_code_root"], report["reasons"])
+            self.assertEqual([], runner.calls)
+        self.assertFalse((self.code_root / "nested-data").exists())
+
+    def test_preflight_turns_data_root_permission_shape_errors_into_not_ready(self):
+        blocked_root = Path(self._tmp.name) / "not-a-directory"
+        blocked_root.write_text("file blocks mkdir", encoding="utf-8")
+
+        report = run_claude_preflight(
+            seats=3,
+            cli_path="/fake/claude",
+            code_root=self.code_root,
+            data_root=blocked_root,
+            runner=ScriptedRunner([]),
+            environ={},
+            path_exists=lambda _: True,
+        )
+
+        self.assertFalse(report["ready"])
+        self.assertEqual(["data_root_unavailable"], report["reasons"])
+
+    def test_preflight_rejects_missing_code_root_before_creating_data_root(self):
+        missing_code_root = Path(self._tmp.name) / "missing-code"
+        untouched_data_root = Path(self._tmp.name) / "untouched-data"
+
+        report = run_claude_preflight(
+            seats=3,
+            cli_path="/fake/claude",
+            code_root=missing_code_root,
+            data_root=untouched_data_root,
+            runner=ScriptedRunner([]),
+            environ={},
+            path_exists=lambda _: True,
+        )
+
+        self.assertEqual(["code_root_unavailable"], report["reasons"])
+        self.assertFalse(untouched_data_root.exists())
+
     def test_preflight_reports_ready_only_after_opus_search_and_resume(self):
         runner = CapabilityRunner()
 
@@ -305,10 +430,13 @@ class ClaudeAdapterTest(unittest.TestCase):
 
         self.assertTrue(report["ready"])
         self.assertTrue(report["resume_ok"])
+        self.assertRegex(report["resume_checkpoint_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(3, report["concurrent_seats"])
         self.assertEqual({"claude-opus-5"}, {seat["actual_model"] for seat in report["seats"]})
         self.assertEqual({1}, {seat["web_search_requests"] for seat in report["seats"]})
         self.assertTrue(any("--resume" in call for call in runner.calls))
+        first_session = CLAUDE_SEAT_SESSIONS["spot-technical"]
+        self.assertNotIn(runner.markers[first_session], runner.inputs[-1])
 
         repeated = run_claude_preflight(
             seats=3,
@@ -320,6 +448,24 @@ class ClaudeAdapterTest(unittest.TestCase):
             path_exists=lambda _: True,
         )
         self.assertTrue(repeated["ready"])
+
+    def test_resume_cannot_pass_by_echoing_a_literal_from_the_resume_prompt(self):
+        runner = CapabilityRunner(echo_resume=True)
+
+        report = run_claude_preflight(
+            seats=3,
+            cli_path="/fake/claude",
+            code_root=self.code_root,
+            data_root=self.data_root,
+            runner=runner,
+            environ={},
+            path_exists=lambda _: True,
+        )
+
+        self.assertFalse(report["ready"])
+        self.assertFalse(report["resume_ok"])
+        self.assertIn("checkpoint_resume_failed", report["reasons"])
+        self.assertNotIn("resume-ok", runner.inputs[-1])
 
     def test_preflight_fails_closed_for_wrong_model_or_missing_search(self):
         wrong_model = run_claude_preflight(

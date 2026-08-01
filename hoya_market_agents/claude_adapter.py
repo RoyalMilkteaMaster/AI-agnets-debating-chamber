@@ -5,8 +5,10 @@ timeouts and the structured-output boundary.  It never interprets a market
 stance.
 """
 
+import hashlib
 import json
 import os
+import secrets
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -127,6 +129,8 @@ class ClaudeAdapter:
         self.runner = runner
         self.code_root = Path(code_root).resolve()
         self.data_root = Path(data_root).resolve()
+        if _data_root_is_unsafe(self.code_root, self.data_root):
+            raise ValueError("Data Root 不得等於或位於 Code Root 內")
         self.cli_path = str(cli_path)
 
     def run(self, request):
@@ -205,17 +209,22 @@ class ClaudeAdapter:
         structured = envelope.get("structured_output")
         if structured is None and isinstance(envelope.get("result"), dict):
             structured = envelope["result"]
-        if not _valid_structured_output(structured, request.seat_id):
+        if not isinstance(structured, dict) or structured.get("seat_id") != request.seat_id:
             return ClaudeAttemptResult(status="invalid_schema", error="structured_output_invalid", **common)
-        if request.validator is not None:
-            try:
-                request.validator(structured)
-            except (TypeError, ValueError):
-                return ClaudeAttemptResult(
-                    status="invalid_schema",
-                    error="contract_validator_rejected",
-                    **common,
-                )
+        if request.validator is None:
+            return ClaudeAttemptResult(
+                status="invalid_schema",
+                error="explicit_validator_required",
+                **common,
+            )
+        try:
+            request.validator(structured)
+        except (TypeError, ValueError):
+            return ClaudeAttemptResult(
+                status="invalid_schema",
+                error="contract_validator_rejected",
+                **common,
+            )
         usage = envelope.get("usage") if isinstance(envelope.get("usage"), dict) else {}
         model_usage = envelope.get("modelUsage")
         return ClaudeAttemptResult(
@@ -254,19 +263,32 @@ def run_claude_preflight(
     runner = runner or SubprocessRunner()
     environ = os.environ if environ is None else environ
     path_exists = Path.is_file if path_exists is None else path_exists
-    code_root = Path(code_root).resolve()
-    data_root = Path(data_root).resolve()
+    try:
+        code_root = Path(code_root).resolve()
+        data_root = Path(data_root).resolve()
+    except (OSError, RuntimeError):
+        return _preflight_report(False, None, [], ["path_resolution_failed"], False)
     reasons = []
+    if not code_root.is_dir():
+        reasons.append("code_root_unavailable")
+    if _data_root_is_unsafe(code_root, data_root):
+        reasons.append("data_root_inside_code_root")
     if seats != 3:
         reasons.append("claude_seats_must_equal_3")
     if environ.get("ANTHROPIC_API_KEY"):
         reasons.append("ANTHROPIC_API_KEY_present")
-    if not path_exists(Path(cli_path)):
-        reasons.append("claude_cli_missing")
+    try:
+        if not path_exists(Path(cli_path)):
+            reasons.append("claude_cli_missing")
+    except OSError:
+        reasons.append("claude_cli_path_check_failed")
     if reasons:
         return _preflight_report(False, None, [], reasons, False)
 
-    data_root.mkdir(parents=True, exist_ok=True)
+    try:
+        data_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return _preflight_report(False, None, [], ["data_root_unavailable"], False)
     version = runner.run(
         [str(cli_path), "--version"],
         input_text="",
@@ -301,8 +323,18 @@ def run_claude_preflight(
 
     summaries = []
     resume_ok = False
+    resume_checkpoint_sha256 = None
     session_root = data_root / "sessions" / "claude"
-    session_root.mkdir(parents=True, exist_ok=True)
+    try:
+        session_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return _preflight_report(
+            False,
+            version.stdout.strip().splitlines()[0],
+            [],
+            ["claude_session_directory_unavailable"],
+            False,
+        )
     try:
         adapter = ClaudeAdapter(
             runner=runner,
@@ -312,9 +344,18 @@ def run_claude_preflight(
         )
         requests = []
         search_nonce = "hoya-{:x}".format(time.time_ns())
+        checkpoint_markers = {
+            seat_id: "hoya-checkpoint-{}".format(secrets.token_hex(8))
+            for seat_id in CLAUDE_SEAT_SESSIONS
+        }
         for seat_id in CLAUDE_SEAT_SESSIONS:
             attempt_dir = session_root / seat_id
-            attempt_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                attempt_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                reasons.append("{}:session_directory_unavailable".format(seat_id))
+                continue
+            marker = checkpoint_markers[seat_id]
             requests.append(
                 ClaudeAttemptRequest(
                     seat_id=seat_id,
@@ -324,11 +365,22 @@ def run_claude_preflight(
                         "with the unique query 'Claude Code CLI official docs {} {}'; prior "
                         "knowledge or a previous search is not acceptable. Return seat_id={!r}, "
                         "search_ok=true only after the WebSearch tool returns successfully, and "
-                        "a short public message. If you did not invoke WebSearch, return false."
-                    ).format(search_nonce, seat_id, seat_id),
+                        "the public checkpoint_marker={}. Set message to exactly the marker value "
+                        "after '=' (without a label). If you did not invoke WebSearch, return "
+                        "search_ok=false but keep that exact marker value in message."
+                    ).format(search_nonce, seat_id, seat_id, marker),
                     attempt_dir=attempt_dir,
                     timeout_seconds=45,
+                    validator=validate_smoke_output,
                 )
+            )
+        if reasons:
+            return _preflight_report(
+                False,
+                version.stdout.strip().splitlines()[0],
+                [],
+                reasons,
+                False,
             )
         results = adapter.run_concurrent(requests)
         # A fixed UUID may already exist from an earlier preflight.  Retry that
@@ -355,8 +407,13 @@ def run_claude_preflight(
                     prompt=(
                         "Search capability retry: MUST invoke WebSearch once for the unique "
                         "query '{} retry'. Return seat_id={!r}, search_ok=true only after the "
-                        "tool returns, and a short public message."
-                    ).format(search_nonce, request.seat_id),
+                        "tool returns. The public checkpoint_marker={}; set message to exactly "
+                        "the marker value after '=' (without a label)."
+                    ).format(
+                        search_nonce,
+                        request.seat_id,
+                        checkpoint_markers[request.seat_id],
+                    ),
                     attempt_dir=request.attempt_dir,
                 )
             )
@@ -368,17 +425,25 @@ def run_claude_preflight(
                 reasons.append("{}:actual_model_not_opus".format(seat_id))
             elif result.web_search_requests < 1 or result.structured_output.get("search_ok") is not True:
                 reasons.append("{}:search_unavailable".format(seat_id))
+            elif result.structured_output.get("message") != checkpoint_markers[seat_id]:
+                reasons.append("{}:checkpoint_marker_missing".format(seat_id))
             summaries.append(_seat_summary(result))
 
         first = requests[0]
-        if results[first.seat_id].status == "ok":
+        expected_marker = checkpoint_markers[first.seat_id]
+        if (
+            results[first.seat_id].status == "ok"
+            and results[first.seat_id].structured_output.get("message") == expected_marker
+        ):
             resumed = adapter.run(
                 adapter.resumed_request(
                     first,
                     attempt_id="{}-preflight-a2".format(first.seat_id),
                     prompt=(
-                        "Resume the same public session. Return seat_id={!r}, search_ok=true, "
-                        "and message='resume-ok'."
+                        "Resume the same public session. Recover the exact checkpoint_marker "
+                        "value from the immediately preceding public history; it is deliberately "
+                        "not repeated here. Return seat_id={!r}, search_ok=true, and that exact "
+                        "marker value in message, without adding a label or explanation."
                     ).format(first.seat_id),
                     attempt_dir=first.attempt_dir,
                 )
@@ -386,7 +451,12 @@ def run_claude_preflight(
             resume_ok = (
                 resumed.status == "ok"
                 and resumed.structured_output.get("seat_id") == first.seat_id
+                and resumed.structured_output.get("message") == expected_marker
+                and "opus" in (resumed.actual_model or "")
             )
+            resume_checkpoint_sha256 = hashlib.sha256(
+                expected_marker.encode("utf-8")
+            ).hexdigest()
             if not resume_ok:
                 reasons.append("checkpoint_resume_failed")
 
@@ -402,6 +472,7 @@ def run_claude_preflight(
         summaries,
         reasons,
         resume_ok,
+        resume_checkpoint_sha256,
     )
 
 
@@ -409,14 +480,13 @@ def mask_session_id(session_id):
     return "{}-…-{}".format(session_id[:8], session_id[-4:])
 
 
-def _valid_structured_output(value, expected_seat_id):
-    return (
-        isinstance(value, dict)
-        and value.get("seat_id") == expected_seat_id
-        and isinstance(value.get("search_ok"), bool)
-        and isinstance(value.get("message"), str)
-        and bool(value["message"].strip())
-    )
+def validate_smoke_output(value):
+    """Validate only the preflight envelope; research requests supply their own validator."""
+    if not isinstance(value.get("search_ok"), bool):
+        raise ValueError("search_ok must be boolean")
+    if not isinstance(value.get("message"), str) or not value["message"].strip():
+        raise ValueError("message must be non-empty")
+    return value
 
 
 def _actual_model(model_usage):
@@ -465,7 +535,14 @@ def _seat_summary(result):
     }
 
 
-def _preflight_report(ready, version, seats, reasons, resume_ok):
+def _preflight_report(
+    ready,
+    version,
+    seats,
+    reasons,
+    resume_ok,
+    resume_checkpoint_sha256=None,
+):
     return {
         "ready": ready,
         "status": "READY" if ready else "NOT READY",
@@ -480,6 +557,7 @@ def _preflight_report(ready, version, seats, reasons, resume_ok):
         "seats": seats,
         "concurrent_seats": len(seats),
         "resume_ok": resume_ok,
+        "resume_checkpoint_sha256": resume_checkpoint_sha256,
         "isolation": {
             "working_directory": "stable Data Root seat directory",
             "tools": ["WebSearch", "WebFetch"],
@@ -493,3 +571,7 @@ def _text(value):
     if value is None:
         return ""
     return value.decode(errors="replace") if isinstance(value, bytes) else str(value)
+
+
+def _data_root_is_unsafe(code_root, data_root):
+    return data_root == code_root or data_root.is_relative_to(code_root)
