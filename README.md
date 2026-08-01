@@ -22,8 +22,7 @@ cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
 python3 --version
 ```
 
-> 若 `python` 指令不存在（本機 WSL 目前只有 `python3`），請把下列所有 `python`
-> 改為 `python3`，或由使用者自行安裝 `python-is-python3`。控制程式本身不依賴哪一個名稱。
+> 本專案在 WSL 直接使用 `python3`，不需要安裝 `python-is-python3`。
 
 ## 執行測試
 
@@ -32,7 +31,7 @@ python3 --version
 ```bash
 # WSL
 cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
-python -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v
 ```
 
 測試全部離線：使用可注入的 fake clock 與 fake provider，不呼叫真實模型、不讀網路。
@@ -44,7 +43,7 @@ python -m unittest discover -s tests -v
 ```bash
 # WSL
 cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
-python -m hoya_market_agents run --provider-mode fake --question "分析 BTC 過去 14 日市場狀態"
+python3 -m hoya_market_agents run --provider-mode fake --question "分析 BTC 過去 14 日市場狀態"
 ```
 
 指令會印出唯一 `Run ID`、Data Root、Run 目錄、Markdown 與 HTML 報告的絕對路徑，
@@ -55,7 +54,7 @@ python -m hoya_market_agents run --provider-mode fake --question "分析 BTC 過
 ```bash
 # WSL
 cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
-python -m hoya_market_agents run --provider-mode fake \
+python3 -m hoya_market_agents run --provider-mode fake \
   --question "分析 ETH 過去 7 日市場狀態" \
   --data-root /tmp/hoya-run-sandbox
 ```
