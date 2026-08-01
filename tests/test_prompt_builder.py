@@ -1,7 +1,10 @@
 """Every seat must receive byte-identical shared context plus its own focus."""
 
 import hashlib
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from hoya_market_agents.prompt_builder import (
     PROVIDERS,
@@ -27,6 +30,24 @@ class PromptBuilderTest(unittest.TestCase):
         self.assertEqual("0ba594a07f306479baa67104381f48e209ab6aae", RESEARCH_GIT_BLOB_SHA)
         self.assertEqual(hashlib.sha256(snapshot.text.encode("utf-8")).hexdigest(), snapshot.sha256)
         self.assertIn("high-trust primary sources", snapshot.text)
+
+    def test_crlf_checkout_keeps_git_blob_identity_but_hashes_actual_local_bytes(self):
+        canonical = load_research_snapshot().text.replace("\r\n", "\n").encode("utf-8")
+        crlf_content = canonical.replace(b"\n", b"\r\n")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            snapshot_path = Path(temporary_directory) / "SKILL.md"
+            snapshot_path.write_bytes(crlf_content)
+            with mock.patch(
+                "hoya_market_agents.prompt_builder.RESEARCH_SKILL_PATH", snapshot_path
+            ):
+                snapshot = load_research_snapshot()
+
+        self.assertEqual(RESEARCH_GIT_BLOB_SHA, snapshot.git_blob_sha)
+        self.assertEqual(
+            hashlib.sha256(crlf_content).hexdigest(),
+            snapshot.sha256,
+        )
 
     def test_all_seats_share_a_byte_identical_shared_section(self):
         shared = {

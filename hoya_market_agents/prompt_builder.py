@@ -60,9 +60,7 @@ def load_research_snapshot(path=None):
     """Read the vendored snapshot; formal runs never fetch it from a network."""
     content = (Path(path) if path else RESEARCH_SKILL_PATH).read_bytes()
     text = content.decode("utf-8")
-    git_blob_sha = hashlib.sha1(
-        b"blob " + str(len(content)).encode("ascii") + b"\0" + content
-    ).hexdigest()
+    git_blob_sha = _git_blob_sha(content)
     if path is None and git_blob_sha != RESEARCH_GIT_BLOB_SHA:
         raise ValueError(
             "research snapshot blob 不符：預期 {}，實際 {}。".format(
@@ -75,6 +73,13 @@ def load_research_snapshot(path=None):
         git_blob_sha=git_blob_sha,
         sha256=hashlib.sha256(content).hexdigest(),
     )
+
+
+def _git_blob_sha(content):
+    """Hash the LF bytes Git stores even when Windows checks out CRLF."""
+    canonical_content = content.replace(b"\r\n", b"\n")
+    header = b"blob " + str(len(canonical_content)).encode("ascii") + b"\0"
+    return hashlib.sha1(header + canonical_content).hexdigest()
 
 
 def build_seat_prompt(
