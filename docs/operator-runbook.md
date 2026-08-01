@@ -1,0 +1,131 @@
+# Hoya Bit 賽前操作 Runbook
+
+本文件所有命令都在 **WSL Ubuntu 24.04** 執行。程式只使用 Python 3.12 標準函式庫；
+不建立 venv、不安裝套件、不接受 API key。Code Root 與 Data Root 必須分離。
+
+```bash
+# WSL
+CODE_ROOT='/mnt/d/workstationD/hoya bit/hoya-bit-market-agents'
+DATA_ROOT='/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data'
+cd "$CODE_ROOT"
+```
+
+## 1. 乾淨 checkout 與版本
+
+```bash
+# WSL
+git status --short --branch
+python3 --version
+/home/leslie/.local/bin/codex --version
+/home/leslie/.local/bin/claude --version
+/home/leslie/.local/bin/agy --version
+python3 -m unittest discover -s tests -v
+```
+
+預期 Code Root 無未提交變更，Python 為 3.12，三個 CLI 都有非空版本。缺任何 CLI 就停止；
+本專案不會自動安裝、更新或改寫登入環境。
+
+## 2. 登入重驗（不輸出 token）
+
+```bash
+# WSL
+/home/leslie/.local/bin/codex login status
+/home/leslie/.local/bin/claude auth status --json
+/home/leslie/.local/bin/agy models | grep -Fx 'gemini-3.1-pro-high'
+```
+
+Codex 必須顯示已登入；Claude JSON 必須為 `claude.ai`／Max；Antigravity 必須列出精確模型。
+不要把完整 session、OAuth、cookie、email 或 token 貼到 issue。
+
+## 3. 不耗訂閱的回歸
+
+```bash
+# WSL
+python3 -m hoya_market_agents preflight --provider system --seats 7 \
+  --mode fixture --preflight-id rehearsal-fixture
+
+python3 -m hoya_market_agents drill --provider-mode fake \
+  --question '分析 BTC 過去 14 日市場狀態'
+```
+
+fixture 預期 exit `1`、`status=NOT_READY`、`simulation_status=PASS`；這是刻意避免 fake
+被誤認成 READY。drill 預期 exit `0` 並印出 `run_id` 與 `verification.status=VERIFIED`。
+
+四個 fail-closed fixture：
+
+```bash
+# WSL
+python3 -m hoya_market_agents preflight --provider system --seats 7 --mode fixture \
+  --fixture-failure login --preflight-id broken-login
+python3 -m hoya_market_agents preflight --provider system --seats 7 --mode fixture \
+  --fixture-failure model --preflight-id broken-model
+python3 -m hoya_market_agents preflight --provider system --seats 7 --mode fixture \
+  --fixture-failure write --preflight-id broken-write
+python3 -m hoya_market_agents preflight --provider system --seats 7 --mode fixture \
+  --fixture-failure renderer --preflight-id broken-renderer
+```
+
+四者都必須 exit `1` 且列出對應 blocker。
+
+## 4. Fresh Core preflight
+
+1. 關閉舊 Codex Task。
+2. 從 `$CODE_ROOT` 開啟 fresh Codex Task。
+3. 呼叫 `$hoya-market-research --preflight`。
+4. Core 必須觀察自身 actual model、三個 persistent thread、runtime dispatch receipt；缺一即停止。
+5. 記下 Skill 產生的 `<CODEX_RUN_ID>`，不要自行編造 ID 或 receipt。
+
+接著執行：
+
+```bash
+# WSL
+python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real \
+  --codex-run-id '<CODEX_RUN_ID>'
+```
+
+這會在 Codex handoff 有效後才消耗 Claude Max／Google Ultra smoke。現在 Ticket #8 的 Codex
+receipt 是 no-tool policy，不能證明三個 GPT 席各自搜尋，因此目前正確結果預期為
+`NOT_READY`，blocker 為 `search`。禁止改用 fake、降低模型或移除 receipt 來湊 READY。
+
+## 5. 正式題目
+
+只有最新 real manifest 為 `READY` 時才可在 fresh Task 呼叫：
+
+```text
+$hoya-market-research 分析 BTC 過去 14 日市場狀態
+```
+
+若仍為 `NOT_READY`，不得啟動正式計時 run；先展示 manifest 的 blocker。支援資產僅
+BTC、ETH、SOL、BNB、XRP。
+
+## 6. 驗證與開啟報告
+
+```bash
+# WSL
+RUN_ID='<EXACT_RUN_ID>'
+python3 -m hoya_market_agents verify-run --run-id "$RUN_ID" --data-root "$DATA_ROOT"
+REPORT="$DATA_ROOT/runs/$RUN_ID/report.html"
+test -f "$REPORT"
+explorer.exe "$(wslpath -w "$REPORT")"
+```
+
+`verify-run` 必須 exit `0` 並輸出 `VERIFIED`。它會檢查六個必要 artifact、manifest hash
+index、七席 lineage、T+4:45、T+5、辯論停止、T+13 與離線 HTML。
+
+## 7. 精確 Run ID 清理（只由 operator 執行）
+
+系統不會自動刪除任何 run。先指定完整 Run ID 並確認路徑仍位於 Data Root：
+
+```bash
+# WSL
+RUN_ID='<EXACT_RUN_ID>'
+TARGET="$DATA_ROOT/runs/$RUN_ID"
+test -n "$RUN_ID" && test "$RUN_ID" != '.' && test "$RUN_ID" != '..'
+test -d "$TARGET"
+test "$(dirname "$(realpath "$TARGET")")" = "$(realpath "$DATA_ROOT/runs")"
+printf '確認目標：%s\n' "$TARGET"
+```
+
+人工確認上面唯一目標後，才可另行執行 `rm -r -- "$TARGET"`。禁止 glob、空變數、
+`$DATA_ROOT/runs`、Code Root 或工作區根目錄作為刪除目標；`latest.json` 若仍指向該 run，
+保留它作為已刪除 run 的可見診斷，不由 Agent 自動改寫。

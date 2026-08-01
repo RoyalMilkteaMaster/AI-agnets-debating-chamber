@@ -1,41 +1,67 @@
 {
-  "roster_version": "0.1.0",
-  "note": "Ticket #2 tracer bullet: seat identity and research scope only. Provider/model mapping, replacements and allowed tools are added when the real provider adapters land.",
+  "roster_version": "1.0.0",
+  "note": "Ticket #11 competition roster. Target and actual model are compared fail closed during live preflight.",
+  "core": {
+    "role": "core",
+    "provider": "codex",
+    "target_model": "gpt-5.6-sol"
+  },
   "seats": [
     {
       "seat_id": "spot-technical",
       "focus": "現貨價格、成交量與技術結構",
-      "output_dir": "spot-technical"
+      "output_dir": "spot-technical",
+      "provider": "codex",
+      "target_model": "gpt-5.6-sol",
+      "allowed_tools": []
     },
     {
       "seat_id": "derivatives",
       "focus": "衍生品、OI、Funding、清算與基差",
-      "output_dir": "derivatives"
+      "output_dir": "derivatives",
+      "provider": "codex",
+      "target_model": "gpt-5.6-sol",
+      "allowed_tools": []
     },
     {
       "seat_id": "onchain",
       "focus": "鏈上、供給、巨鯨與交易所流量",
-      "output_dir": "onchain"
+      "output_dir": "onchain",
+      "provider": "codex",
+      "target_model": "gpt-5.6-sol",
+      "allowed_tools": []
     },
     {
       "seat_id": "official-events",
       "focus": "官方公告、監管及事件催化",
-      "output_dir": "official-events"
+      "output_dir": "official-events",
+      "provider": "claude",
+      "target_model": "opus",
+      "allowed_tools": ["WebSearch", "WebFetch"]
     },
     {
       "seat_id": "news",
       "focus": "新聞查證與事件時間線",
-      "output_dir": "news"
+      "output_dir": "news",
+      "provider": "claude",
+      "target_model": "opus",
+      "allowed_tools": ["WebSearch", "WebFetch"]
     },
     {
       "seat_id": "social-macro",
       "focus": "社群、重要帳戶、宏觀及 BTC 關聯",
-      "output_dir": "social-macro"
+      "output_dir": "social-macro",
+      "provider": "claude",
+      "target_model": "opus",
+      "allowed_tools": ["WebSearch", "WebFetch"]
     },
     {
       "seat_id": "counter-evidence",
       "focus": "反方證據與資料品質檢查",
-      "output_dir": "counter-evidence"
+      "output_dir": "counter-evidence",
+      "provider": "antigravity",
+      "target_model": "gemini-3.1-pro-high",
+      "allowed_tools": ["search_web"]
     }
   ]
 }

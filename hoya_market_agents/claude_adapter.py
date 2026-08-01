@@ -19,9 +19,9 @@ from pathlib import Path
 CLAUDE_CLI_PATH = "/home/leslie/.local/bin/claude"
 CLAUDE_MODEL_ALIAS = "opus"
 CLAUDE_SEAT_SESSIONS = {
-    "spot-technical": "86d4610c-3380-5a99-853c-10d742fb679c",
-    "derivatives": "2aa972a3-1a82-5d56-8c6a-22dc77c97121",
-    "onchain": "59bfb4b2-28b7-59ca-92bc-c296e9325380",
+    "official-events": "0eed52ad-0c61-462d-a61c-f4b45c9e545f",
+    "news": "3b3522b1-2d02-45d2-8195-3162f485e06c",
+    "social-macro": "2cfc5b87-ba9d-4788-9657-d8d79c87dcd3",
 }
 
 SMOKE_SCHEMA = {

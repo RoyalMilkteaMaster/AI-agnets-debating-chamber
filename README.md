@@ -2,9 +2,14 @@
 
 七席多模型加密市場研究流程的 WSL Python 控制程式。
 
-本版本的分析指令仍使用離線 fake provider 打通「題目 → 七席研究 → 共享辯論 → 投票 →
-報告」骨架，輸出內容一律為示範資料，不得作為市場依據。Claude 與 Antigravity 真實模型
-目前只接到各自的 preflight，尚未接入完整分析 run。
+本版本提供兩條明確分離的路徑：`drill --provider-mode fake` 以假時鐘打通七席並行、
+T+5 evidence seal、6/5/4 辯論與 T+13 報告；`preflight --provider system --mode real`
+則只接受真實訂閱與 fresh Codex Task 的可觀察證據。fake 演練永遠標記
+`competition_ready=false`，不得作為市場資料或真實 READY 證據。
+
+目前已知真實阻塞：既有 Ticket #8 Codex bridge 驗證的是三席「無工具」runtime receipt，
+無法同時證明三個 GPT 席各自完成搜尋。system preflight 因此會 fail closed 為
+`NOT_READY`，不會把 Claude/Gemini 的成功或 fake drill 冒充七席 READY。
 
 Ticket #3 另外提供版本化 Question Package 與 Research Prompt Builder：可正規化單幣、
 兩幣比較、整體市場、事件影響四種題型，並把 repo-local 固定 research 規則、來源時間政策、
@@ -17,6 +22,7 @@ EvidenceCard contract 與操作邊界等價注入七席。這不代表 Ticket #2
 - fake run 與單元測試不需要 API key、登入或網路。
 - Claude preflight 使用既有 claude.ai Max 登入；Antigravity preflight 使用既有 Google OAuth 登入。
 - 不需要安裝套件、不需要 venv。
+- Code Root 必須從乾淨 checkout 使用；所有 run/preflight 證據只寫到相鄰 Data Root。
 
 所有指令都在 **WSL** 中、從 Code Root 執行。
 
@@ -49,6 +55,49 @@ python3 -m unittest tests.test_question_package tests.test_prompt_builder -v
 ```
 
 測試全部離線：使用可注入的 fake clock 與 fake provider，不呼叫真實模型、不讀網路。
+
+## 七席 competition drill（離線）
+
+以下指令以固定假資料驗證整合時序；成功不代表真實訂閱 READY：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m hoya_market_agents drill --provider-mode fake \
+  --question "分析 BTC 過去 14 日市場狀態"
+```
+
+輸出包含 `run_id`、七席 completion timeline、T+5 snapshot hash、辯論停止原因、
+報告完成時間與 `verify-run` 結果。
+
+## 整體 system preflight
+
+先跑不耗訂閱的 fail-closed fixture matrix：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m hoya_market_agents preflight --provider system --seats 7 \
+  --mode fixture --preflight-id rehearsal-fixture
+```
+
+fixture 即使全數通過仍輸出 `NOT_READY`；`simulation_status=PASS` 只表示回歸邏輯正常。
+故障注入可使用 `--fixture-failure login|model|write|renderer`，每種都必須輸出
+`NOT_READY`。
+
+真實 preflight 必須從 fresh Codex Task 取得 `<CODEX_RUN_ID>`；若已有真實七席演練才再
+提供 `<REAL_DRILL_RUN_ID>`：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m hoya_market_agents preflight --provider system --seats 7 \
+  --mode real --codex-run-id <CODEX_RUN_ID> \
+  --drill-run-id <REAL_DRILL_RUN_ID>
+```
+
+缺少任何登入、actual model、七席搜尋 receipt、權限、T+4:45 contract、T+5 seal 或
+T+13 report 證據時都輸出機器可讀 `NOT_READY` manifest。
 
 只執行 Claude Adapter 單元測試（WSL）：
 
@@ -121,6 +170,14 @@ python3 -m hoya_market_agents run --provider-mode fake \
 `--provider-mode` 目前只接受 `fake`。傳入其他值會被 CLI 直接拒絕，
 不會退回到尚未實作的 provider。
 
+驗證既有 run（不啟動 Agent、不修改檔案）：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m hoya_market_agents verify-run --run-id <RUN_ID>
+```
+
 ## 輸出位置
 
 - Code Root：`/mnt/d/workstationD/hoya bit/hoya-bit-market-agents`（程式、設定、測試、文件）
@@ -165,15 +222,13 @@ cat latest.json
 - 未指定分析期間時預設過去 14 日。
 - 本版本只支援單一資產題目；兩幣比較題目同樣 fail closed。
 
-## 本版本尚未實作
+## 仍未宣稱可用的真實能力
 
-以下項目不在 Ticket #2 範圍，並記錄在每次執行的 `manifest.json` 與報告的「限制與失效條件」中：
+以下項目沒有可重現 live 證據，因此 system preflight 不會宣稱 READY：
 
-- 將 Claude、Antigravity adapters 接入完整 run，以及 Codex CLI adapter。
-- 時間關卡（T+5／7／9／10／13）與強制停止。
-- 重試、替補與 Format Repair Agent。
-- 絕對 6／5／4 共識門檻與信心燈號分級。
-- 兩幣比較與事件影響的投票詞彙。
+- 三個 GPT-5.6 Sol persistent threads 同時具備「可驗證搜尋」與 Ticket #8 最小權限 receipt。
+- 七個真實訂閱席在同一 run 於 T+4:45 前交付、T+5 seal，並於 T+13 前完成報告。
+- 在上述 blocker 關閉前，正式 `$hoya-market-research` 必須停止並交付 NOT READY。
 - 向量資料庫、RAG、FinGPT、crawler 與 web service（依 ADR 0002 不在 MVP 範圍）。
 
 ## 相關文件
@@ -183,3 +238,4 @@ cat latest.json
 - `docs/planning/architecture.md`：已核准架構
 - `docs/adr/0001-codex-skill-with-wsl-python-controller.md`
 - `docs/adr/0002-immutable-file-based-run-store.md`
+- `docs/operator-runbook.md`：登入、preflight、演練、驗證、開報告與精確 Run ID 清理

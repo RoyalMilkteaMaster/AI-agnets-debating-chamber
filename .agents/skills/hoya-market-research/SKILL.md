@@ -1,15 +1,41 @@
 ---
 name: hoya-market-research
-description: Run one Hoya Bit market-research analysis with the fixed Codex GPT seats (spot-technical, derivatives, onchain). Use when a fresh Codex Task must open the three persistent seat threads, distribute the byte-identical shared prompt, and collect structured evidence, debate and votes for an approved market question.
+description: Run one Hoya Bit market-research analysis with the frozen Core plus seven-seat roster. Use when a fresh Codex Task must prove the three persistent Codex seats, aggregate live Claude and Antigravity checks, distribute the byte-identical shared prompt, and collect structured evidence, debate and votes for an approved market question.
 ---
 
-# Hoya Bit market research (Codex bridge)
+# Hoya Bit market research (system gate)
 
 You are **Core**. You are the only party that creates Codex subagent threads.
 The Python controller in this repo never creates, starts or impersonates a
 Codex agent — it builds contracts, validates records and verifies artifacts.
 
-## Fixed seats
+## Invocation modes
+
+- `preflight system --mode fixture` validates schemas and failure handling only.
+  It is always `NOT_READY` and cannot authorize a market run.
+- `drill --provider-mode fake` exercises the complete seven-seat timeline,
+  debate, vote, report and verifier without subscriptions. It is always marked
+  fake and cannot authorize a real market run.
+- `preflight system --mode real` is the only aggregate readiness gate. It must
+  consume fresh provider evidence and a verified real competition drill.
+
+## Frozen competition roster
+
+| role / seat_id | provider | required actual model |
+| --- | --- | --- |
+| `core` | Codex | `gpt-5.6-sol` |
+| `spot-technical` | Codex | `gpt-5.6-sol` |
+| `derivatives` | Codex | `gpt-5.6-sol` |
+| `onchain` | Codex | `gpt-5.6-sol` |
+| `official-events` | Claude | `opus` |
+| `news` | Claude | `opus` |
+| `social-macro` | Claude | `opus` |
+| `counter-evidence` | Antigravity | `gemini-3.1-pro-high` |
+
+The roster is frozen in `config/agent_roster.json`. Do not silently substitute
+a model, provider, seat, tool policy or seat count.
+
+## Fixed Codex seats
 
 Exactly three persistent Codex subagent threads, one per fixed GPT seat:
 
@@ -44,6 +70,14 @@ non-persistent thread.
    `gpt-5.6-sol`, and expose an auditable `thread_id`.
 6. You wrote the handoff artifact `preflight/codex-handoff.json` into the run
    directory and `verify-preflight` reports READY.
+7. You ran the aggregate real gate:
+
+   ```bash
+   python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --drill-run-id REAL_DRILL_RUN_ID --data-root DATA_ROOT
+   ```
+
+8. The resulting write-once `preflight/system-*/manifest.json` says `READY`.
+   A provider-specific READY result is necessary but cannot replace this gate.
 
 See `references/codex-bridge-contract.md` for the exact artifact shape and
 `references/preflight-checklist.md` for the fresh-task checklist.
@@ -57,6 +91,12 @@ preflight. Reuse the same thread with the runtime's follow-up operation for
 research and public debate. If the runtime does not expose actual model,
 persistent thread identity, enforceable tool restrictions, or a dispatch
 receipt, record `NOT READY` and stop. Never synthesize the receipt in Python.
+
+The current Codex handoff proves no-tool dispatches but does not prove three
+independent GPT search executions. Until a fresh receipt proves those searches,
+the aggregate gate must remain `NOT_READY` with a `search` blocker. Do not use a
+fixture, fake drill, prompt assertion, relaxed verifier, different model, or a
+Core-selected conclusion to turn that blocker into READY.
 
 ## What every seat receives
 
@@ -102,3 +142,14 @@ python3 -m hoya_market_agents verify-preflight --provider codex --run-id RUN_ID 
 
 Exit `0` = READY. Exit `1` = NOT_READY; the reason is on stderr. The command
 only reads an artifact you already wrote — it starts nothing.
+
+After a completed competition run, verify the immutable artifact set and
+timeline before opening the report:
+
+```bash
+python3 -m hoya_market_agents verify-run --run-id RUN_ID --data-root DATA_ROOT
+```
+
+Core must preserve the exact final tally and every minority position. Core may
+format the report, but it may not select a side, change a vote, erase dissent or
+claim consensus that the debate state machine did not reach.

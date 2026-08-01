@@ -145,7 +145,7 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.code_root.mkdir()
         self.data_root.mkdir()
 
-    def request(self, seat_id="spot-technical", *, resume=False):
+    def request(self, seat_id="official-events", *, resume=False):
         attempt_dir = self.data_root / "runs" / "run-1" / "agents" / seat_id / "attempts" / "a1"
         attempt_dir.mkdir(parents=True, exist_ok=True)
         return ClaudeAttemptRequest(
@@ -169,14 +169,14 @@ class ClaudeAdapterTest(unittest.TestCase):
     def test_three_fixed_sessions_are_distinct_and_commands_pin_opus(self):
         self.assertEqual(3, len(CLAUDE_SEAT_SESSIONS))
         self.assertEqual(3, len(set(CLAUDE_SEAT_SESSIONS.values())))
-        runner = ScriptedRunner([completed(envelope("spot-technical"))] * 2)
+        runner = ScriptedRunner([completed(envelope("official-events"))] * 2)
         adapter = self.adapter(runner)
 
         adapter.run(self.request())
         adapter.run(self.request(resume=True))
 
         first, resumed = (call["args"] for call in runner.calls)
-        session_id = CLAUDE_SEAT_SESSIONS["spot-technical"]
+        session_id = CLAUDE_SEAT_SESSIONS["official-events"]
         self.assertIn(("--model", CLAUDE_MODEL_ALIAS), tuple(zip(first, first[1:])))
         self.assertIn(("--session-id", session_id), tuple(zip(first, first[1:])))
         self.assertNotIn("--resume", first)
@@ -191,8 +191,8 @@ class ClaudeAdapterTest(unittest.TestCase):
         runner = ScriptedRunner([])
         adapter = self.adapter(runner)
         outside = ClaudeAttemptRequest(
-            seat_id="spot-technical",
-            attempt_id="spot-technical-a1",
+            seat_id="official-events",
+            attempt_id="official-events-a1",
             prompt="x",
             attempt_dir=self.code_root,
         )
@@ -202,7 +202,7 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual([], runner.calls)
 
     def test_valid_output_records_actual_model_usage_and_safe_identity(self):
-        runner = ScriptedRunner([completed(envelope("spot-technical"), elapsed_ms=321)])
+        runner = ScriptedRunner([completed(envelope("official-events"), elapsed_ms=321)])
 
         result = self.adapter(runner).run(self.request())
 
@@ -211,9 +211,9 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual(321, result.elapsed_ms)
         self.assertEqual(1, result.web_search_requests)
         self.assertEqual(5, result.usage["input_tokens"])
-        self.assertEqual("spot-technical", result.structured_output["seat_id"])
-        self.assertNotEqual(CLAUDE_SEAT_SESSIONS["spot-technical"], result.masked_session_id)
-        self.assertEqual(mask_session_id(CLAUDE_SEAT_SESSIONS["spot-technical"]), result.masked_session_id)
+        self.assertEqual("official-events", result.structured_output["seat_id"])
+        self.assertNotEqual(CLAUDE_SEAT_SESSIONS["official-events"], result.masked_session_id)
+        self.assertEqual(mask_session_id(CLAUDE_SEAT_SESSIONS["official-events"]), result.masked_session_id)
 
     def test_empty_malformed_nonzero_and_timeout_are_explicit(self):
         outputs = [
@@ -233,7 +233,7 @@ class ClaudeAdapterTest(unittest.TestCase):
 
     def test_schema_and_seat_identity_fail_closed(self):
         wrong = json.loads(envelope("wrong-seat"))
-        invalid = json.loads(envelope("spot-technical"))
+        invalid = json.loads(envelope("official-events"))
         del invalid["structured_output"]["search_ok"]
         adapter = self.adapter(
             ScriptedRunner([completed(json.dumps(wrong)), completed(json.dumps(invalid))])
@@ -243,7 +243,7 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual("invalid_schema", adapter.run(self.request()).status)
 
     def test_general_attempt_uses_its_explicit_contract_not_smoke_fields(self):
-        structured = {"seat_id": "spot-technical", "cards": [{"evidence_id": "ev-1"}]}
+        structured = {"seat_id": "official-events", "cards": [{"evidence_id": "ev-1"}]}
         called = []
 
         def validate_cards(value):
@@ -263,7 +263,7 @@ class ClaudeAdapterTest(unittest.TestCase):
         )
         adapter = self.adapter(
             ScriptedRunner(
-                [completed(envelope("spot-technical", structured_output=structured))]
+                [completed(envelope("official-events", structured_output=structured))]
             )
         )
 
@@ -282,7 +282,7 @@ class ClaudeAdapterTest(unittest.TestCase):
             validator=None,
         )
         result = self.adapter(
-            ScriptedRunner([completed(envelope("spot-technical"))])
+            ScriptedRunner([completed(envelope("official-events"))])
         ).run(request)
 
         self.assertEqual("invalid_schema", result.status)
@@ -435,7 +435,7 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual({"claude-opus-5"}, {seat["actual_model"] for seat in report["seats"]})
         self.assertEqual({1}, {seat["web_search_requests"] for seat in report["seats"]})
         self.assertTrue(any("--resume" in call for call in runner.calls))
-        first_session = CLAUDE_SEAT_SESSIONS["spot-technical"]
+        first_session = CLAUDE_SEAT_SESSIONS["official-events"]
         self.assertNotIn(runner.markers[first_session], runner.inputs[-1])
 
         repeated = run_claude_preflight(
@@ -486,10 +486,10 @@ class ClaudeAdapterTest(unittest.TestCase):
 
     def test_resume_hook_keeps_seat_identity_and_failure_maps_for_scheduler(self):
         request = self.request()
-        adapter = self.adapter(ScriptedRunner([completed(envelope("spot-technical"))]))
+        adapter = self.adapter(ScriptedRunner([completed(envelope("official-events"))]))
         resumed = adapter.resumed_request(
             request,
-            attempt_id="spot-technical-a2",
+            attempt_id="official-events-a2",
             prompt="public checkpoint and debate history",
             attempt_dir=request.attempt_dir,
         )
@@ -498,7 +498,7 @@ class ClaudeAdapterTest(unittest.TestCase):
 
         self.assertTrue(resumed.resume)
         self.assertEqual(request.seat_id, resumed.seat_id)
-        self.assertEqual("spot-technical-a2", result.attempt_id)
+        self.assertEqual("official-events-a2", result.attempt_id)
         self.assertIsNone(result.scheduler_failure_kind)
         timeout = self.adapter(
             ScriptedRunner([completed(timed_out=True)])

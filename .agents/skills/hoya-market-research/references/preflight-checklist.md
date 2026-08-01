@@ -33,8 +33,24 @@ unit test can substitute for it, and no unit test in this repo has performed it.
 
    Exit `0` and `狀態：READY` on stdout means the artifact is consistent.
    Exit `1` prints the NOT_READY reason on stderr.
-9. **Launch** — only after step 8 passes, send the byte-identical shared prompt
-   to all three threads, differing only in role, focus and own output path.
+9. **Provider bridge checkpoint** — do not send the market question yet. A
+   Codex bridge READY result is only one input to system readiness.
+10. **Aggregate gate** — run:
+
+    ```bash
+    python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --drill-run-id REAL_DRILL_RUN_ID --data-root DATA_ROOT
+    ```
+
+    Require the write-once system manifest to say `READY`; any failed or
+    missing required check means `NOT_READY`.
+11. **Search receipt gate** — require live receipts for three independent GPT
+    search executions. The current no-tool Codex receipt does not prove this,
+    so the honest current result is `NOT_READY(search)`. Do not substitute a
+    prompt claim, fixture, fake receipt, different model or fewer seats.
+12. **Live drill and launch** — require a verifier-passing drill marked
+    `provider_mode=real-subscription` and `competition_ready=true`. A fake drill
+    tests orchestration only. Send the byte-identical shared prompt only after
+    the aggregate manifest says `READY`.
 
 Known limitation: steps 1, 2, 5 and 6 depend on live Codex runtime capability and
 are the parts unit tests cannot prove. Record the observed `thread_id` and
