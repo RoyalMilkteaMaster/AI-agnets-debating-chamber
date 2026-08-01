@@ -64,6 +64,9 @@ class AnalyzeQuestionTest(unittest.TestCase):
         for question in (
             "比較 BTC 與 doge 過去 14 日相對強弱",
             "分析 eth 跟 DoGe 的市場位置",
+            "比較 BTC、doge 過去 14 日相對強弱",
+            "比較 BTC,doge 過去 14 日相對強弱",
+            "比較 BTC vs doge 過去 14 日相對強弱",
         ):
             with self.subTest(question=question):
                 with self.assertRaises(UnsupportedQuestionError) as caught:

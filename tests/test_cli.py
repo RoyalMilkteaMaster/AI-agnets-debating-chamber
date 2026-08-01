@@ -87,12 +87,16 @@ class CliTest(unittest.TestCase):
         self.assertFalse((self.data_root / "runs").exists())
 
     def test_lowercase_unsupported_asset_exits_non_zero_and_writes_nothing(self):
-        code, out, err = self.run_question("比較 BTC 與 doge 過去 14 日市場狀態")
+        for separator in ("、", ","):
+            with self.subTest(separator=separator):
+                code, out, err = self.run_question(
+                    "比較 BTC{}doge 過去 14 日市場狀態".format(separator)
+                )
 
-        self.assertEqual(2, code)
-        self.assertIn("DOGE", err)
-        self.assertEqual("", out)
-        self.assertFalse((self.data_root / "runs").exists())
+                self.assertEqual(2, code)
+                self.assertIn("DOGE", err)
+                self.assertEqual("", out)
+                self.assertFalse((self.data_root / "runs").exists())
 
     def test_only_the_fake_provider_mode_is_accepted_in_this_version(self):
         with contextlib.redirect_stderr(io.StringIO()) as argparse_stderr:

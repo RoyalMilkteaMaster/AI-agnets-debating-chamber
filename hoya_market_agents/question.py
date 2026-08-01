@@ -20,7 +20,7 @@ _ASSET_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z])([A-Za-z]{2,5})(?![A-Za-z])")
 _UPPERCASE_TICKER_PATTERN = re.compile(r"(?<![A-Za-z])[A-Z]{2,5}(?![A-Za-z])")
 _COMPARISON_PAIR_PATTERN = re.compile(
     r"(?<![A-Za-z])([A-Za-z]{2,5})(?![A-Za-z])\s*"
-    r"(?:與|和|跟|vs\.?|/)\s*"
+    r"(?:與|和|跟|vs\.?|[/、,])\s*"
     r"(?<![A-Za-z])([A-Za-z]{2,5})(?![A-Za-z])",
     re.IGNORECASE,
 )
