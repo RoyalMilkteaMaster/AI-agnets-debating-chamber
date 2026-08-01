@@ -144,6 +144,11 @@ def build_preflight_manifest(*, checks, mode, generated_at_utc, code_root, data_
         blockers.extend("unknown_check:{}".format(check_id) for check_id in unknown)
 
     simulation_status = "PASS" if not blockers else "FAIL"
+    provider_blockers = [
+        blocker for blocker in blockers
+        if blocker not in ("seven_seat_timeline", "report_deadline")
+    ]
+    provider_capabilities_ready = mode == "real" and not provider_blockers
     if mode == "fixture":
         blockers.append("fixture_mode_is_not_live_evidence")
     ready = mode == "real" and not blockers
@@ -153,6 +158,7 @@ def build_preflight_manifest(*, checks, mode, generated_at_utc, code_root, data_
         "ready": ready,
         "mode": mode,
         "simulation_status": simulation_status if mode == "fixture" else None,
+        "provider_capabilities_ready": provider_capabilities_ready,
         "generated_at_utc": generated_at_utc,
         "code_root": str(Path(code_root)),
         "data_root": str(Path(data_root)),
@@ -162,15 +168,30 @@ def build_preflight_manifest(*, checks, mode, generated_at_utc, code_root, data_
     }
 
 
-def write_preflight_manifest(data_root, preflight_id, manifest):
+def preflight_manifest_path(data_root, preflight_id):
     if (
         not isinstance(preflight_id, str)
         or not preflight_id
+        or preflight_id in (".", "..")
         or Path(preflight_id).name != preflight_id
     ):
         raise PreflightError("preflight_id 不得包含路徑。")
-    target = Path(data_root).resolve() / "preflight" / preflight_id / "manifest.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
+    resolved_data_root = Path(data_root).resolve()
+    preflight_root = resolved_data_root / "preflight"
+    if preflight_root.resolve().parent != resolved_data_root:
+        raise PreflightError("preflight root 解析後逃出 Data Root。")
+    target_directory = preflight_root / preflight_id
+    if target_directory.resolve().parent != preflight_root.resolve():
+        raise PreflightError("preflight target 必須位於 Data Root 的直接子目錄。")
+    return target_directory / "manifest.json"
+
+
+def write_preflight_manifest(data_root, preflight_id, manifest):
+    target = preflight_manifest_path(data_root, preflight_id)
+    target_directory = target.parent
+    target_directory.mkdir(parents=True, exist_ok=True)
+    if preflight_manifest_path(data_root, preflight_id) != target:
+        raise PreflightError("preflight target 解析後逃出 Data Root。")
     content = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
     with target.open("x", encoding="utf-8", newline="\n") as handle:
         handle.write(content)

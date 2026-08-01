@@ -57,26 +57,29 @@ non-persistent thread.
 
 1. Your own role is `core` and your confirmed runtime model identifier is
    `gpt-5.6-sol` (**GPT-5.6 Sol**).
-2. The question passes `question_package.build_question_package` — an
+2. The operator supplied a fresh 24-128 character URL-safe
+   `preflight_challenge`. Put that exact nonce in `build_codex_handoff(...)`;
+   never invent, reuse or alter it.
+3. The question passes `question_package.build_question_package` — an
    unapproved question type is rejected before launch.
-3. The Data Root is a separate directory from the Code Root.
-4. The runtime enforces `allowed_tools=[]`, no filesystem access, no secret
+4. The Data Root is a separate directory from the Code Root.
+5. The runtime enforces `allowed_tools=[]`, no filesystem access, no secret
    access, and public-structured-response-only mode for every seat. Preserve
    each runtime dispatch receipt in preflight. Every seat needs a unique
    `dispatch_id` and unique receipt ID; the receipt must bind that seat's
    dispatch ID and the exact no-tool policy hash. A prompt instruction or a
    helper assertion is not enforcement proof.
-5. All three threads exist, are persistent, report an **actual model** of
+6. All three threads exist, are persistent, report an **actual model** of
    `gpt-5.6-sol`, and expose an auditable `thread_id`.
-6. You wrote the handoff artifact `preflight/codex-handoff.json` into the run
+7. You wrote the handoff artifact `preflight/codex-handoff.json` into the run
    directory and `verify-preflight` reports READY.
-7. You ran the aggregate real gate:
+8. You ran the aggregate real gate within 300 seconds of handoff creation:
 
    ```bash
-   python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --drill-run-id REAL_DRILL_RUN_ID --data-root DATA_ROOT
+   python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --drill-run-id REAL_DRILL_RUN_ID --data-root DATA_ROOT
    ```
 
-8. The resulting write-once `preflight/system-*/manifest.json` says `READY`.
+9. The resulting write-once `preflight/system-*/manifest.json` says `READY`.
    A provider-specific READY result is necessary but cannot replace this gate.
 
 See `references/codex-bridge-contract.md` for the exact artifact shape and
@@ -135,9 +138,9 @@ is Core-only audit metadata and must not grant the seat filesystem access.
 ## Verify
 
 ```bash
-python3 -m hoya_market_agents verify-preflight --provider codex --run-id RUN_ID
+python3 -m hoya_market_agents verify-preflight --provider codex --run-id RUN_ID --challenge CODEX_CHALLENGE
 # tests / non-default location:
-python3 -m hoya_market_agents verify-preflight --provider codex --run-id RUN_ID --data-root /path/to/data
+python3 -m hoya_market_agents verify-preflight --provider codex --run-id RUN_ID --challenge CODEX_CHALLENGE --data-root /path/to/data
 ```
 
 Exit `0` = READY. Exit `1` = NOT_READY; the reason is on stderr. The command

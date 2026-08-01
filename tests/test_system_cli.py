@@ -5,8 +5,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from hoya_market_agents.cli import _claude_matrix, main
+from hoya_market_agents.cli import (
+    _apply_drill_observation,
+    _claude_matrix,
+    _fixture_system_checks,
+    main,
+)
 from hoya_market_agents.fake_provider import FakeProvider
 from hoya_market_agents.run_controller import RunController
 from hoya_market_agents.run_store import RunStore
@@ -77,6 +83,21 @@ class SystemCliTest(unittest.TestCase):
             item["actual"] for item in payload["checks"]
             if item["check_id"] == "codex_runtime_receipts"
         ))
+
+    def test_unsafe_preflight_id_is_rejected_before_any_probe_write(self):
+        code, out, err = self.run_cli(
+            "preflight",
+            "--provider", "system",
+            "--seats", "7",
+            "--mode", "real",
+            "--preflight-id", "../escape",
+            "--data-root", str(self.data_root),
+        )
+
+        self.assertEqual(1, code)
+        self.assertEqual("", out)
+        self.assertIn("NOT READY", err)
+        self.assertFalse((self.data_root / "escape").exists())
 
     def test_fake_drill_cannot_satisfy_real_seven_seat_or_report_checks(self):
         from hoya_market_agents.competition_drill import run_fake_competition_drill
@@ -154,6 +175,23 @@ class SystemCliTest(unittest.TestCase):
 
         self.assertNotIn("0eed52ad-0c61-462d-a61c-f4b45c9e545f", str(rows))
         self.assertIn("…", rows[0]["identity"])
+
+    def test_real_drill_observation_rejects_missing_timeline(self):
+        checks = _fixture_system_checks()
+        with patch(
+            "hoya_market_agents.cli.verify_run",
+            return_value={
+                "status": "VERIFIED",
+                "provider_mode": "real-subscription",
+                "competition_ready": True,
+                "timeline": None,
+            },
+        ):
+            _apply_drill_observation(checks, self.data_root, "forged-real")
+
+        for check_id in ("seven_seat_timeline", "report_deadline"):
+            check = next(item for item in checks if item["check_id"] == check_id)
+            self.assertFalse(check["ok"])
 
 
 if __name__ == "__main__":

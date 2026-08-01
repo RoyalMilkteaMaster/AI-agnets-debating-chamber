@@ -5,6 +5,7 @@ import io
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from hoya_market_agents import codex_bridge
@@ -35,7 +36,8 @@ from hoya_market_agents.run_store import RunStore
 
 QUESTION = "分析 BTC 過去 14 日市場狀態"
 RUN_ID = "20260801T000000Z-btc-abc123"
-CREATED_AT = "2026-08-01T00:00:00Z"
+CREATED_AT = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+PREFLIGHT_CHALLENGE = "ticket11-fresh-challenge-1234567890"
 
 
 def core_identity(**overrides):
@@ -125,6 +127,7 @@ def write_ready_preflight(run):
         core=core_identity(),
         threads=threads(),
         created_at_utc=CREATED_AT,
+        preflight_challenge=PREFLIGHT_CHALLENGE,
     )
     write_codex_handoff(run, payload)
     return payload
@@ -154,6 +157,7 @@ class CodexHandoffTest(unittest.TestCase):
             "core": core_identity(),
             "threads": threads(),
             "created_at_utc": CREATED_AT,
+            "preflight_challenge": PREFLIGHT_CHALLENGE,
         }
         kwargs.update(overrides)
         return build_codex_handoff(**kwargs)
@@ -393,14 +397,22 @@ class PublicCheckpointTest(unittest.TestCase):
             run = RunStore(temporary_directory).create_run(RUN_ID, CODEX_SEAT_IDS)
             write_ready_preflight(run)
             record = seal_public_checkpoint(
-                run, "derivatives", "derivatives-codex-1", self.checkpoint()
+                run,
+                "derivatives",
+                "derivatives-codex-1",
+                self.checkpoint(),
+                preflight_challenge=PREFLIGHT_CHALLENGE,
             )
 
             self.assertIn("agents/derivatives/attempts/", record["path"])
             self.assertTrue((run.path / record["path"]).is_file())
             with self.assertRaises(CodexBridgeError):
                 seal_public_checkpoint(
-                    run, "derivatives", "derivatives-codex-1", self.checkpoint()
+                    run,
+                    "derivatives",
+                    "derivatives-codex-1",
+                    self.checkpoint(),
+                    preflight_challenge=PREFLIGHT_CHALLENGE,
                 )
 
     def test_checkpoint_must_match_sealed_preflight_seat_thread_mapping(self):
@@ -421,6 +433,7 @@ class PublicCheckpointTest(unittest.TestCase):
                             seat_id,
                             "{}-codex-1".format(seat_id),
                             checkpoint,
+                            preflight_challenge=PREFLIGHT_CHALLENGE,
                         )
 
     def test_checkpoint_without_sealed_preflight_writes_nothing(self):
@@ -429,7 +442,11 @@ class PublicCheckpointTest(unittest.TestCase):
             target = run.path / "agents/derivatives/attempts/derivatives-codex-1"
             with self.assertRaises(CodexBridgeError):
                 seal_public_checkpoint(
-                    run, "derivatives", "derivatives-codex-1", self.checkpoint()
+                    run,
+                    "derivatives",
+                    "derivatives-codex-1",
+                    self.checkpoint(),
+                    preflight_challenge=PREFLIGHT_CHALLENGE,
                 )
             self.assertFalse(target.exists())
 
@@ -534,6 +551,7 @@ class PreflightVerificationTest(unittest.TestCase):
             core=core_identity(),
             threads=threads(),
             created_at_utc=CREATED_AT,
+            preflight_challenge=PREFLIGHT_CHALLENGE,
         )
 
     def run_cli(self, *argv):
@@ -548,6 +566,8 @@ class PreflightVerificationTest(unittest.TestCase):
             "codex",
             "--run-id",
             run_id,
+            "--challenge",
+            PREFLIGHT_CHALLENGE,
             "--data-root",
             str(self.data_root),
         )
@@ -612,11 +632,59 @@ class PreflightVerificationTest(unittest.TestCase):
 
     def test_verify_never_spawns_agents(self):
         write_codex_handoff(self.run, self.payload)
-        result = verify_codex_preflight(self.data_root, RUN_ID)
+        result = verify_codex_preflight(
+            self.data_root,
+            RUN_ID,
+            expected_challenge=PREFLIGHT_CHALLENGE,
+            now_utc=datetime.fromisoformat(CREATED_AT[:-1] + "+00:00"),
+        )
 
         self.assertEqual(STATUS_READY, result["status"])
         self.assertEqual(3, len(result["seats"]))
         self.assertFalse(list((self.run.path / "agents" / "onchain" / "attempts").iterdir()))
+
+    def test_old_wrong_challenge_and_replayed_handoff_are_rejected(self):
+        write_codex_handoff(self.run, self.payload)
+        created = datetime.fromisoformat(CREATED_AT[:-1] + "+00:00")
+
+        with self.assertRaises(PreflightNotReadyError):
+            verify_codex_preflight(
+                self.data_root,
+                RUN_ID,
+                expected_challenge=None,
+                now_utc=created,
+            )
+        with self.assertRaises(PreflightNotReadyError):
+            verify_codex_preflight(
+                self.data_root,
+                RUN_ID,
+                expected_challenge="wrong-challenge-123456789012345",
+                now_utc=created,
+            )
+        with self.assertRaises(PreflightNotReadyError):
+            verify_codex_preflight(
+                self.data_root,
+                RUN_ID,
+                expected_challenge=PREFLIGHT_CHALLENGE,
+                now_utc=created + timedelta(seconds=301),
+                max_age_seconds=300,
+            )
+
+        verify_codex_preflight(
+            self.data_root,
+            RUN_ID,
+            expected_challenge=PREFLIGHT_CHALLENGE,
+            now_utc=created,
+            binding_id="system-preflight-1",
+        )
+        with self.assertRaises(PreflightNotReadyError):
+            verify_codex_preflight(
+                self.data_root,
+                RUN_ID,
+                expected_challenge=PREFLIGHT_CHALLENGE,
+                now_utc=created,
+                binding_id="system-preflight-2",
+            )
 
 
 if __name__ == "__main__":

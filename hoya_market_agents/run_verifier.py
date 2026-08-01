@@ -3,11 +3,13 @@
 import hashlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 from .report_contract import ReportContractError, validate_market_report
 from .report_renderer import render_market_html, render_market_markdown
 from .seats import SEAT_IDS
+from .system_preflight import REQUIRED_CHECK_IDS, load_frozen_roster
 
 
 REQUIRED_ARTIFACTS = (
@@ -96,10 +98,20 @@ def verify_run(data_root, run_id):
     if "<html" not in html.lower() or "@media print" not in html.lower():
         raise RunVerificationError("report.html 缺少離線 HTML 或列印樣式。")
 
+    provider_mode = manifest.get("provider_mode")
+    competition_ready = manifest.get("competition_ready") is True
+    declares_real = provider_mode == "real-subscription" or competition_ready
+    if declares_real and not (provider_mode == "real-subscription" and competition_ready):
+        raise RunVerificationError("real provider mode 與 competition_ready 必須同時成立。")
+
     timeline = manifest.get("competition_timeline")
+    if declares_real and not isinstance(timeline, dict):
+        raise RunVerificationError("real competition run 缺少完整 timeline。")
     if timeline is not None:
         _verify_report_lineage(run_dir, evidence, debate, votes)
         _verify_competition_timeline(run_dir, manifest, votes, timeline)
+    if declares_real:
+        _verify_real_provider_lineage(root, manifest)
 
     return {
         "schema_version": "1.0.0",
@@ -108,8 +120,8 @@ def verify_run(data_root, run_id):
         "run_dir": str(run_dir),
         "seat_count": len(seats),
         "required_artifacts": digests,
-        "provider_mode": manifest.get("provider_mode"),
-        "competition_ready": manifest.get("competition_ready") is True,
+        "provider_mode": provider_mode,
+        "competition_ready": competition_ready,
         "timeline": timeline,
     }
 
@@ -254,6 +266,133 @@ def _verify_report_lineage(run_dir, evidence, debate, votes):
         raise RunVerificationError("report.md 不是由正式 report.json 產生。")
     if (run_dir / "report.html").read_bytes() != expected_html:
         raise RunVerificationError("report.html 不是由正式 report.json 產生。")
+
+
+def _verify_real_provider_lineage(data_root, manifest):
+    try:
+        roster = load_frozen_roster()
+    except ValueError as exc:
+        raise RunVerificationError("frozen roster 無法驗證。") from exc
+    seats = manifest["seats"]
+    expected_by_id = {seat["seat_id"]: seat for seat in roster["seats"]}
+    for seat in seats:
+        expected = expected_by_id[seat["seat_id"]]
+        if (
+            seat.get("provider") != expected["provider"]
+            or seat.get("target_model") != expected["target_model"]
+            or not _actual_model_matches(expected, seat.get("actual_model"))
+        ):
+            raise RunVerificationError(
+                "real run 席位 {} 的 provider/target/actual model 不符。".format(
+                    seat["seat_id"]
+                )
+            )
+
+    lineage = manifest.get("provider_preflight_lineage")
+    required = {"system_preflight_id", "manifest_path", "sha256"}
+    if not isinstance(lineage, dict) or set(lineage) != required:
+        raise RunVerificationError("real run 缺少可稽核 provider preflight lineage。")
+    preflight_id = lineage["system_preflight_id"]
+    if (
+        not isinstance(preflight_id, str)
+        or not preflight_id
+        or preflight_id in (".", "..")
+        or Path(preflight_id).name != preflight_id
+    ):
+        raise RunVerificationError("provider preflight ID 不安全。")
+    expected_relative = "preflight/{}/manifest.json".format(preflight_id)
+    if lineage.get("manifest_path") != expected_relative:
+        raise RunVerificationError("provider preflight manifest path 不一致。")
+    path = data_root / expected_relative
+    _require_regular_file(path, data_root)
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != lineage.get("sha256"):
+        raise RunVerificationError("provider preflight manifest hash 不一致。")
+    preflight = _read_json(path)
+    if preflight.get("mode") != "real" or preflight.get("provider_capabilities_ready") is not True:
+        raise RunVerificationError("provider preflight 未證明真實七席能力。")
+    checks = preflight.get("checks")
+    if (
+        not isinstance(checks, list)
+        or [item.get("check_id") for item in checks if isinstance(item, dict)]
+        != list(REQUIRED_CHECK_IDS)
+    ):
+        raise RunVerificationError("provider preflight checks 不完整或順序不符。")
+    by_check = {item["check_id"]: item for item in checks}
+    failed = [check_id for check_id in REQUIRED_CHECK_IDS if by_check[check_id].get("ok") is not True]
+    if preflight.get("blockers") != failed:
+        raise RunVerificationError("provider preflight blockers 與 checks 不一致。")
+    expected_ready = not failed
+    if (
+        preflight.get("ready") is not expected_ready
+        or preflight.get("status") != ("READY" if expected_ready else "NOT_READY")
+    ):
+        raise RunVerificationError("provider preflight READY 狀態與 blockers 不一致。")
+    failed_provider_checks = set(failed) - {"seven_seat_timeline", "report_deadline"}
+    if failed_provider_checks:
+        raise RunVerificationError("provider preflight 仍有 capability blocker。")
+    preflight_generated = _parse_utc(preflight.get("generated_at_utc"), "provider preflight time")
+    run_started = _parse_utc(manifest.get("started_at_utc"), "run start time")
+    if preflight_generated > run_started:
+        raise RunVerificationError("provider preflight 不得晚於 competition run。")
+    matrix_by_seat = _verify_provider_matrix(preflight.get("provider_matrix"), roster)
+    for seat in seats:
+        if matrix_by_seat[seat["seat_id"]].get("actual_model") != seat.get("actual_model"):
+            raise RunVerificationError(
+                "real run 席位 {} actual model 與 preflight 不一致。".format(
+                    seat["seat_id"]
+                )
+            )
+
+
+def _verify_provider_matrix(matrix, roster):
+    if not isinstance(matrix, list) or len(matrix) != 8:
+        raise RunVerificationError("provider preflight matrix 必須包含 Core 加七席。")
+    by_seat = {}
+    for row in matrix:
+        if not isinstance(row, dict) or not isinstance(row.get("seat_id"), str):
+            raise RunVerificationError("provider matrix row 無效。")
+        if row["seat_id"] in by_seat:
+            raise RunVerificationError("provider matrix 席位重複。")
+        by_seat[row["seat_id"]] = row
+    core = by_seat.pop("core", None)
+    if (
+        core is None
+        or core.get("provider") != "codex"
+        or core.get("target_model") != "gpt-5.6-sol"
+        or core.get("actual_model") != "gpt-5.6-sol"
+    ):
+        raise RunVerificationError("provider matrix Core model 不符。")
+    expected_seats = {seat["seat_id"]: seat for seat in roster["seats"]}
+    if set(by_seat) != set(expected_seats):
+        raise RunVerificationError("provider matrix 未完整保留固定七席。")
+    for seat_id, expected in expected_seats.items():
+        row = by_seat[seat_id]
+        if (
+            row.get("provider") != expected["provider"]
+            or row.get("target_model") != expected["target_model"]
+            or not _actual_model_matches(expected, row.get("actual_model"))
+        ):
+            raise RunVerificationError("provider matrix {} model 不符。".format(seat_id))
+    return by_seat
+
+
+def _actual_model_matches(expected, actual_model):
+    if not isinstance(actual_model, str):
+        return False
+    if expected["provider"] == "claude":
+        lowered = actual_model.lower()
+        return lowered == "opus" or lowered.startswith("claude-opus-")
+    return actual_model == expected["target_model"]
+
+
+def _parse_utc(value, label):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise RunVerificationError("{} 必須為 UTC ISO-8601。".format(label))
+    try:
+        return datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise RunVerificationError("{} 必須為有效 UTC ISO-8601。".format(label)) from exc
 
 
 def _require_regular_file(path, run_dir):

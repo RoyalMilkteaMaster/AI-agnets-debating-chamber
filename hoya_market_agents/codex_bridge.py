@@ -6,8 +6,9 @@ the Core Agent that invoked the repo-local skill.
 """
 
 import hashlib
+import hmac
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 
@@ -29,6 +30,9 @@ TARGET_MODEL = "gpt-5.6-sol"
 STATUS_READY = "READY"
 STATUS_NOT_READY = "NOT READY"
 HANDOFF_PATH = "preflight/codex-handoff.json"
+HANDOFF_BINDING_PATH = "preflight/codex-handoff-binding.json"
+DEFAULT_HANDOFF_MAX_AGE_SECONDS = 300
+MAX_FUTURE_SKEW_SECONDS = 30
 
 _CORE_FIELDS = frozenset(
     {"role", "model", "model_confirmed", "created_threads_by"}
@@ -147,12 +151,20 @@ def codex_seats():
     return tuple(by_id[seat_id] for seat_id in CODEX_SEAT_IDS)
 
 
-def build_codex_handoff(run_id, package, core, threads, created_at_utc):
+def build_codex_handoff(
+    run_id,
+    package,
+    core,
+    threads,
+    created_at_utc,
+    preflight_challenge,
+):
     """Build a verified handoff from Core-observed live thread metadata."""
     if not isinstance(package, QuestionPackage):
         raise CodexBridgeError("question package 必須先由 build_question_package 驗證。")
     _require_non_empty(run_id, "run_id")
     _require_utc(created_at_utc, "created_at_utc")
+    _require_challenge(preflight_challenge)
     _validate_core(core)
     _validate_threads(threads)
 
@@ -212,6 +224,7 @@ def build_codex_handoff(run_id, package, core, threads, created_at_utc):
         "provider": "codex",
         "run_id": run_id,
         "created_at_utc": created_at_utc,
+        "preflight_challenge": preflight_challenge,
         "core": dict(core),
         "question_package": package_value,
         "question_package_sha256": package_hash,
@@ -237,7 +250,15 @@ def write_codex_handoff(run, payload):
     return run.write_json(HANDOFF_PATH, payload, source="Core-observed Codex preflight")
 
 
-def verify_codex_preflight(data_root, run_id):
+def verify_codex_preflight(
+    data_root,
+    run_id,
+    *,
+    expected_challenge,
+    now_utc=None,
+    max_age_seconds=DEFAULT_HANDOFF_MAX_AGE_SECONDS,
+    binding_id=None,
+):
     """Verify an existing Core-written artifact without creating any agent."""
     _require_safe_segment(run_id, "run_id")
     path = _validated_data_root(data_root) / "runs" / run_id / HANDOFF_PATH
@@ -269,6 +290,7 @@ def verify_codex_preflight(data_root, run_id):
                 for seat in payload["seats"]
             },
             created_at_utc=payload["created_at_utc"],
+            preflight_challenge=payload["preflight_challenge"],
         )
     except (KeyError, TypeError, CodexBridgeError) as exc:
         if isinstance(exc, PreflightNotReadyError):
@@ -277,6 +299,14 @@ def verify_codex_preflight(data_root, run_id):
 
     if payload != rebuilt:
         raise PreflightNotReadyError("Codex preflight artifact 與可驗證內容不一致。")
+    _verify_handoff_freshness(
+        payload,
+        expected_challenge=expected_challenge,
+        now_utc=now_utc,
+        max_age_seconds=max_age_seconds,
+    )
+    if binding_id is not None:
+        _bind_handoff_once(path, payload, binding_id)
     return payload
 
 
@@ -331,13 +361,24 @@ def validate_public_checkpoint(checkpoint):
     return checkpoint
 
 
-def seal_public_checkpoint(run, seat_id, attempt_id, checkpoint):
+def seal_public_checkpoint(
+    run,
+    seat_id,
+    attempt_id,
+    checkpoint,
+    *,
+    preflight_challenge,
+):
     """Write one public resume checkpoint inside its seat attempt directory."""
     if seat_id not in CODEX_SEAT_IDS:
         raise CodexBridgeError("不是固定 GPT 席：{}".format(seat_id))
     _require_safe_segment(attempt_id, "attempt_id")
     validate_public_checkpoint(checkpoint)
-    preflight = verify_codex_preflight(run.path.parent.parent, run.run_id)
+    preflight = verify_codex_preflight(
+        run.path.parent.parent,
+        run.run_id,
+        expected_challenge=preflight_challenge,
+    )
     seat_mapping = {
         seat["seat_id"]: (seat["thread_id"], seat["attempt_id"])
         for seat in preflight["seats"]
@@ -553,6 +594,83 @@ def _require_safe_segment(value, label):
     _require_non_empty(value, label)
     if Path(value).name != value or value in (".", "..") or "/" in value or "\\" in value:
         raise CodexBridgeError("{} 不得包含路徑。".format(label))
+
+
+def _require_challenge(value):
+    _require_non_empty(value, "preflight_challenge")
+    if not 24 <= len(value) <= 128 or any(
+        not (character.isascii() and (character.isalnum() or character in "-_"))
+        for character in value
+    ):
+        raise CodexBridgeError(
+            "preflight_challenge 必須為 24 至 128 字元的 URL-safe nonce。"
+        )
+
+
+def _verify_handoff_freshness(
+    payload,
+    *,
+    expected_challenge,
+    now_utc,
+    max_age_seconds,
+):
+    if (
+        not isinstance(max_age_seconds, (int, float))
+        or isinstance(max_age_seconds, bool)
+        or max_age_seconds <= 0
+    ):
+        raise PreflightNotReadyError("Codex handoff max age 設定無效。")
+    challenge = payload.get("preflight_challenge")
+    _require_challenge(challenge)
+    try:
+        _require_challenge(expected_challenge)
+    except CodexBridgeError as exc:
+        raise PreflightNotReadyError("缺少有效的 expected challenge。") from exc
+    if not hmac.compare_digest(challenge, expected_challenge):
+        raise PreflightNotReadyError("Codex handoff challenge 不符。")
+
+    created = _parse_utc(payload.get("created_at_utc"), "created_at_utc")
+    observed = _coerce_now(now_utc)
+    age_seconds = (observed - created).total_seconds()
+    if age_seconds < -MAX_FUTURE_SKEW_SECONDS:
+        raise PreflightNotReadyError("Codex handoff 時間晚於允許的 clock skew。")
+    if age_seconds > max_age_seconds:
+        raise PreflightNotReadyError("Codex handoff 已超過 freshness window。")
+
+
+def _bind_handoff_once(handoff_path, payload, binding_id):
+    _require_safe_segment(binding_id, "binding_id")
+    target = handoff_path.parent / Path(HANDOFF_BINDING_PATH).name
+    marker = {
+        "schema_version": CONTRACT_VERSION,
+        "run_id": payload["run_id"],
+        "binding_id": binding_id,
+        "preflight_challenge_sha256": _sha256_text(payload["preflight_challenge"]),
+        "codex_handoff_sha256": hashlib.sha256(handoff_path.read_bytes()).hexdigest(),
+    }
+    try:
+        with target.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(marker, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    except FileExistsError as exc:
+        raise PreflightNotReadyError("Codex handoff 已綁定，拒絕 replay。") from exc
+    except OSError as exc:
+        raise PreflightNotReadyError("Codex handoff 無法建立一次性綁定。") from exc
+
+
+def _parse_utc(value, label):
+    _require_utc(value, label)
+    return datetime.fromisoformat(value[:-1] + "+00:00")
+
+
+def _coerce_now(value):
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, str):
+        return _parse_utc(value, "now_utc")
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise PreflightNotReadyError("now_utc 必須為 timezone-aware datetime。")
+    return value.astimezone(timezone.utc)
 
 
 def _require_utc(value, label):

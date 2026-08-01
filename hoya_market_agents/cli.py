@@ -44,6 +44,7 @@ from .system_preflight import (
     PreflightError,
     build_preflight_manifest,
     load_frozen_roster,
+    preflight_manifest_path,
     write_preflight_manifest,
 )
 
@@ -97,6 +98,10 @@ def build_parser():
     drill.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     preflight.add_argument("--mode", choices=("real", "fixture"), default="real")
     preflight.add_argument("--codex-run-id", help="fresh Core Task 寫入的 Codex handoff run_id")
+    preflight.add_argument(
+        "--codex-challenge",
+        help="啟動 fresh Core Task 前產生並交給它的 URL-safe one-time nonce",
+    )
     preflight.add_argument("--drill-run-id", help="已通過 verify-run 的七席演練 run_id")
     preflight.add_argument("--preflight-id", help="唯一 preflight artifact 目錄名稱")
     preflight.add_argument(
@@ -116,6 +121,11 @@ def build_parser():
         help="要驗證的 provider bridge；本版本只支援 codex。",
     )
     preflight.add_argument("--run-id", required=True, help="要驗證的 run_id")
+    preflight.add_argument(
+        "--challenge",
+        required=True,
+        help="建立該 fresh handoff 時使用的 preflight challenge",
+    )
     preflight.add_argument(
         "--data-root",
         default=str(DEFAULT_DATA_ROOT),
@@ -230,6 +240,11 @@ def _system_preflight(args, out, err):
     preflight_id = args.preflight_id or datetime.now(timezone.utc).strftime(
         "%Y%m%dT%H%M%SZ-{}".format(secrets.token_hex(3))
     )
+    try:
+        manifest_path = preflight_manifest_path(Path(args.data_root), preflight_id)
+    except PreflightError as exc:
+        print("NOT READY：{}".format(exc), file=err)
+        return EXIT_FAILED
     provider_matrix = []
     checks = _fixture_system_checks()
     if args.mode == "real":
@@ -255,9 +270,7 @@ def _system_preflight(args, out, err):
             code_root=CODE_ROOT,
             data_root=Path(args.data_root),
         )
-        manifest["manifest_path"] = str(
-            Path(args.data_root).resolve() / "preflight" / preflight_id / "manifest.json"
-        )
+        manifest["manifest_path"] = str(manifest_path)
         manifest["provider_matrix"] = provider_matrix
         write_preflight_manifest(Path(args.data_root), preflight_id, manifest)
     except (OSError, PreflightError) as exc:
@@ -296,9 +309,14 @@ def _real_system_checks(args, preflight_id):
     _apply_local_observations(checks, artifact_root)
 
     codex = None
-    if args.codex_run_id:
+    if args.codex_run_id and args.codex_challenge:
         try:
-            codex = verify_codex_preflight(data_root, args.codex_run_id)
+            codex = verify_codex_preflight(
+                data_root,
+                args.codex_run_id,
+                expected_challenge=args.codex_challenge,
+                binding_id=preflight_id,
+            )
         except CodexBridgeError as exc:
             _set_check(
                 checks,
@@ -316,12 +334,13 @@ def _real_system_checks(args, preflight_id):
                 "verified fresh Core handoff {}".format(args.codex_run_id),
             )
     else:
+        missing = "--codex-run-id and --codex-challenge"
         _set_check(
             checks,
             "codex_runtime_receipts",
             False,
             "not_observed",
-            "fresh Codex Task did not supply --codex-run-id",
+            "fresh Codex Task did not supply {}".format(missing),
         )
 
     provider_matrix = _codex_matrix(codex)
@@ -374,7 +393,7 @@ def _real_system_checks(args, preflight_id):
         codex
         and claude
         and len(claude.get("seats", ())) == 3
-        and all("opus" in (seat.get("actual_model") or "") for seat in claude["seats"])
+        and all(_is_claude_opus_model(seat.get("actual_model")) for seat in claude["seats"])
         and antigravity
         and antigravity.get("actual_model") == "gemini-3.1-pro-high"
     )
@@ -638,6 +657,13 @@ def _masked_id(value):
     return "{}…{}".format(value[:8], value[-4:]) if len(value) > 12 else "[REDACTED]"
 
 
+def _is_claude_opus_model(value):
+    if not isinstance(value, str):
+        return False
+    lowered = value.lower()
+    return lowered == "opus" or lowered.startswith("claude-opus-")
+
+
 def _apply_drill_observation(checks, data_root, run_id):
     try:
         summary = verify_run(data_root, run_id)
@@ -646,7 +672,11 @@ def _apply_drill_observation(checks, data_root, run_id):
         for check_id in ("seven_seat_timeline", "report_deadline"):
             next(item for item in checks if item["check_id"] == check_id)["evidence"] = evidence
         return
-    if summary.get("provider_mode") != "real-subscription" or not summary.get("competition_ready"):
+    if (
+        summary.get("provider_mode") != "real-subscription"
+        or not summary.get("competition_ready")
+        or not isinstance(summary.get("timeline"), dict)
+    ):
         evidence = "verified {} is not live competition evidence".format(
             summary.get("provider_mode") or "unknown provider mode"
         )
@@ -705,7 +735,11 @@ def _drill(args, out, err):
 def _verify_preflight(args, out, err):
     """Read an already-written handoff artifact and report READY / NOT_READY."""
     try:
-        payload = verify_codex_preflight(Path(args.data_root), args.run_id)
+        payload = verify_codex_preflight(
+            Path(args.data_root),
+            args.run_id,
+            expected_challenge=args.challenge,
+        )
     except CodexBridgeError as exc:
         print("{}：{}".format(STATUS_NOT_READY, exc), file=err)
         return EXIT_FAILED

@@ -89,6 +89,7 @@ class SystemPreflightManifestTest(unittest.TestCase):
 
         self.assertEqual("READY", manifest["status"])
         self.assertTrue(manifest["ready"])
+        self.assertTrue(manifest["provider_capabilities_ready"])
         self.assertEqual([], manifest["blockers"])
         self.assertEqual(set(REQUIRED_CHECK_IDS), {item["check_id"] for item in manifest["checks"]})
 
@@ -97,6 +98,7 @@ class SystemPreflightManifestTest(unittest.TestCase):
 
         self.assertEqual("NOT_READY", manifest["status"])
         self.assertFalse(manifest["ready"])
+        self.assertFalse(manifest["provider_capabilities_ready"])
         self.assertEqual("PASS", manifest["simulation_status"])
         self.assertIn("fixture_mode_is_not_live_evidence", manifest["blockers"])
 
@@ -113,6 +115,17 @@ class SystemPreflightManifestTest(unittest.TestCase):
                 self.assertEqual("NOT_READY", manifest["status"])
                 self.assertFalse(manifest["ready"])
                 self.assertIn(broken, manifest["blockers"])
+
+    def test_provider_capabilities_can_be_proven_before_timeline_drill(self):
+        checks = passing_checks()
+        for check_id in ("seven_seat_timeline", "report_deadline"):
+            next(item for item in checks if item["check_id"] == check_id)["ok"] = False
+
+        manifest = self.build(checks)
+
+        self.assertEqual("NOT_READY", manifest["status"])
+        self.assertTrue(manifest["provider_capabilities_ready"])
+        self.assertEqual(["seven_seat_timeline", "report_deadline"], manifest["blockers"])
 
     def test_missing_required_check_fails_closed(self):
         manifest = self.build(passing_checks()[:-1])
@@ -134,11 +147,22 @@ class SystemPreflightManifestTest(unittest.TestCase):
 
     def test_empty_or_path_like_preflight_id_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            for preflight_id in ("", ".", "../outside", "nested/id"):
+            for preflight_id in ("", ".", "..", "../outside", "nested/id"):
                 with self.subTest(preflight_id=preflight_id), self.assertRaises(ValueError):
                     write_preflight_manifest(
                         Path(temporary_directory), preflight_id, self.build()
                     )
+
+    def test_preflight_target_symlink_cannot_escape_data_root(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory) / "data"
+            outside = Path(temporary_directory) / "outside"
+            (data_root / "preflight").mkdir(parents=True)
+            outside.mkdir()
+            (data_root / "preflight" / "escape").symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaises(ValueError):
+                write_preflight_manifest(data_root, "escape", self.build())
 
 
 if __name__ == "__main__":

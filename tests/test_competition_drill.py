@@ -65,6 +65,29 @@ class CompetitionDrillTest(unittest.TestCase):
         self.assertFalse(manifest["competition_ready"])
         self.assertIn("不得作為真實市場或訂閱 provider READY 證據", manifest["limitations"])
 
+    def test_fake_manifest_cannot_be_promoted_to_real_by_flag_edits(self):
+        for remove_timeline in (True, False):
+            with self.subTest(remove_timeline=remove_timeline):
+                root = self.data_root / str(remove_timeline)
+                result = run_fake_competition_drill(
+                    data_root=root,
+                    question="分析 BTC 過去 14 日市場狀態",
+                    token="d3333{}".format(int(remove_timeline)),
+                )
+                manifest_path = result.run_dir / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["provider_mode"] = "real-subscription"
+                manifest["competition_ready"] = True
+                if remove_timeline:
+                    manifest.pop("competition_timeline")
+                manifest_path.write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                with self.assertRaises(RunVerificationError):
+                    verify_run(root, result.run_id)
+
     def test_verify_run_rejects_late_seat_late_report_and_snapshot_tamper(self):
         for failure in ("seat", "report", "snapshot"):
             with self.subTest(failure=failure):

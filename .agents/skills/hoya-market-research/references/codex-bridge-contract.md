@@ -6,6 +6,11 @@ Core creates exactly three persistent Codex threads first, then calls
 `build_codex_handoff(...)` with the observed metadata. Python validates and
 stores metadata; it never creates or impersonates an agent.
 
+The operator first generates a fresh URL-safe challenge. Core must copy that
+exact nonce into `preflight_challenge`. Verification rejects the wrong nonce,
+a handoff older than 300 seconds, a handoff too far in the future, or a handoff
+already bound to another system preflight. The binding artifact is write-once.
+
 ## Required runtime metadata
 
 - Core: `role=core`, `model=gpt-5.6-sol`, `model_confirmed=true`,
@@ -28,10 +33,14 @@ Write the result once to:
 `<Data Root>/runs/<run_id>/preflight/codex-handoff.json`
 
 The result includes the validated Question Package; pinned research snapshot;
-shared prompt, contract, and source/time-policy bytes plus SHA-256 values; and
+shared prompt, preflight challenge, contract, and source/time-policy bytes plus SHA-256 values; and
 the three seat/thread/model/dispatch-policy/output-path records. The verifier rebuilds the
 whole object and requires exact equality, so changed hashes, seats, models,
 question data, policies or prompt bytes fail closed.
+
+`verify-preflight` is read-only and requires the expected challenge. The real
+system preflight additionally binds the verified handoff once; repeating the
+same handoff under another preflight ID is rejected as replay.
 
 ## Public continuation
 
@@ -44,7 +53,8 @@ inside its seat attempt directory. Its exact fields are `checkpoint_id`,
 `thread_id`, `evidence_ids`, `public_status`, and `provisional_stance`; extra
 or hidden-reasoning fields are rejected. Before writing, it reloads the sealed
 preflight and requires exact seat-to-thread and seat-to-attempt equality;
-wrong-seat, wrong-thread or missing-preflight input writes nothing.
+wrong-seat, wrong-thread, wrong challenge or missing-preflight input writes
+nothing.
 
 ## Raw seat handoff and path isolation
 

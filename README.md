@@ -85,7 +85,8 @@ fixture 即使全數通過仍輸出 `NOT_READY`；`simulation_status=PASS` 只�
 故障注入可使用 `--fixture-failure login|model|write|renderer`，每種都必須輸出
 `NOT_READY`。
 
-真實 preflight 必須從 fresh Codex Task 取得 `<CODEX_RUN_ID>`；若已有真實七席演練才再
+真實 preflight 必須從 fresh Codex Task 取得 `<CODEX_RUN_ID>` 與該次 one-time
+`<CODEX_CHALLENGE>`；若已有真實七席演練才再
 提供 `<REAL_DRILL_RUN_ID>`：
 
 ```bash
@@ -93,6 +94,7 @@ fixture 即使全數通過仍輸出 `NOT_READY`；`simulation_status=PASS` 只�
 cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
 python3 -m hoya_market_agents preflight --provider system --seats 7 \
   --mode real --codex-run-id <CODEX_RUN_ID> \
+  --codex-challenge <CODEX_CHALLENGE> \
   --drill-run-id <REAL_DRILL_RUN_ID>
 ```
 

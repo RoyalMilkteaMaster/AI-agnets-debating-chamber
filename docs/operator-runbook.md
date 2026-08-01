@@ -70,22 +70,32 @@ python3 -m hoya_market_agents preflight --provider system --seats 7 --mode fixtu
 ## 4. Fresh Core preflight
 
 1. 關閉舊 Codex Task。
-2. 從 `$CODE_ROOT` 開啟 fresh Codex Task。
-3. 呼叫 `$hoya-market-research --preflight`。
-4. Core 必須觀察自身 actual model、三個 persistent thread、runtime dispatch receipt；缺一即停止。
-5. 記下 Skill 產生的 `<CODEX_RUN_ID>`，不要自行編造 ID 或 receipt。
+2. 在 WSL 產生 one-time challenge：
+
+   ```bash
+   # WSL
+   CODEX_CHALLENGE="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+   printf '%s\n' "$CODEX_CHALLENGE"
+   ```
+
+3. 從 `$CODE_ROOT` 開啟 fresh Codex Task，把上面的 challenge 原樣交給 Core。
+4. 呼叫 `$hoya-market-research --preflight`，並指定該 challenge。
+5. Core 必須觀察自身 actual model、三個 persistent thread、runtime dispatch receipt；缺一即停止。
+6. 記下 Skill 產生的 `<CODEX_RUN_ID>`，不要自行編造 ID 或 receipt。
 
 接著執行：
 
 ```bash
 # WSL
 python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real \
-  --codex-run-id '<CODEX_RUN_ID>'
+  --codex-run-id '<CODEX_RUN_ID>' --codex-challenge "$CODEX_CHALLENGE"
 ```
 
 這會在 Codex handoff 有效後才消耗 Claude Max／Google Ultra smoke。現在 Ticket #8 的 Codex
 receipt 是 no-tool policy，不能證明三個 GPT 席各自搜尋，因此目前正確結果預期為
 `NOT_READY`，blocker 為 `search`。禁止改用 fake、降低模型或移除 receipt 來湊 READY。
+handoff 必須在 300 秒內驗證且只能綁定一次；過期、challenge 不符或 replay 都要重開
+fresh Task 並產生新 challenge。
 
 ## 5. 正式題目
 
@@ -111,6 +121,9 @@ explorer.exe "$(wslpath -w "$REPORT")"
 
 `verify-run` 必須 exit `0` 並輸出 `VERIFIED`。它會檢查六個必要 artifact、manifest hash
 index、七席 lineage、T+4:45、T+5、辯論停止、T+13 與離線 HTML。
+任何宣稱 `real-subscription`／`competition_ready=true` 的 run 還必須包含完整 timeline、
+report.json 同源驗證、七席 target/actual provider/model，以及可回查且 hash 相符的 real
+provider-preflight manifest；只改 manifest flag 或移除 timeline 必定拒絕。
 
 ## 7. 精確 Run ID 清理（只由 operator 執行）
 
