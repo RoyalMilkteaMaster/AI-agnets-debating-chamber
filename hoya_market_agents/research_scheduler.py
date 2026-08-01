@@ -101,7 +101,12 @@ class ResearchScheduler:
 
     def tick(self):
         self._require_started()
+        return self._sync_deadlines()
+
+    def _sync_deadlines(self):
         now = self.elapsed_ms
+        if now >= ACCEPT_RESULTS_UNTIL_MS:
+            self.accepting_results = False
         for milestone in MILESTONES_MS:
             if milestone <= now and milestone not in self.completed_milestones:
                 self._milestone(milestone)
@@ -110,6 +115,7 @@ class ResearchScheduler:
     def submit_result(self, attempt_id, raw_output):
         """Validate and adopt a result, or retain it as diagnostic/late output."""
         self._require_started()
+        self._sync_deadlines()
         attempt = self._attempt(attempt_id)
         elapsed = self.elapsed_ms
         if self.seal is not None or not self.accepting_results or elapsed >= ACCEPT_RESULTS_UNTIL_MS:
@@ -122,7 +128,6 @@ class ResearchScheduler:
             return "unrepairable"
 
         accepted_raw, records = validated
-        validate_seat_evidence(attempt.seat_id, records)
         adopted = self.run.record_attempt(
             attempt.seat_id,
             attempt.attempt_id,
@@ -142,8 +147,18 @@ class ResearchScheduler:
         self._require_started()
         if failure_kind not in FAILURE_KINDS:
             raise ValueError("未知 failure kind：{}".format(failure_kind))
+        self._sync_deadlines()
         attempt = self._attempt(attempt_id)
         elapsed = self.elapsed_ms
+        if self.seal is not None or not self.accepting_results:
+            self._event(
+                "failure_ignored_after_cutoff",
+                elapsed,
+                attempt,
+                failure_kind=failure_kind,
+                error=str(message),
+            )
+            return None
         self.finished_attempt_ids.add(attempt_id)
         self._event(
             failure_kind,
@@ -189,6 +204,8 @@ class ResearchScheduler:
             )
 
     def _retry_unstarted(self, elapsed):
+        if not self.accepting_results:
+            return
         for state in self.recovery.seats.values():
             if state.adopted_attempt_id or state.started_attempt_ids:
                 continue
@@ -238,6 +255,8 @@ class ResearchScheduler:
             )
 
     def _replace_missing(self, elapsed):
+        if not self.accepting_results:
+            return
         for state in self.recovery.seats.values():
             if state.adopted_attempt_id:
                 continue
@@ -280,6 +299,14 @@ class ResearchScheduler:
         self._event("attempt_started", at_ms, attempt, model=attempt.model)
 
     def _recover(self, attempt_id, reason, elapsed):
+        if not self.accepting_results or self.seal is not None:
+            self._event(
+                "recovery_ignored_after_cutoff",
+                elapsed,
+                self._attempt(attempt_id),
+                error=reason,
+            )
+            return None
         next_attempt = self.recovery.recover(attempt_id, reason)
         if next_attempt is None:
             self._event(
@@ -295,7 +322,7 @@ class ResearchScheduler:
     def _validate_with_repair(self, attempt, raw_output, elapsed):
         raw = raw_output
         try:
-            return raw, self.gateway.validate(attempt, raw)
+            return raw, self._validate_submission(attempt, raw)
         except Exception as exc:  # contract boundary; exact error is audited
             error = str(exc)
             self._event("malformed_output", elapsed, attempt, error=error)
@@ -319,7 +346,7 @@ class ResearchScheduler:
             )
         if corrected is not None:
             try:
-                records = self.gateway.validate(attempt, corrected)
+                records = self._validate_submission(attempt, corrected)
                 self._event("original_format_correction_valid", elapsed, attempt)
                 return corrected, records
             except Exception as exc:
@@ -345,7 +372,7 @@ class ResearchScheduler:
             )
             return None
         try:
-            records = self.gateway.validate(attempt, repaired)
+            records = self._validate_submission(attempt, repaired)
         except Exception as exc:
             self._event("format_repair_invalid", elapsed, attempt, error=str(exc))
             return None
@@ -370,6 +397,11 @@ class ResearchScheduler:
         )
         self._event("format_repair_valid", elapsed, attempt)
         return repaired, records
+
+    def _validate_submission(self, attempt, raw_output):
+        records = self.gateway.validate(attempt, raw_output)
+        validate_seat_evidence(attempt.seat_id, records)
+        return records
 
     def _cancel_running(self, elapsed):
         for attempt_id, attempt in self.attempts.items():

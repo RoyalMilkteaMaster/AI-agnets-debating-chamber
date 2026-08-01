@@ -120,6 +120,23 @@ def evidence_raw(attempt, suffix="01"):
     )
 
 
+def evidence_batch_raw(attempt, count, duplicate_ids=False, trailing_comma=False):
+    template = json.loads(evidence_raw(attempt))[0]
+    records = []
+    for index in range(count):
+        suffix = "01" if duplicate_ids else "{:02d}".format(index + 1)
+        records.append(
+            {
+                **template,
+                "evidence_id": "{}-{}".format(attempt.seat_id, suffix),
+                "source_url": "https://example.invalid/{}".format(index + 1),
+                "source_origin": "fixture:{}".format(index + 1),
+            }
+        )
+    raw = json.dumps(records, ensure_ascii=False)
+    return raw[:-1] + ",]" if trailing_comma else raw
+
+
 class ResearchSchedulerTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -242,6 +259,47 @@ class ResearchSchedulerTest(unittest.TestCase):
         self.assertEqual(0, event[0]["elapsed_ms"])
         self.assertEqual("provider returned 503", event[0]["error"])
 
+    def test_failure_callback_syncs_cutoff_before_any_recovery(self):
+        self.scheduler.start()
+        primary = self.scheduler.recovery.seats["news"].attempts[0]
+        self.clock.advance_ms(300_000)
+
+        result = self.scheduler.report_failure(
+            primary.attempt_id, "timeout", "arrived after research deadline"
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            ["news-a1"],
+            [item.attempt_id for item in self.scheduler.recovery.seats["news"].attempts],
+        )
+        self.assertIsNotNone(self.scheduler.seal)
+        names = [event["event"] for event in self.scheduler.events]
+        self.assertIn("failure_ignored_after_cutoff", names)
+        self.assertNotIn(
+            300_000,
+            [
+                event["elapsed_ms"]
+                for event in self.scheduler.events
+                if event["event"] == "attempt_launch_requested"
+            ],
+        )
+
+    def test_result_callback_syncs_seal_and_discards_without_prior_tick(self):
+        self.scheduler.start()
+        primary = self.scheduler.recovery.seats["news"].attempts[0]
+        self.clock.advance_ms(300_000)
+
+        result = self.scheduler.submit_result(primary.attempt_id, evidence_raw(primary))
+
+        self.assertEqual("late", result)
+        self.assertIsNotNone(self.scheduler.seal)
+        self.assertFalse(self.scheduler.adopted_records)
+        self.assertEqual(
+            ["news-a1"],
+            [item.attempt_id for item in self.scheduler.recovery.seats["news"].attempts],
+        )
+
     def test_checkpoint_is_saved_and_passed_to_later_replacement(self):
         self.scheduler.start()
         self.runner.checkpoints["news-a1"] = {"public_claims": ["checkpoint"]}
@@ -312,6 +370,66 @@ class ResearchSchedulerTest(unittest.TestCase):
         self.assertEqual("unrepairable", result)
         self.assertEqual(
             "same_model_retry", self.scheduler.recovery.seats["news"].attempts[-1].kind
+        )
+
+    def test_nine_cards_are_malformed_and_recovered_not_raised(self):
+        self.scheduler.format_repairer = NoRepairer()
+        self.scheduler.start()
+        attempt = self.scheduler.recovery.seats["news"].attempts[0]
+
+        result = self.scheduler.submit_result(
+            attempt.attempt_id, evidence_batch_raw(attempt, 9)
+        )
+
+        self.assertEqual("unrepairable", result)
+        self.assertIn("malformed_output", [event["event"] for event in self.scheduler.events])
+        self.assertEqual(
+            "same_model_retry", self.scheduler.recovery.seats["news"].attempts[-1].kind
+        )
+
+    def test_duplicate_evidence_ids_are_malformed_and_recovered_not_raised(self):
+        self.scheduler.format_repairer = NoRepairer()
+        self.scheduler.start()
+        attempt = self.scheduler.recovery.seats["news"].attempts[0]
+
+        result = self.scheduler.submit_result(
+            attempt.attempt_id,
+            evidence_batch_raw(attempt, 2, duplicate_ids=True),
+        )
+
+        self.assertEqual("unrepairable", result)
+        malformed = [
+            event for event in self.scheduler.events if event["event"] == "malformed_output"
+        ]
+        self.assertIn("重複", malformed[0]["error"])
+
+    def test_original_correction_also_enforces_whole_seat_contract(self):
+        self.scheduler.format_repairer = NoRepairer()
+        self.scheduler.start()
+        attempt = self.scheduler.recovery.seats["news"].attempts[0]
+        self.runner.corrected_outputs[attempt.attempt_id] = evidence_batch_raw(attempt, 9)
+
+        result = self.scheduler.submit_result(attempt.attempt_id, "not-json")
+
+        self.assertEqual("unrepairable", result)
+        self.assertIn(
+            "original_format_correction_invalid",
+            [event["event"] for event in self.scheduler.events],
+        )
+
+    def test_format_repair_also_enforces_whole_seat_contract(self):
+        self.scheduler.start()
+        attempt = self.scheduler.recovery.seats["news"].attempts[0]
+
+        result = self.scheduler.submit_result(
+            attempt.attempt_id,
+            evidence_batch_raw(attempt, 9, trailing_comma=True),
+        )
+
+        self.assertEqual("unrepairable", result)
+        self.assertIn(
+            "format_repair_invalid",
+            [event["event"] for event in self.scheduler.events],
         )
 
     def test_format_repair_cannot_change_market_content(self):
