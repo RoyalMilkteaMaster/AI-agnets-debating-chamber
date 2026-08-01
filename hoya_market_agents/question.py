@@ -11,11 +11,19 @@ from dataclasses import dataclass
 SUPPORTED_ASSETS = ("BTC", "ETH", "SOL", "BNB", "XRP")
 DEFAULT_PERIOD_DAYS = 14
 
-# Ticker-shaped tokens are upper-case runs of 2 to 5 latin letters. Every such
-# token must be an approved asset; the gate has no allow-list for other
-# acronyms, so an unrecognised token rejects the question rather than being
-# silently ignored.
-_TICKER_PATTERN = re.compile(r"(?<![A-Za-z])[A-Z]{2,5}(?![A-Za-z])")
+# Approved symbols are case-insensitive at the input boundary and canonical in
+# the resulting scope. Unknown upper-case ticker-shaped tokens still fail
+# closed. Lower-case words are only treated as unknown assets when paired with
+# an approved symbol by a comparison connector, so ordinary prose such as
+# ``price action`` is not mistaken for a cryptocurrency.
+_ASSET_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z])([A-Za-z]{2,5})(?![A-Za-z])")
+_UPPERCASE_TICKER_PATTERN = re.compile(r"(?<![A-Za-z])[A-Z]{2,5}(?![A-Za-z])")
+_COMPARISON_PAIR_PATTERN = re.compile(
+    r"(?<![A-Za-z])([A-Za-z]{2,5})(?![A-Za-z])\s*"
+    r"(?:與|和|跟|vs\.?|/)\s*"
+    r"(?<![A-Za-z])([A-Za-z]{2,5})(?![A-Za-z])",
+    re.IGNORECASE,
+)
 _PERIOD_PATTERN = re.compile(r"(\d{1,3})\s*(?:日|天|days?)", re.IGNORECASE)
 
 
@@ -43,16 +51,21 @@ def analyze_question(question):
     if not text:
         raise UnsupportedQuestionError("題目為空；無法判定分析資產，fail closed。")
 
-    tickers = _TICKER_PATTERN.findall(text)
-    unsupported = sorted({t for t in tickers if t not in SUPPORTED_ASSETS})
+    asset_tokens = [token.upper() for token in _ASSET_TOKEN_PATTERN.findall(text)]
+    unsupported = {
+        token
+        for token in _UPPERCASE_TICKER_PATTERN.findall(text)
+        if token not in SUPPORTED_ASSETS
+    }
+    unsupported.update(_unsupported_comparison_assets(text))
     if unsupported:
         raise UnsupportedQuestionError(
             "題目包含未核准資產或無法辨識的代號 {}；僅支援 {}，fail closed。".format(
-                ", ".join(unsupported), ", ".join(SUPPORTED_ASSETS)
+                ", ".join(sorted(unsupported)), ", ".join(SUPPORTED_ASSETS)
             )
         )
 
-    found = {t for t in tickers if t in SUPPORTED_ASSETS}
+    found = {token for token in asset_tokens if token in SUPPORTED_ASSETS}
     if not found:
         raise UnsupportedQuestionError(
             "題目未指名任何已核准資產（{}）；fail closed。".format(
@@ -68,6 +81,16 @@ def analyze_question(question):
         period_days=period_days,
         period_stated=period_stated,
     )
+
+
+def _unsupported_comparison_assets(text):
+    unsupported = set()
+    for left, right in _COMPARISON_PAIR_PATTERN.findall(text):
+        pair = (left.upper(), right.upper())
+        if not any(token in SUPPORTED_ASSETS for token in pair):
+            continue
+        unsupported.update(token for token in pair if token not in SUPPORTED_ASSETS)
+    return unsupported
 
 
 def _read_period(text):

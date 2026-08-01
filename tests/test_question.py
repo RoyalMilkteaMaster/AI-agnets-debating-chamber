@@ -19,6 +19,17 @@ class AnalyzeQuestionTest(unittest.TestCase):
         self.assertEqual("btc", scope.asset_slug)
         self.assertEqual("分析 BTC 過去 14 日市場狀態", scope.question)
 
+    def test_supported_asset_matching_is_case_insensitive_and_normalized(self):
+        scope = analyze_question("比較 xrp 與 Btc 過去 14 日相對強弱")
+
+        self.assertEqual(("BTC", "XRP"), scope.assets)
+        self.assertEqual("btc-xrp", scope.asset_slug)
+
+    def test_lowercase_english_description_is_not_treated_as_an_asset(self):
+        scope = analyze_question("分析 btc 過去 14 日 price action")
+
+        self.assertEqual(("BTC",), scope.assets)
+
     def test_period_defaults_to_fourteen_days_when_unstated(self):
         scope = analyze_question("分析 ETH 市場狀態")
 
@@ -48,6 +59,17 @@ class AnalyzeQuestionTest(unittest.TestCase):
             analyze_question("比較 BTC 與 DOGE 過去 14 日相對強弱")
 
         self.assertIn("DOGE", str(caught.exception))
+
+    def test_lowercase_unsupported_asset_in_comparison_fails_closed(self):
+        for question in (
+            "比較 BTC 與 doge 過去 14 日相對強弱",
+            "分析 eth 跟 DoGe 的市場位置",
+        ):
+            with self.subTest(question=question):
+                with self.assertRaises(UnsupportedQuestionError) as caught:
+                    analyze_question(question)
+
+                self.assertIn("DOGE", str(caught.exception))
 
     def test_question_without_any_asset_fails_closed(self):
         with self.assertRaises(UnsupportedQuestionError):
