@@ -2,9 +2,9 @@
 
 七席多模型加密市場研究流程的 WSL Python 控制程式。
 
-本版本是 **Ticket #2 tracer bullet**：使用離線 fake provider 打通「題目 → 七席研究 →
-共享辯論 → 投票 → 報告」的完整骨架。**尚未接上任何真實模型**，輸出內容一律為示範資料，
-不得作為市場依據。
+本版本的分析指令仍使用離線 fake provider 打通「題目 → 七席研究 → 共享辯論 → 投票 →
+報告」骨架，輸出內容一律為示範資料，不得作為市場依據。Antigravity 真實模型目前只接到
+單席 preflight，尚未接入完整分析 run。
 
 Ticket #3 另外提供版本化 Question Package 與 Research Prompt Builder：可正規化單幣、
 兩幣比較、整體市場、事件影響四種題型，並把 repo-local 固定 research 規則、來源時間政策、
@@ -14,7 +14,7 @@ EvidenceCard contract 與操作邊界等價注入七席。這不代表 Ticket #2
 ## 執行環境
 
 - WSL Ubuntu 24.04、Python 3.12（只使用標準函式庫）。
-- 不需要任何 API key、登入或網路連線。
+- fake run 與單元測試不需要 API key、登入或網路；真實 preflight 使用既有 OAuth 登入。
 - 不需要安裝套件、不需要 venv。
 
 所有指令都在 **WSL** 中、從 Code Root 執行。
@@ -48,6 +48,27 @@ python3 -m unittest tests.test_question_package tests.test_prompt_builder -v
 ```
 
 測試全部離線：使用可注入的 fake clock 與 fake provider，不呼叫真實模型、不讀網路。
+
+只執行 Antigravity Adapter 單元測試（WSL）：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m unittest tests.test_antigravity_adapter -v
+```
+
+## Antigravity 單席 preflight
+
+以下指令會使用 WSL 既有的 Google OAuth 登入，驗證 `agy` 版本、
+`gemini-3.1-pro-high`、high effort、`search_web` 與 structured output：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m hoya_market_agents preflight --provider antigravity --seats 1
+```
+
+Schema、CLI log 與 raw envelope 只會寫到 Data Root；輸出不包含 OAuth token 或帳號資料。
 
 ## 執行一次分析
 

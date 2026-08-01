@@ -4,14 +4,18 @@ Usage (WSL, from the Code Root)::
 
     python -m hoya_market_agents run --provider-mode fake --question "分析 BTC 過去 14 日市場狀態"
 
-Only ``fake`` is an accepted provider mode in this version, so the command can
-never silently fall back to a provider that does not exist yet.
+Only ``fake`` is accepted by the analysis command. The separate ``preflight``
+command can verify a real provider without silently using it for a market run.
 """
 
 import argparse
+import json
+import secrets
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+from .antigravity_adapter import AntigravityAdapter, AntigravityError
 from .fake_provider import FakeProvider
 from .question import UnsupportedQuestionError
 from .run_controller import RunController
@@ -48,6 +52,16 @@ def build_parser():
         default=str(DEFAULT_DATA_ROOT),
         help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
     )
+    preflight = subcommands.add_parser(
+        "preflight", help="賽前驗證真實 provider；不啟動市場研究 run"
+    )
+    preflight.add_argument("--provider", required=True, choices=("antigravity",))
+    preflight.add_argument("--seats", required=True, type=int)
+    preflight.add_argument(
+        "--data-root",
+        default=str(DEFAULT_DATA_ROOT),
+        help="所有 preflight schema、log 與 raw envelope 的 Data Root",
+    )
     return parser
 
 
@@ -56,6 +70,9 @@ def main(argv=None, stdout=None, stderr=None):
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     args = build_parser().parse_args(argv if argv is not None else sys.argv[1:])
+
+    if args.command == "preflight":
+        return _preflight(args, out, err)
 
     data_root = Path(args.data_root)
     controller = RunController(
@@ -73,6 +90,44 @@ def main(argv=None, stdout=None, stderr=None):
         return EXIT_FAILED
 
     _report_result(result, out)
+    return EXIT_OK
+
+
+def _preflight(args, out, err):
+    if args.seats != 1:
+        print("NOT READY：antigravity preflight 此票只支援 --seats 1", file=err)
+        return EXIT_FAILED
+    data_root = Path(args.data_root).resolve()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    attempt_dir = (
+        data_root
+        / "preflight"
+        / "antigravity"
+        / "{}-{}".format(stamp, secrets.token_hex(3))
+    )
+    adapter = AntigravityAdapter(data_root=data_root)
+    try:
+        result = adapter.preflight(attempt_dir)
+    except AntigravityError as exc:
+        print("NOT READY：{}".format(exc), file=err)
+        return EXIT_FAILED
+    summary = {
+        "status": "READY",
+        "provider": "antigravity",
+        "seats": 1,
+        "cli_path": str(adapter.cli_path),
+        "version": result.version,
+        "requested_model": result.requested_model,
+        "actual_model": result.actual_model,
+        "effort": result.effort,
+        "search_available": result.search_available,
+        "duration_seconds": result.duration_seconds,
+        "usage": result.usage,
+        "structured_contract_valid": result.structured_output == {"answer": "ready"},
+        "schema_path": str(result.schema_path),
+        "schema_sha256": result.schema_sha256,
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2), file=out)
     return EXIT_OK
 
 
