@@ -83,11 +83,14 @@ non-persistent thread.
    python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --competition-run-id COMPETITION_RUN_ID --competition-challenge COMPETITION_CHALLENGE --data-root DATA_ROOT
    ```
 
-9. The resulting write-once manifest has `provider_capabilities_ready=true`
-   and `competition_authorization.status=AUTHORIZED`. The overall manifest may
-   remain `NOT_READY` only for the run-scoped `search`, `seven_seat_timeline`
-   and `report_deadline` blockers; those are proven by the authorized run's
-   seven receipts and final `verify-run`, not by circular pre-run claims.
+9. The current subscription CLIs do not expose independently verifiable
+   provider/runtime attestation. The manifest must therefore contain the
+   `provider_runtime_attestation` blocker, remain `provider_capabilities_ready=false`,
+   and not authorize or launch a real run. Local JSON, hashes or local
+   signatures prove integrity, not provider authenticity. Only a future trusted
+   attestation capability could make preauthorization eligible; run-scoped
+   `search`, `seven_seat_timeline` and `report_deadline` would still be proven
+   by the authorized run rather than circular pre-run claims.
 
 See `references/codex-bridge-contract.md` for the exact artifact shape and
 `references/preflight-checklist.md` for the fresh-task checklist.
@@ -104,10 +107,12 @@ receipt, record `NOT READY` and stop. Never synthesize the receipt in Python.
 
 The current Codex handoff proves no-tool dispatches but does not prove three
 independent GPT search executions. It can therefore support provider
-preauthorization, but no real run can pass `verify-run` until each of the seven
-run-scoped receipts proves its provider-specific search. Do not use a fixture,
-fake drill, prompt assertion, relaxed verifier, different model, or a
-Core-selected conclusion to replace those receipts.
+preflight diagnostics, but cannot authorize a real run. Even after a future
+trusted-attestation integration, every receipt attempt must match the adopted
+evidence/debate/vote lineage and its parsed structured output must canonically
+equal the formal evidence records. Do not use a fixture, fake drill, prompt
+assertion, relaxed verifier, different model, or a Core-selected conclusion to
+replace those proofs.
 
 ## What every seat receives
 

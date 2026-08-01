@@ -47,9 +47,11 @@ unit test can substitute for it, and no unit test in this repo has performed it.
     python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --competition-run-id COMPETITION_RUN_ID --competition-challenge COMPETITION_CHALLENGE --data-root DATA_ROOT
     ```
 
-    Require `provider_capabilities_ready=true` and the write-once competition
-    authorization to say `AUTHORIZED`. Only `search`, `seven_seat_timeline`
-    and `report_deadline` may remain as pre-run blockers.
+    Current subscription CLIs lack independently verifiable provider/runtime
+    attestation, so require the exact `provider_runtime_attestation` blocker,
+    `provider_capabilities_ready=false`, and no competition authorization.
+    Local JSON, hashes and local signatures prove integrity, not provider
+    authenticity. Stop before real dispatch.
 12. **Search receipt gate** — require live receipts for three independent GPT
     search executions in the authorized run. The current no-tool Codex handoff
     does not prove this. Do not substitute a prompt claim, fixture, fake
@@ -61,7 +63,9 @@ unit test can substitute for it, and no unit test in this repo has performed it.
     second preflight that would create circular lineage.
     Every real seat must also return its run-scoped dispatch/completion receipt,
     provider search receipt, public transcript hash and structured output hash;
-    all receipt paths/hashes must be present in the run artifact index.
+    all receipt paths/hashes must be present in the run artifact index. Receipt
+    attempts must match adopted evidence/debate/vote lineage and parsed
+    structured outputs must canonically equal the formal evidence records.
 
 Known limitation: steps 1, 3, 6 and 7 depend on live Codex runtime capability and
 are the parts unit tests cannot prove. Record the observed `thread_id` and

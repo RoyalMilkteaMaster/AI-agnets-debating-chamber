@@ -132,6 +132,20 @@ class SystemPreflightManifestTest(unittest.TestCase):
             manifest["blockers"],
         )
 
+    def test_unavailable_provider_attestation_blocks_capability_and_ready(self):
+        checks = passing_checks()
+        next(
+            item
+            for item in checks
+            if item["check_id"] == "provider_runtime_attestation"
+        ).update(ok=False, actual="provider_runtime_attestation_unavailable")
+
+        manifest = self.build(checks)
+
+        self.assertFalse(manifest["provider_capabilities_ready"])
+        self.assertFalse(manifest["ready"])
+        self.assertIn("provider_runtime_attestation", manifest["blockers"])
+
     def test_missing_required_check_fails_closed(self):
         manifest = self.build(passing_checks()[:-1])
 

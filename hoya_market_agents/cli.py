@@ -446,6 +446,18 @@ def _real_system_checks(args, preflight_id):
         "Core/GPT gpt-5.6-sol; Claude actual contains opus; Gemini exact high model",
     )
 
+    _set_check(
+        checks,
+        "provider_runtime_attestation",
+        False,
+        "provider_runtime_attestation_unavailable",
+        (
+            "current Codex, Claude and Antigravity subscription CLIs expose no "
+            "independently verifiable provider/runtime attestation; local JSON "
+            "or local signatures are not provider authenticity"
+        ),
+    )
+
     # #8 intentionally requires an enforced no-tool receipt. Current Codex
     # runtime metadata therefore cannot also prove three independent searches.
     # Do not turn Claude/Gemini search success into a seven-seat claim.

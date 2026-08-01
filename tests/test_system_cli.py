@@ -79,6 +79,15 @@ class SystemCliTest(unittest.TestCase):
         payload = json.loads(out)
         self.assertEqual("NOT_READY", payload["status"])
         self.assertIn("codex_runtime_receipts", payload["blockers"])
+        self.assertIn("provider_runtime_attestation", payload["blockers"])
+        self.assertEqual(
+            "provider_runtime_attestation_unavailable",
+            next(
+                item["actual"]
+                for item in payload["checks"]
+                if item["check_id"] == "provider_runtime_attestation"
+            ),
+        )
         self.assertEqual("not_observed", next(
             item["actual"] for item in payload["checks"]
             if item["check_id"] == "codex_runtime_receipts"

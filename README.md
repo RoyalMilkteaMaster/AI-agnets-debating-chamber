@@ -101,12 +101,19 @@ python3 -m hoya_market_agents preflight --provider system --seats 7 \
 
 缺少任何登入、actual model、七席搜尋 receipt、權限、T+4:45 contract、T+5 seal 或
 T+13 report 證據時都輸出機器可讀 `NOT_READY` manifest。
+目前 Codex、Claude、Antigravity 的訂閱 CLI 都不提供可由第三方獨立驗證的
+provider/runtime attestation，因此 real preflight 必須包含
+`provider_runtime_attestation` blocker，且不得簽發 competition authorization。
+本地 JSON、本地 SHA-256 或本地自簽只能證明檔案 integrity，不能證明 provider
+authenticity；它們不得解除此 blocker。目前禁止宣稱 real competition READY。
 預授權階段允許 `search`、`seven_seat_timeline`、`report_deadline` 三項 run-scoped
-blocker；此時必須同時有 `provider_capabilities_ready=true` 與 write-once
-`competition_authorization.status=AUTHORIZED`。最終是否可宣稱 competition READY
-只由該授權 run 的 `verify-run` 結果決定。
+blocker；但只有未來取得可信 provider attestation 後，才可能同時有
+`provider_capabilities_ready=true` 與 write-once authorization。最終是否可宣稱
+competition READY 仍只由該授權 run 的 `verify-run` 結果決定。
 real run 還必須逐席保存綁定預授權 run/challenge 的 dispatch、completion、search、
-public transcript 與 structured output receipts；缺任一 artifact 或 hash 即拒絕。
+public transcript 與 structured output receipts。receipt attempt 必須等於正式採納的
+evidence attempt，出現在該席 debate messages 與 votes attempt_ids；解析後的 structured
+output 經 canonical normalize 必須精確等於該席正式 evidence records。缺任一項即拒絕。
 
 只執行 Claude Adapter 單元測試（WSL）：
 

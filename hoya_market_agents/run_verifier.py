@@ -169,6 +169,9 @@ def verify_run(data_root, run_id):
             manifest,
             artifact_index,
             timeline,
+            evidence,
+            debate,
+            votes,
             authorization,
         )
         _reject_shipped_fake_markers(
@@ -375,7 +378,10 @@ def _verify_real_provider_lineage(data_root, manifest):
     if hashlib.sha256(content).hexdigest() != lineage.get("sha256"):
         raise RunVerificationError("provider preflight manifest hash 不一致。")
     preflight = _read_json(path)
-    if preflight.get("mode") != "real" or preflight.get("provider_capabilities_ready") is not True:
+    if preflight.get("mode") != "real":
+        raise RunVerificationError("provider preflight 未證明真實七席能力。")
+    _verify_trusted_provider_runtime_attestation(preflight)
+    if preflight.get("provider_capabilities_ready") is not True:
         raise RunVerificationError("provider preflight 未證明真實七席能力。")
     checks = preflight.get("checks")
     if (
@@ -528,7 +534,16 @@ def _verify_provider_matrix(matrix, roster):
     return by_seat
 
 
-def _verify_real_run_receipts(run_dir, manifest, artifact_index, timeline, authorization):
+def _verify_real_run_receipts(
+    run_dir,
+    manifest,
+    artifact_index,
+    timeline,
+    evidence,
+    debate,
+    votes,
+    authorization,
+):
     lineage = manifest.get("provider_receipts")
     if (
         not isinstance(lineage, list)
@@ -569,6 +584,13 @@ def _verify_real_run_receipts(run_dir, manifest, artifact_index, timeline, autho
         if not _safe_segment(attempt_id):
             raise RunVerificationError("{} real run 缺少安全 attempt_id。".format(seat_id))
         _add_unique(unique_ids["attempt"], attempt_id, "real attempt_id")
+        adopted_evidence = _verify_adopted_attempt_lineage(
+            seat_id,
+            attempt_id,
+            evidence,
+            debate,
+            votes,
+        )
         expected_values = {
             "system_preflight_id": authorization["system_preflight_id"],
             "run_id": authorization["run_id"],
@@ -628,8 +650,84 @@ def _verify_real_run_receipts(run_dir, manifest, artifact_index, timeline, autho
             attempt_root,
             unique_paths,
         )
+        _verify_structured_output(output_text, adopted_evidence, seat_id, attempt_id)
         payloads.extend((receipt, search, raw_text, output_text))
     return payloads
+
+
+def _verify_adopted_attempt_lineage(seat_id, attempt_id, evidence, debate, votes):
+    adopted_evidence = [
+        record
+        for record in evidence
+        if record.get("seat_id") == seat_id and record.get("attempt_id") == attempt_id
+    ]
+    evidence_attempts = {
+        record.get("attempt_id")
+        for record in evidence
+        if record.get("seat_id") == seat_id
+    }
+    if not adopted_evidence or evidence_attempts != {attempt_id}:
+        raise RunVerificationError(
+            "{} receipt attempt_id 不等於 adopted evidence attempt lineage。".format(
+                seat_id
+            )
+        )
+    debate_attempts = {
+        record.get("attempt_id")
+        for record in debate
+        if record.get("event") == "seat_message" and record.get("seat_id") == seat_id
+    }
+    if attempt_id not in debate_attempts:
+        raise RunVerificationError(
+            "{} receipt attempt_id 不存在於正式 debate messages。".format(seat_id)
+        )
+    vote_records = [
+        record
+        for record in votes.get("votes", [])
+        if isinstance(record, dict) and record.get("seat_id") == seat_id
+    ]
+    if (
+        len(vote_records) != 1
+        or not isinstance(vote_records[0].get("attempt_ids"), list)
+        or attempt_id not in vote_records[0]["attempt_ids"]
+    ):
+        raise RunVerificationError(
+            "{} receipt attempt_id 不存在於正式 votes attempt_ids。".format(seat_id)
+        )
+    return adopted_evidence
+
+
+def _verify_structured_output(output_text, adopted_evidence, seat_id, attempt_id):
+    try:
+        output = json.loads(output_text)
+    except json.JSONDecodeError as exc:
+        raise RunVerificationError("{} structured output 不是 JSON。".format(seat_id)) from exc
+    if not isinstance(output, list) or any(not isinstance(record, dict) for record in output):
+        raise RunVerificationError("{} structured output 必須為 evidence records。".format(seat_id))
+    if _canonical_records(output) != _canonical_records(adopted_evidence):
+        raise RunVerificationError(
+            "{} structured output 與 adopted evidence attempt {} 不一致。".format(
+                seat_id,
+                attempt_id,
+            )
+        )
+
+
+def _canonical_records(records):
+    normalized = [
+        json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        for record in records
+    ]
+    return tuple(sorted(normalized))
+
+
+def _verify_trusted_provider_runtime_attestation(_preflight):
+    raise RunVerificationError(
+        "provider_runtime_attestation_unavailable: current subscription CLIs "
+        "do not expose independently verifiable provider/runtime attestation; "
+        "local JSON, local hashes, and local signatures prove integrity, not "
+        "provider authenticity."
+    )
 
 
 def _verify_phase_receipt(value, unique_ids, started, expected_elapsed, label):

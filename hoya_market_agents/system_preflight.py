@@ -12,6 +12,7 @@ REQUIRED_CHECK_IDS = (
     "cli_versions",
     "provider_login",
     "target_actual_models",
+    "provider_runtime_attestation",
     "search",
     "research_snapshot",
     "code_data_boundary",

@@ -69,6 +69,9 @@ class RealReceiptVerificationTest(unittest.TestCase):
         self.started = datetime(2026, 8, 1, 2, 0, tzinfo=timezone.utc)
         self.challenge = "competition-challenge-1234567890"
         self.artifact_index = {}
+        self.evidence = []
+        self.debate = []
+        self.votes = {"votes": []}
         providers = {
             "spot-technical": ("codex", "gpt-5.6-sol", "gpt-5.6-sol"),
             "derivatives": ("codex", "gpt-5.6-sol", "gpt-5.6-sol"),
@@ -100,6 +103,23 @@ class RealReceiptVerificationTest(unittest.TestCase):
             attempt_id = "{}-attempt-1".format(seat_id)
             completion_ms = index * 1_000
             search_ms = completion_ms - 250
+            evidence_record = {
+                "schema_version": "1.0.0",
+                "evidence_id": "{}-evidence-1".format(seat_id),
+                "seat_id": seat_id,
+                "attempt_id": attempt_id,
+                "statement": "public evidence {}".format(index),
+            }
+            self.evidence.append(evidence_record)
+            self.debate.append({
+                "event": "seat_message",
+                "seat_id": seat_id,
+                "attempt_id": attempt_id,
+            })
+            self.votes["votes"].append({
+                "seat_id": seat_id,
+                "attempt_ids": [attempt_id],
+            })
             self.timeline["seat_completion_ms"][seat_id] = completion_ms
             self.manifest["seats"].append({
                 "seat_id": seat_id,
@@ -115,11 +135,7 @@ class RealReceiptVerificationTest(unittest.TestCase):
             self._write_artifact(raw_path, '{"public":"transcript"}\n')
             self._write_artifact(
                 output_path,
-                json.dumps({
-                    "run_id": "authorized-run",
-                    "seat_id": seat_id,
-                    "attempt_id": attempt_id,
-                }) + "\n",
+                json.dumps([evidence_record]) + "\n",
             )
             search = {
                 "schema_version": "1.0.0",
@@ -203,6 +219,9 @@ class RealReceiptVerificationTest(unittest.TestCase):
             self.manifest,
             self.artifact_index,
             self.timeline,
+            self.evidence,
+            self.debate,
+            self.votes,
             self.authorization,
         )
 
@@ -231,6 +250,24 @@ class RealReceiptVerificationTest(unittest.TestCase):
         ):
             with self.subTest(path=path), self.assertRaises(RunVerificationError):
                 _require_attempt_artifact_path(path, root, "output")
+
+    def test_receipt_attempt_must_match_adopted_lineage(self):
+        next(
+            record for record in self.evidence if record["seat_id"] == "news"
+        )["attempt_id"] = "news-adopted-a1"
+
+        with self.assertRaisesRegex(RunVerificationError, "adopted evidence attempt"):
+            self.verify()
+
+    def test_structured_output_must_equal_formal_evidence(self):
+        receipt = self.receipts["news"][1]
+        output_path = receipt["output_path"]
+        self._write_artifact(output_path, '[{"self_asserted":true}]\n')
+        receipt["output_sha256"] = self.artifact_index[output_path]["sha256"]
+        self._rewrite_receipt("news")
+
+        with self.assertRaisesRegex(RunVerificationError, "structured output"):
+            self.verify()
 
     def test_wrong_run_challenge_attempt_model_timing_search_or_hash_fails(self):
         cases = {
