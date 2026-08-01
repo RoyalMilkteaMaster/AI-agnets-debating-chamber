@@ -290,17 +290,26 @@ class DebateStateMachine:
                 },
             )
             raise CoreOverrideError("Core 只能原文 relay，不得建立或改寫席位內容。")
+        self._evaluate_stop()
+        if self.stopped:
+            elapsed = self.elapsed_ms
+            self._reject(original, "late_message", elapsed)
+            if self.result is None:
+                self.persist()
+            raise LateMessageError(
+                "訊息於 {}ms 抵達，deadline 已先結算；fail closed。".format(elapsed)
+            )
         entry = self._accept(original)
         self._evaluate_stop()
         return deepcopy(entry)
 
     def tick(self):
         """Apply elapsed-time thresholds using the injected monotonic clock."""
-        if self.stopped:
-            return self.stop_reason
-        if self.elapsed_ms >= FORCE_STOP_MS:
-            return self._force_stop()
-        return self._evaluate_stop()
+        if not self.stopped:
+            self._evaluate_stop()
+        if self.stopped and self.result is None:
+            self.persist()
+        return self.stop_reason
 
     def override_vote(self, seat_id, stance, reason="core override"):
         """Core may never write a vote; this always fails closed."""
@@ -368,7 +377,10 @@ class DebateStateMachine:
                 "引用未知 evidence ID：{}".format(", ".join(str(item) for item in unknown))
             )
 
-        if not isinstance(content.get("public_reason"), str) or not content["public_reason"].strip():
+        if (
+            not isinstance(content.get("public_reason"), str)
+            or not content["public_reason"].strip()
+        ):
             self._reject(content, "missing_public_reason", elapsed)
             raise DebateError("public_reason 必須為非空字串。")
 
@@ -465,9 +477,20 @@ class DebateStateMachine:
                 self._reject(content, "missing_challenge_response_target", elapsed)
                 raise DebateLifecycleError("response 必須引用至少一個 challenge message ID。")
             challenges = [self._seat_message(message_id) for message_id in responds_to]
-            if any(entry is None or entry["content"].get("kind") != "challenge" for entry in challenges):
+            if any(
+                entry is None or entry["content"].get("kind") != "challenge"
+                for entry in challenges
+            ):
                 self._reject(content, "unknown_challenge_response_target", elapsed)
                 raise DebateLifecycleError("response 引用不存在或非 challenge 的公開訊息。")
+            if any(
+                entry["content"].get("target_seat_id") != seat.seat_id
+                for entry in challenges
+            ):
+                self._reject(content, "challenge_addressed_to_another_seat", elapsed)
+                raise DebateLifecycleError(
+                    "response 只能引用 target_seat_id 指向自己的 challenge。"
+                )
             target_seat_id = content.get("target_seat_id")
             if target_seat_id not in {
                 entry["content"].get("seat_id") for entry in challenges
@@ -815,6 +838,8 @@ class DebateStateMachine:
 
     def persist(self):
         """Write ``debate.jsonl`` and ``votes.json`` through write-once APIs."""
+        if self.result is not None:
+            return deepcopy(self.result)
         if not self.stopped:
             raise DebateLifecycleError("辯論尚未達停止條件，不得輸出正式票數。")
         if not self.verify_public_history():

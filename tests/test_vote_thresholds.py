@@ -1,8 +1,13 @@
 """Ticket #9 absolute 6/5/4 consensus thresholds with a fake clock."""
 
+import json
 import unittest
 
-from hoya_market_agents.debate_state_machine import phase_at, required_votes_at
+from hoya_market_agents.debate_state_machine import (
+    LateMessageError,
+    phase_at,
+    required_votes_at,
+)
 from hoya_market_agents.seats import SEAT_IDS
 from tests.test_debate_state_machine import DebateHarness
 
@@ -85,6 +90,56 @@ class VoteThresholdTest(unittest.TestCase):
         self.assertEqual(4, required_votes_at(600_000))
         self.assertEqual("final_round", phase_at(510_000))
         self.assertEqual("after_final_round", phase_at(585_001))
+
+    def test_exact_t7_settles_existing_five_before_rejecting_incoming_vote_change(self):
+        harness = DebateHarness(self)
+        stances = ["bullish"] * 5 + ["bearish"] * 2
+        harness.complete_round(stances, count=5)
+        harness.clock.advance_ms(120_000)
+        incoming = harness.message(
+            SEAT_IDS[0],
+            "final_vote",
+            "t7-change",
+            round=2,
+            stance="bearish",
+            stance_change_reason="late counterclaim",
+        )
+
+        with self.assertRaises(LateMessageError):
+            harness.machine.relay(incoming)
+
+        persisted = json.loads(
+            (harness.run.path / "votes.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("consensus_5_votes", persisted["stop_reason"])
+        self.assertEqual(5, persisted["tally"]["bullish"])
+        self.assertEqual("bullish", persisted["votes"][0]["final_stance"])
+        self.assertEqual("message_rejected", harness.machine.entries[-1]["event"])
+
+    def test_exact_t10_callback_force_stops_and_persists_before_incoming_change(self):
+        harness = DebateHarness(self)
+        stances = ["bullish"] * 4 + ["bearish"] * 3
+        harness.complete_round(stances)
+        harness.clock.advance_ms(300_000)
+        incoming = harness.message(
+            SEAT_IDS[0],
+            "final_vote",
+            "t10-change",
+            round=3,
+            stance="bearish",
+            stance_change_reason="too late",
+        )
+
+        with self.assertRaises(LateMessageError):
+            harness.machine.relay(incoming)
+
+        persisted = json.loads(
+            (harness.run.path / "votes.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("forced_stop_4_votes", persisted["stop_reason"])
+        self.assertEqual("bullish", persisted["adopted_stance"])
+        self.assertEqual(4, persisted["tally"]["bullish"])
+        self.assertEqual("bullish", persisted["votes"][0]["final_stance"])
 
 
 if __name__ == "__main__":

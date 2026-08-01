@@ -85,7 +85,25 @@ class DebateHarness:
             )
 
     def challenges_and_responses(self, stances):
-        challenge_ids = {}
+        challenges, incoming = self.challenge_plan(stances)
+        for challenge in challenges:
+            self.machine.relay(challenge)
+        for index, seat_id in enumerate(SEAT_IDS):
+            challenge = incoming[seat_id][0]
+            self.machine.relay(
+                self.message(
+                    seat_id,
+                    "response",
+                    "response",
+                    responds_to=[challenge["message_id"]],
+                    target_seat_id=challenge["seat_id"],
+                    stance=stances[index],
+                )
+            )
+
+    def challenge_plan(self, stances):
+        challenges = []
+        incoming = {seat_id: [] for seat_id in SEAT_IDS}
         for index, seat_id in enumerate(SEAT_IDS):
             target_index = next(
                 other
@@ -96,29 +114,33 @@ class DebateHarness:
             challenge = self.message(
                 seat_id,
                 "challenge",
-                "challenge",
+                "challenge-to-{}".format(target),
                 target_seat_id=target,
                 target_claim="{}-position".format(target),
                 stance=stances[index],
             )
-            self.machine.relay(challenge)
-            challenge_ids[seat_id] = challenge["message_id"]
-        for index, seat_id in enumerate(SEAT_IDS):
-            opposing = next(
-                source
-                for source in SEAT_IDS
-                if stances[SEAT_IDS.index(source)] != stances[index]
+            challenges.append(challenge)
+            incoming[target].append(challenge)
+        for target_index, target in enumerate(SEAT_IDS):
+            if incoming[target]:
+                continue
+            author_index = next(
+                other
+                for other in range(len(SEAT_IDS))
+                if other != target_index and stances[other] != stances[target_index]
             )
-            self.machine.relay(
-                self.message(
-                    seat_id,
-                    "response",
-                    "response",
-                    responds_to=[challenge_ids[opposing]],
-                    target_seat_id=opposing,
-                    stance=stances[index],
-                )
+            author = SEAT_IDS[author_index]
+            challenge = self.message(
+                author,
+                "challenge",
+                "extra-challenge-to-{}".format(target),
+                target_seat_id=target,
+                target_claim="{}-position".format(target),
+                stance=stances[author_index],
             )
+            challenges.append(challenge)
+            incoming[target].append(challenge)
+        return challenges, incoming
 
     def finals(self, stances, count=7, changed_reasons=None, attempt_overrides=None):
         changed_reasons = changed_reasons or {}
@@ -165,37 +187,17 @@ class DebateHarness:
             )
             for seat_id, stance in zip(SEAT_IDS, stances)
         ]
-        challenge_ids = {}
+        challenges, incoming = self.challenge_plan(stances)
+        messages.extend(challenges)
         for index, seat_id in enumerate(SEAT_IDS):
-            target_index = next(
-                other
-                for other in range(len(SEAT_IDS))
-                if other != index and stances[other] != stances[index]
-            )
-            target = SEAT_IDS[target_index]
-            challenge = self.message(
-                seat_id,
-                "challenge",
-                "challenge",
-                target_seat_id=target,
-                target_claim="{}-position".format(target),
-                stance=stances[index],
-            )
-            messages.append(challenge)
-            challenge_ids[seat_id] = challenge["message_id"]
-        for index, seat_id in enumerate(SEAT_IDS):
-            opposing = next(
-                source
-                for source in SEAT_IDS
-                if stances[SEAT_IDS.index(source)] != stances[index]
-            )
+            challenge = incoming[seat_id][0]
             messages.append(
                 self.message(
                     seat_id,
                     "response",
                     "response",
-                    responds_to=[challenge_ids[opposing]],
-                    target_seat_id=opposing,
+                    responds_to=[challenge["message_id"]],
+                    target_seat_id=challenge["seat_id"],
                     stance=stances[index],
                 )
             )
@@ -239,6 +241,32 @@ class DebateStateMachineTest(unittest.TestCase):
             harness.machine.relay(
                 harness.message(
                     SEAT_IDS[0], "final_vote", "too-early", stance="bullish"
+                )
+            )
+
+    def test_response_cannot_claim_a_challenge_addressed_to_another_seat(self):
+        harness = DebateHarness(self)
+        stances = ["bullish"] * 6 + ["bearish"]
+        harness.positions(stances)
+        challenge = harness.message(
+            SEAT_IDS[0],
+            "challenge",
+            "to-minority",
+            stance="bullish",
+            target_seat_id=SEAT_IDS[6],
+            target_claim="{}-position".format(SEAT_IDS[6]),
+        )
+        harness.machine.relay(challenge)
+
+        with self.assertRaises(DebateLifecycleError):
+            harness.machine.relay(
+                harness.message(
+                    SEAT_IDS[1],
+                    "response",
+                    "wrong-recipient",
+                    stance="bullish",
+                    target_seat_id=SEAT_IDS[0],
+                    responds_to=[challenge["message_id"]],
                 )
             )
 
@@ -319,7 +347,13 @@ class DebateStateMachineTest(unittest.TestCase):
                 )
                 with self.assertRaises(StanceError):
                     harness.machine.relay(
-                        harness.message(SEAT_IDS[1], "position", "invalid", stance=invalid, round=0)
+                        harness.message(
+                            SEAT_IDS[1],
+                            "position",
+                            "invalid",
+                            stance=invalid,
+                            round=0,
+                        )
                     )
 
     def test_neutral_position_requires_conflicts_uncertainty_and_change_trigger(self):
