@@ -105,6 +105,26 @@ class SeatRowTests(unittest.TestCase):
         with self.assertRaises(ReportContractError):
             validate_market_report(broken["report"], broken["sources"])
 
+    def test_report_and_all_source_records_must_share_the_official_run_id(self):
+        for target in ("report", "evidence", "debate"):
+            with self.subTest(target=target):
+                broken = load_fixture("consensus-6-1")
+                if target == "report":
+                    broken["report"]["run_id"] = "other-run"
+                else:
+                    broken["sources"][target][0]["run_id"] = "other-run"
+                with self.assertRaises(ReportContractError):
+                    validate_market_report(broken["report"], broken["sources"])
+
+    def test_source_urls_must_use_http_or_https(self):
+        for unsafe in ("javascript:alert(1)", "data:text/html,bad", "file:///tmp/source"):
+            with self.subTest(url=unsafe):
+                broken = load_fixture("consensus-6-1")
+                broken["sources"]["evidence"][0]["source_url"] = unsafe
+                broken["report"]["evidence"][0]["url"] = unsafe
+                with self.assertRaises(ReportContractError):
+                    validate_market_report(broken["report"], broken["sources"])
+
 
 class HonestFailureTests(unittest.TestCase):
     def test_no_consensus_report_states_no_direction(self):

@@ -113,6 +113,7 @@ def _build_case(
     }
     debate = [
         {
+            "run_id": _RUN_ID,
             "message_id": "{}-final".format(row["seat_id"]),
             "seat_id": row["seat_id"],
             "attempt_id": row["attempt_ids"][-1],
@@ -169,6 +170,7 @@ def _build_case(
 
 def _evidence(index, seat_id):
     return {
+        "run_id": _RUN_ID,
         "evidence_id": "ev-{:02d}".format(index + 1),
         "seat_id": seat_id,
         "category": _CATEGORIES[index],

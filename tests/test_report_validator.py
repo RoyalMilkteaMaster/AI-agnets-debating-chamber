@@ -37,7 +37,7 @@ class ConfidenceCapTests(unittest.TestCase):
 
     def test_seven_to_zero_with_four_fresh_categories_caps_at_green(self):
         fixture = load_fixture("consensus-6-1")
-        fixture["sources"]["votes"]["tally"] = {"bullish": 7, "bearish": 0, "neutral": 0}
+        fixture["sources"]["votes"]["votes"][-1]["final_stance"] = "bullish"
         self.assertEqual(confidence_cap(fixture["report"], fixture["sources"]), "green")
 
     def test_fewer_than_four_valid_votes_caps_at_red(self):
@@ -51,7 +51,8 @@ class ConfidenceCapTests(unittest.TestCase):
 
     def test_four_valid_votes_caps_at_orange(self):
         fixture = load_fixture("consensus-6-1")
-        fixture["sources"]["votes"]["valid_vote_count"] = 4
+        for vote in fixture["sources"]["votes"]["votes"][4:]:
+            vote["state"] = "missing"
         self.assertEqual(confidence_cap(fixture["report"], fixture["sources"]), "orange")
 
     def test_single_source_dependence_caps_at_orange(self):
@@ -60,14 +61,21 @@ class ConfidenceCapTests(unittest.TestCase):
             card["source_origin"] = "one-and-only.example"
         self.assertEqual(confidence_cap(fixture["report"], fixture["sources"]), "orange")
 
+    def test_only_adopted_votes_and_their_actual_citations_count_for_independence(self):
+        fixture = load_fixture("consensus-6-1")
+        for vote in fixture["sources"]["votes"]["votes"]:
+            if vote["state"] == "valid" and vote["final_stance"] == "bullish":
+                vote["final_evidence_ids"] = ["ev-01"]
+        self.assertEqual(confidence_cap(fixture["report"], fixture["sources"]), "orange")
+
     def test_five_of_seven_with_two_independent_categories_caps_at_yellow(self):
         fixture = load_fixture("consensus-6-1")
-        fixture["sources"]["votes"]["valid_vote_count"] = 5
+        for vote in fixture["sources"]["votes"]["votes"][5:]:
+            vote["state"] = "missing"
         self.assertEqual(confidence_cap(fixture["report"], fixture["sources"]), "yellow")
 
     def test_six_of_seven_with_three_reliable_categories_caps_at_yellow_green(self):
         fixture = load_fixture("consensus-6-1")
-        fixture["sources"]["votes"]["valid_vote_count"] = 6
         self.assertEqual(confidence_cap(fixture["report"], fixture["sources"]), "yellow_green")
 
     def test_stale_evidence_downgrades_but_never_upgrades(self):
@@ -77,7 +85,7 @@ class ConfidenceCapTests(unittest.TestCase):
 
     def test_fatal_counterevidence_downgrades(self):
         fixture = load_fixture("consensus-6-1")
-        fixture["sources"]["evidence"][-1]["fatal_counterevidence"] = True
+        fixture["sources"]["evidence"][0]["fatal_counterevidence"] = True
         self.assertEqual(confidence_cap(fixture["report"], fixture["sources"]), "yellow")
 
     def test_low_source_quality_downgrades(self):
@@ -116,6 +124,7 @@ class ProhibitedAdviceTests(unittest.TestCase):
         ("leverage", "建議使用 5 倍槓桿放大部位"),
         ("position_size", "請將倉位配置至資產的 30%"),
         ("direct_order", "現在請買進並於下週賣出"),
+        ("english_long_order", "Open a BTC long position now"),
     )
 
     def test_prohibited_advice_fails_closed(self):
@@ -142,6 +151,13 @@ class ProhibitedAdviceTests(unittest.TestCase):
                 fixture = load_fixture(case)
                 validate_market_report(fixture["report"], fixture["sources"])
 
+    def test_ordinary_english_market_analysis_is_not_misclassified_as_an_order(self):
+        fixture = load_fixture("consensus-6-1")
+        fixture["report"]["limitations"].append(
+            "BTC long positioning increased while sell-side liquidity remained visible."
+        )
+        self.assertIsNotNone(validate_market_report(fixture["report"], fixture["sources"]))
+
 
 class WorkflowTimingTests(unittest.TestCase):
     def test_windows_are_ninety_sixty_thirty_and_thirteen_minutes(self):
@@ -161,6 +177,28 @@ class WorkflowTimingTests(unittest.TestCase):
         self.assertEqual(outcome.status, "accepted")
         self.assertEqual(outcome.corrections_used, 0)
         self.assertEqual(outcome.report["judgement"], fixture["report"]["judgement"])
+
+    def test_nonzero_monotonic_origin_uses_run_elapsed_time(self):
+        fixture = load_fixture("consensus-6-1")
+        run_start = 9_000_000
+        clock = FixedClock(monotonic_start_ms=run_start + 600_000)
+        outcome = run_report_workflow(
+            clock,
+            fixture["sources"],
+            _scripted_core([fixture["report"]], [10_000], clock),
+            run_start_monotonic_ms=run_start,
+        )
+        self.assertEqual(outcome.status, "accepted")
+        self.assertFalse(outcome.late)
+
+    def test_default_system_monotonic_origin_is_not_immediately_late(self):
+        from hoya_market_agents.clock import SystemClock
+
+        fixture = load_fixture("consensus-6-1")
+        outcome = run_report_workflow(
+            SystemClock(), fixture["sources"], lambda attempt, errors: fixture["report"]
+        )
+        self.assertEqual(outcome.status, "accepted")
 
     def test_late_core_draft_becomes_a_red_audit(self):
         fixture = load_fixture("consensus-6-1")

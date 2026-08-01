@@ -7,6 +7,7 @@ ceilings.  They deliberately do not create or choose market judgements.
 import json
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from .contract_validator import CONTRACT_VERSION
 from .seats import SEAT_IDS
@@ -32,6 +33,11 @@ _PROHIBITED = (
     re.compile(r"槓桿|leverage", re.IGNORECASE),
     re.compile(r"倉位|部位.{0,16}\d+\s*%|position\s*siz", re.IGNORECASE),
     re.compile(r"(?:請|建議|現在)?\s*(?:買進|買入|賣出|做多|做空)|\b(?:buy|sell)\s+(?:now|btc|eth|sol|bnb|xrp)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:open|enter|take)\s+(?:a\s+|the\s+)?(?:btc\s+|eth\s+|sol\s+|bnb\s+|xrp\s+)?"
+        r"(?:long|short)(?:\s+position)?(?:\s+now)?\b|\bgo\s+(?:long|short)\b",
+        re.IGNORECASE,
+    ),
 )
 _UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 
@@ -86,8 +92,11 @@ def validate_market_report(report, sources):
     if type(report.get("process_failure")) is not bool:
         problems.append("process_failure 必須為布林值")
 
-    evidence_by_id = _evidence_index(sources, problems)
     votes = _votes_source(sources, problems)
+    official_run_id = votes.get("record", {}).get("run_id")
+    evidence_by_id = _evidence_index(sources, problems, official_run_id)
+    if report.get("run_id") != official_run_id:
+        problems.append("report.run_id 與 official votes.run_id 不一致")
     _validate_report_evidence(report, evidence_by_id, problems)
     _validate_vote_cross_references(report, votes, evidence_by_id, problems)
     _validate_debate_cross_references(sources, votes, evidence_by_id, problems)
@@ -103,14 +112,13 @@ def validate_market_report(report, sources):
 def confidence_cap(report, sources):
     """Compute an upper bound from votes and evidence; never choose a level."""
     votes = sources.get("votes", {}) if isinstance(sources, dict) else {}
-    tally = votes.get("tally", {}) if isinstance(votes, dict) else {}
-    valid_count = votes.get("valid_vote_count", 0)
-    leader_count = max(
-        (value for value in tally.values() if type(value) is int and value >= 0),
-        default=0,
-    )
-    effective_leader = min(valid_count, leader_count) if type(valid_count) is int else 0
+    rows = votes.get("votes", []) if isinstance(votes, dict) else []
+    valid_rows = [row for row in rows if isinstance(row, dict) and row.get("state") == "valid"]
+    valid_count = len(valid_rows)
     status = report.get("consensus_status") if isinstance(report, dict) else None
+    adopted = report.get("adopted_stance") if isinstance(report, dict) else None
+    adopted_rows = [row for row in valid_rows if row.get("final_stance") == adopted]
+    effective_leader = len(adopted_rows)
 
     if report.get("process_failure") or not isinstance(valid_count, int) or valid_count < 4:
         return "red"
@@ -130,7 +138,18 @@ def confidence_cap(report, sources):
     else:
         cap = "green"
 
-    cards = sources.get("evidence", []) if isinstance(sources, dict) else []
+    all_cards = sources.get("evidence", []) if isinstance(sources, dict) else []
+    cited_ids = {
+        evidence_id
+        for row in adopted_rows
+        for evidence_id in row.get("final_evidence_ids", [])
+        if isinstance(evidence_id, str)
+    }
+    cards = [
+        card
+        for card in all_cards
+        if isinstance(card, dict) and card.get("evidence_id") in cited_ids
+    ]
     origins = {card.get("source_origin") for card in cards if isinstance(card, dict)}
     origins.discard(None)
     categories = {card.get("category") for card in cards if isinstance(card, dict)}
@@ -169,7 +188,7 @@ def canonical_sha256(value):
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _evidence_index(sources, problems):
+def _evidence_index(sources, problems, official_run_id):
     cards = sources.get("evidence")
     if not isinstance(cards, list):
         problems.append("sources.evidence 必須為陣列")
@@ -186,9 +205,13 @@ def _evidence_index(sources, problems):
         if evidence_id in result:
             problems.append("sources evidence ID 重複：{}".format(evidence_id))
         result[evidence_id] = card
+        if card.get("run_id") != official_run_id:
+            problems.append("evidence {} 的 run_id 與 official run 不一致".format(evidence_id))
         for field in ("source_url", "source_origin", "category", "published_at_utc"):
             if not isinstance(card.get(field), str) or not card[field].strip():
                 problems.append("evidence {} 缺少 {}".format(evidence_id, field))
+        if not is_safe_source_url(card.get("source_url")):
+            problems.append("evidence {} source_url 必須為 http/https".format(evidence_id))
     return result
 
 
@@ -197,6 +220,8 @@ def _votes_source(sources, problems):
     if not isinstance(votes, dict):
         problems.append("sources.votes 必須為物件")
         return {}
+    if not isinstance(votes.get("run_id"), str) or not votes["run_id"].strip():
+        problems.append("official votes.run_id 不得為空")
     rows = votes.get("votes")
     if not isinstance(rows, list) or len(rows) != len(SEAT_IDS):
         problems.append("official votes 必須完整保留七席")
@@ -324,10 +349,13 @@ def _validate_debate_cross_references(sources, votes, evidence_by_id, problems):
         problems.append("sources.debate 必須為陣列")
         return
     by_seat = votes.get("by_seat", {})
+    official_run_id = votes.get("record", {}).get("run_id")
     for entry in debate:
         if not isinstance(entry, dict):
             problems.append("debate entry 必須為物件")
             continue
+        if entry.get("run_id") != official_run_id:
+            problems.append("debate entry 的 run_id 與 official run 不一致")
         seat_id = entry.get("seat_id")
         vote = by_seat.get(seat_id)
         if vote is None:
@@ -416,3 +444,11 @@ def _is_stale(card, generated):
 
 def _lower(left, right):
     return CONFIDENCE_LEVELS[min(CONFIDENCE_LEVELS.index(left), CONFIDENCE_LEVELS.index(right))]
+
+
+def is_safe_source_url(value):
+    """Only absolute HTTP(S) evidence links may become active links."""
+    if not isinstance(value, str):
+        return False
+    parsed = urlsplit(value)
+    return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)

@@ -29,9 +29,14 @@ class ReportWorkflowOutcome:
     rendered: object = None
 
 
-def run_report_workflow(clock, sources, core_author, renderer=None):
+def run_report_workflow(
+    clock, sources, core_author, renderer=None, run_start_monotonic_ms=None
+):
     """Accept one Core draft, at most one correction, then one render pass."""
     workflow_start = clock.monotonic_ms()
+    run_start = workflow_start if run_start_monotonic_ms is None else run_start_monotonic_ms
+    if run_start > workflow_start:
+        raise ValueError("run_start_monotonic_ms 不得晚於目前 monotonic time")
     phases = {"draft": 0, "correction": 0, "render": 0}
 
     draft_start = clock.monotonic_ms()
@@ -45,6 +50,7 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
             ["Core 初稿失敗：{}".format(type(exc).__name__)],
             0,
             phases,
+            run_start_monotonic_ms=run_start,
         )
     phases["draft"] = clock.monotonic_ms() - draft_start
     if phases["draft"] > CORE_DRAFT_LIMIT_MS:
@@ -55,10 +61,12 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
             ["Core 初稿超過 90 秒"],
             0,
             phases,
+            run_start_monotonic_ms=run_start,
         )
-    if clock.monotonic_ms() >= HARD_DEADLINE_MS:
+    if clock.monotonic_ms() - run_start >= HARD_DEADLINE_MS:
         return _red_outcome(
-            clock, workflow_start, sources, ["T+13 或之後不得宣稱成功"], 0, phases, late=True
+            clock, workflow_start, sources, ["T+13 或之後不得宣稱成功"], 0, phases,
+            late=True, run_start_monotonic_ms=run_start
         )
 
     try:
@@ -77,6 +85,7 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
                 list(first_error.problems) + ["Core correction 失敗：{}".format(type(exc).__name__)],
                 1,
                 phases,
+                run_start_monotonic_ms=run_start,
             )
         phases["correction"] = clock.monotonic_ms() - correction_start
         if phases["correction"] > CORRECTION_WINDOW_MS:
@@ -87,8 +96,9 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
                 list(first_error.problems) + ["Core correction 超過 60 秒"],
                 1,
                 phases,
+                run_start_monotonic_ms=run_start,
             )
-        if clock.monotonic_ms() >= HARD_DEADLINE_MS:
+        if clock.monotonic_ms() - run_start >= HARD_DEADLINE_MS:
             return _red_outcome(
                 clock,
                 workflow_start,
@@ -97,6 +107,7 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
                 1,
                 phases,
                 late=True,
+                run_start_monotonic_ms=run_start,
             )
         try:
             accepted = validate_market_report(corrected, sources)
@@ -110,6 +121,7 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
                 list(second_error.problems),
                 1,
                 phases,
+                run_start_monotonic_ms=run_start,
             )
 
     rendered = None
@@ -125,6 +137,7 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
                 ["renderer 失敗：{}".format(type(exc).__name__)],
                 corrections,
                 phases,
+                run_start_monotonic_ms=run_start,
             )
         phases["render"] = clock.monotonic_ms() - render_start
         if phases["render"] > RENDER_WINDOW_MS:
@@ -135,8 +148,9 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
                 ["renderer 超過 30 秒"],
                 corrections,
                 phases,
+                run_start_monotonic_ms=run_start,
             )
-    if clock.monotonic_ms() >= HARD_DEADLINE_MS:
+    if clock.monotonic_ms() - run_start >= HARD_DEADLINE_MS:
         return _red_outcome(
             clock,
             workflow_start,
@@ -145,6 +159,7 @@ def run_report_workflow(clock, sources, core_author, renderer=None):
             corrections,
             phases,
             late=True,
+            run_start_monotonic_ms=run_start,
         )
     return ReportWorkflowOutcome(
         status=status,
@@ -240,10 +255,21 @@ def build_red_audit_report(sources, errors, generated_at_utc=None):
     return report
 
 
-def _red_outcome(clock, workflow_start, sources, errors, corrections, phases, late=False):
+def _red_outcome(
+    clock,
+    workflow_start,
+    sources,
+    errors,
+    corrections,
+    phases,
+    late=False,
+    run_start_monotonic_ms=None,
+):
     now_ms = clock.monotonic_ms()
+    run_start = workflow_start if run_start_monotonic_ms is None else run_start_monotonic_ms
+    run_elapsed_ms = now_ms - run_start
     errors = list(errors)
-    if now_ms >= HARD_DEADLINE_MS and not any("T+13" in error for error in errors):
+    if run_elapsed_ms >= HARD_DEADLINE_MS and not any("T+13" in error for error in errors):
         errors.append("T+13 或之後不得宣稱成功")
     generated = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=now_ms)
     report = build_red_audit_report(
@@ -262,7 +288,7 @@ def _red_outcome(clock, workflow_start, sources, errors, corrections, phases, la
         report=report,
         errors=tuple(errors),
         corrections_used=corrections,
-        late=late or now_ms >= HARD_DEADLINE_MS,
+        late=late or run_elapsed_ms >= HARD_DEADLINE_MS,
         elapsed_ms=now_ms - workflow_start,
         phase_elapsed_ms=dict(phases),
     )

@@ -13,6 +13,7 @@ vote tally.
 import html
 
 from .contract_validator import CONTRACT_VERSION, validate_report
+from .report_contract import is_safe_source_url
 from .seats import SEAT_IDS
 
 REPORT_SCHEMA_VERSION = CONTRACT_VERSION
@@ -357,212 +358,6 @@ def _e(value):
     return html.escape("" if value is None else str(value), quote=True)
 
 
-# --- Ticket #10: renderings of one validated, Core-authored report ----------
-
-NO_DIRECTION_TEXT = "無方向（未達共識、有效票不足或資料不足時不得製造方向）"
-
-_MARKET_CSS = (
-    "body{font-family:system-ui,'Noto Sans TC',sans-serif;margin:0 auto;max-width:52rem;"
-    "padding:1.5rem;line-height:1.6;color:#16202a;background:#ffffff}"
-    ".first-screen{border:2px solid #16202a;border-radius:.5rem;padding:1rem}"
-    ".confidence{font-weight:700}"
-    "dl{margin:0;display:grid;grid-template-columns:12rem 1fr;gap:.35rem 1rem}"
-    "dt{font-weight:700}dd{margin:0}"
-    "h1{font-size:1.6rem}h2{font-size:1.2rem;border-bottom:1px solid #c8d2dc;padding-bottom:.3rem}"
-    "table{border-collapse:collapse;width:100%}"
-    "caption{text-align:left;font-weight:700;padding:.4rem 0}"
-    "th,td{border:1px solid #c8d2dc;padding:.4rem;text-align:left;vertical-align:top}"
-    "th{background:#eef2f6}"
-    "code{background:#eef2f6;padding:.1rem .3rem;border-radius:.2rem}"
-    "a{color:#0b4f9e}"
-    "@media print{body{max-width:none;padding:0;font-size:11pt}"
-    ".first-screen{border-width:1px;break-inside:avoid}"
-    "table{break-inside:auto}thead{display:table-header-group}}"
-)
-
-
-def market_tally_entries(report):
-    """The full tally, rendered identically for Markdown and HTML."""
-    return ["{}：{}".format(stance, count) for stance, count in report["tally"].items()]
-
-
-def market_direction_text(report):
-    """State the adopted direction, or state plainly that there is none."""
-    if report.get("adopted_stance") is None:
-        return NO_DIRECTION_TEXT
-    return report["adopted_stance"]
-
-
-def _market_headline(report):
-    period = report["period"]
-    return (
-        ("市場狀態", report["market_status"]),
-        (
-            "分析期間",
-            "{}（{} ~ {}）".format(period["label"], period["start_utc"], period["end_utc"]),
-        ),
-        (
-            "信心",
-            "{} {}｜{}".format(
-                report["confidence"]["icon"],
-                report["confidence"]["level"],
-                report["confidence"]["text"],
-            ),
-        ),
-        ("票數", "／".join(market_tally_entries(report))),
-        ("共識狀態", report["consensus_status"]),
-        ("市場方向", market_direction_text(report)),
-        ("判讀", report["judgement"]),
-    )
-
-
-def render_market_markdown(report):
-    """Render one validated report as Markdown."""
-    lines = ["# Hoya Bit 市場研究報告", "", "## 第一屏摘要", ""]
-    lines += ["- {}：{}".format(term, value) for term, value in _market_headline(report)]
-    lines += ["", "### 失效條件", ""]
-    lines += ["- {}".format(item) for item in report["invalidation_conditions"]]
-    lines += ["", "## 限制", ""]
-    lines += ["- {}".format(item) for item in report["limitations"]]
-
-    lines += ["", "## 七席立場", ""]
-    for row in report["seats"]:
-        lines += [
-            "### {}".format(row["seat_id"]),
-            "",
-            "- 初始立場：{}".format(row["initial_stance"]),
-            "- 最終立場：{}".format(row["final_stance"]),
-            "- 是否改票：{}".format("改票" if row["stance_changed"] else "未改票"),
-            "- 改票／未改票原因：{}".format(
-                row["stance_change_reason"] if row["stance_changed"] else row["no_change_reason"]
-            ),
-            "- 初始公開理由：{}".format(row["initial_public_reason"]),
-            "- 最終公開理由：{}".format(row["public_reason"]),
-            "- 替補 attempt 系譜：{}".format(", ".join(row["replacement_attempt_ids"]) or "無替補"),
-            "- 支持證據：{}".format(", ".join(row["support_evidence_ids"]) or "無"),
-            "- 反方證據：{}".format(", ".join(row["counter_evidence_ids"]) or "無"),
-            "",
-        ]
-
-    lines += ["## 證據清單", ""]
-    for card in report["evidence"]:
-        lines.append(
-            "- `{}`（{}）{} 來源：{}".format(
-                card["evidence_id"], card["direction"], card["statement"], card["url"]
-            )
-        )
-    if not report["evidence"]:
-        lines.append("- 無可追溯證據")
-
-    lines += ["", "## 稽核", ""]
-    lines.append("- 流程失敗：{}".format("是" if report.get("process_failure") else "否"))
-    if report.get("validation_errors"):
-        lines += ["- 驗證錯誤：", ""]
-        lines += ["  - {}".format(error) for error in report["validation_errors"]]
-    lines.append("")
-    return "\n".join(lines)
-
-
-def render_market_html(report):
-    """Render one validated report as a single offline, printable HTML file."""
-    confidence = report["confidence"]
-    parts = [
-        "<!DOCTYPE html>",
-        '<html lang="zh-Hant">',
-        "<head>",
-        '<meta charset="utf-8">',
-        '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        "<title>Hoya Bit 市場研究報告</title>",
-        "<style>{}</style>".format(_MARKET_CSS),
-        "</head>",
-        "<body>",
-        "<h1>Hoya Bit 市場研究報告</h1>",
-        '<section class="first-screen" aria-label="報告摘要">',
-        "<dl>",
-    ]
-    for term, value in _market_headline(report):
-        css = ' class="confidence"' if term == "信心" else ""
-        aria = (
-            ' aria-label="信心 {}"'.format(_e(confidence["level"])) if term == "信心" else ""
-        )
-        parts += [
-            "<dt>{}</dt>".format(_e(term)),
-            "<dd{}{}>{}</dd>".format(css, aria, _e(value)),
-        ]
-    parts += ["</dl>", "<h2>失效條件</h2>", "<ul>"]
-    parts += ["<li>{}</li>".format(_e(item)) for item in report["invalidation_conditions"]]
-    parts += ["</ul>", "</section>", "<!--first-screen-end-->"]
-
-    parts += ["<h2>限制</h2>", "<ul>"]
-    parts += ["<li>{}</li>".format(_e(item)) for item in report["limitations"]]
-    parts += ["</ul>"]
-
-    parts += [
-        "<h2>七席立場</h2>",
-        "<table>",
-        "<caption>七席初始與最終立場、改票紀錄、替補系譜與引用證據</caption>",
-        "<thead><tr>",
-    ]
-    headers = (
-        "席位",
-        "初始立場",
-        "最終立場",
-        "是否改票",
-        "改票／未改票原因",
-        "初始公開理由",
-        "最終公開理由",
-        "替補 attempt 系譜",
-        "支持證據",
-        "反方證據",
-    )
-    parts += ['<th scope="col">{}</th>'.format(_e(header)) for header in headers]
-    parts += ["</tr></thead>", "<tbody>"]
-    for row in report["seats"]:
-        cells = (
-            row["initial_stance"],
-            row["final_stance"],
-            "改票" if row["stance_changed"] else "未改票",
-            row["stance_change_reason"] if row["stance_changed"] else row["no_change_reason"],
-            row["initial_public_reason"],
-            row["public_reason"],
-            ", ".join(row["replacement_attempt_ids"]) or "無替補",
-            ", ".join(row["support_evidence_ids"]) or "無",
-            ", ".join(row["counter_evidence_ids"]) or "無",
-        )
-        parts.append(
-            '<tr><th scope="row">{}</th>{}</tr>'.format(
-                _e(row["seat_id"]),
-                "".join("<td>{}</td>".format(_e(cell)) for cell in cells),
-            )
-        )
-    parts += ["</tbody>", "</table>"]
-
-    parts += ["<h2>證據清單</h2>", "<ul>"]
-    for card in report["evidence"]:
-        parts.append(
-            '<li><code>{}</code>（{}）{} 來源：<a href="{}">{}</a></li>'.format(
-                _e(card["evidence_id"]),
-                _e(card["direction"]),
-                _e(card["statement"]),
-                _e(card["url"]),
-                _e(card["url"]),
-            )
-        )
-    if not report["evidence"]:
-        parts.append("<li>無可追溯證據</li>")
-    parts += ["</ul>"]
-
-    parts += [
-        "<h2>稽核</h2>",
-        "<ul>",
-        "<li>流程失敗：{}</li>".format("是" if report.get("process_failure") else "否"),
-    ]
-    for error in report.get("validation_errors") or []:
-        parts.append("<li>驗證錯誤：{}</li>".format(_e(error)))
-    parts += ["</ul>", "</body>", "</html>", ""]
-    return "\n".join(parts)
-
-
 def render_market_markdown(report):
     """Render one already-validated, Core-authored report as Markdown."""
     lines = [
@@ -611,9 +406,14 @@ def render_market_markdown(report):
 
     lines += ["## 證據與來源", ""]
     for card in report["evidence"]:
+        source = (
+            "[{}]({})".format(card["url"], card["url"])
+            if is_safe_source_url(card["url"])
+            else "不安全來源網址（未建立連結）：{}".format(card["url"])
+        )
         lines.append(
-            "- `{}` [{}]({})｜{}｜{}".format(
-                card["evidence_id"], card["url"], card["url"], card["direction"], card["statement"]
+            "- `{}` {}｜{}｜{}".format(
+                card["evidence_id"], source, card["direction"], card["statement"]
             )
         )
     lines.append("")
@@ -703,13 +503,16 @@ def render_market_html(report):
 
     parts += ['<section><h2>證據與來源</h2><ul class="evidence">']
     for card in report["evidence"]:
+        source = (
+            '<a href="{}">{}</a>'.format(_e(card["url"]), _e(card["url"]))
+            if is_safe_source_url(card["url"])
+            else '<span class="unsafe-url">不安全來源網址（未建立連結）：{}</span>'.format(
+                _e(card["url"])
+            )
+        )
         parts.append(
-            '<li><code>{}</code> <a href="{}">{}</a>｜{}｜{}</li>'.format(
-                _e(card["evidence_id"]),
-                _e(card["url"]),
-                _e(card["url"]),
-                _e(card["direction"]),
-                _e(card["statement"]),
+            "<li><code>{}</code> {}｜{}｜{}</li>".format(
+                _e(card["evidence_id"]), source, _e(card["direction"]), _e(card["statement"])
             )
         )
     parts += ["</ul></section>", "</main>", "</body>", "</html>", ""]

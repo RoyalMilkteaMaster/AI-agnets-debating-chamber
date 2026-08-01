@@ -1,6 +1,7 @@
 """Ticket #10: Markdown/HTML are pure renderings of one validated report."""
 
 import json
+import inspect
 import re
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from hoya_market_agents.report_renderer import (
     render_market_html,
     render_market_markdown,
 )
+import hoya_market_agents.report_renderer as report_renderer_module
 from hoya_market_agents.seats import SEAT_IDS
 
 
@@ -127,6 +129,18 @@ class HtmlSafetyTests(unittest.TestCase):
         report = _validated()
         report["judgement"] = "<b>不應成為標籤</b>"
         self.assertIn("&lt;b&gt;", render_market_html(report))
+
+    def test_unvalidated_unsafe_url_is_never_an_active_link(self):
+        report = _validated()
+        report["evidence"][0]["url"] = "javascript:alert(1)"
+        html = render_market_html(report)
+        self.assertNotIn('href="javascript:', html.lower())
+
+    def test_market_renderer_has_one_implementation_and_one_stylesheet(self):
+        source = inspect.getsource(report_renderer_module)
+        self.assertEqual(source.count("def render_market_markdown("), 1)
+        self.assertEqual(source.count("def render_market_html("), 1)
+        self.assertEqual(source.count("_MARKET_CSS ="), 1)
 
 
 class RenderFixtureCommandTests(unittest.TestCase):
