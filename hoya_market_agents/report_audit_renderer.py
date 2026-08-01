@@ -180,18 +180,25 @@ def _validated(report, sources):
 
 def _summary_section(report, messages, evidence):
     period = report.get("period")
+    consensus = _label(report.get("consensus_status"), CONSENSUS_LABELS, "共識狀態")
+    stance = _stance_label(report.get("adopted_stance"))
     rows = (
-        ("共識狀態", _label(report.get("consensus_status"), CONSENSUS_LABELS, "共識狀態")),
-        ("採納立場", _stance_label(report.get("adopted_stance"))),
-        ("票數", _tally_text(report.get("tally"))),
         ("分析期間", _text(period.get("label") if isinstance(period, dict) else None)),
         ("公開發言則數", "{} 則".format(len(messages))),
         ("證據卡數", "{} 張".format(len(evidence))),
     )
     parts = [
         '<section class="run-summary" aria-labelledby="summary-title">',
-        '<h2 id="summary-title">本場辯論摘要</h2>',
-        "<dl>",
+        '<div class="summary-main"><div><p class="eyebrow">本場辯論摘要</p>',
+        '<h2 id="summary-title">{}｜採納立場：{}</h2>'.format(
+            _e(consensus), _e(stance)
+        ),
+        '<p class="summary-tally">{}</p></div>'.format(_e(_tally_text(report.get("tally")))),
+        '<a class="primary-action" href="report.html">回到市場報告</a></div>',
+        '<dl class="summary-meta">',
+        '<dt>共識狀態</dt><dd>{}</dd>'.format(_e(consensus)),
+        '<dt>採納立場</dt><dd>{}</dd>'.format(_e(stance)),
+        '<dt>票數</dt><dd>{}</dd>'.format(_e(_tally_text(report.get("tally")))),
     ]
     for term, value in rows:
         parts.append("<dt>{}</dt><dd>{}</dd>".format(_e(term), _e(value)))
@@ -519,7 +526,7 @@ def _e(value):
 
 _CSS = (
     ":root{--ink:#172033;--muted:#5d687b;--line:#d8dee9;--paper:#fff;--wash:#f3f6fb;"
-    "--brand:#173b70;--brand-soft:#eaf1fb;--warn:#8a3b00;--tone:#173b70}"
+    "--brand:#173b70;--brand-2:#2d5f9d;--brand-soft:#eaf1fb;--warn:#8a3b00;--tone:#173b70}"
     "*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);"
     "font-family:system-ui,'Noto Sans TC',sans-serif;line-height:1.6}"
     "main{max-width:76rem;margin:auto;padding:1.5rem}"
@@ -534,6 +541,12 @@ _CSS = (
     "a:focus-visible,summary:focus-visible{outline:3px solid #f0b429;outline-offset:2px}"
     "section,.page-footer{background:var(--paper);border:1px solid var(--line);border-radius:.7rem;"
     "padding:1.1rem;margin:0 0 1rem}"
+    ".run-summary{background:linear-gradient(120deg,var(--brand),var(--brand-2));color:#fff;box-shadow:0 8px 24px rgba(23,59,112,.18)}"
+    ".run-summary .eyebrow{color:#cbdcf2}.summary-main{display:flex;align-items:center;justify-content:space-between;gap:1.5rem}"
+    ".summary-main h2{font-size:1.65rem;margin:.1rem 0}.summary-tally{margin:.2rem 0;font-weight:750;opacity:.9}"
+    ".primary-action{flex:none;background:#fff;color:var(--brand);font-weight:850;text-decoration:none;padding:.75rem 1rem;border-radius:.55rem}"
+    ".summary-meta{grid-template-columns:7rem 1fr;max-width:36rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid rgba(255,255,255,.2)}"
+    ".summary-meta dt{color:#dbe8f8}"
     "dl{display:grid;grid-template-columns:10rem 1fr;gap:.4rem 1rem;margin:0}"
     "dt{font-weight:750;color:var(--muted)}dd{margin:0}"
     ".chat{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:.7rem}"
@@ -568,9 +581,10 @@ _CSS = (
     ".tier{font-size:.75rem;font-weight:750;color:var(--brand)}"
     ".unsafe-url,.unknown{color:var(--warn);font-weight:700;overflow-wrap:anywhere}"
     "a{color:#064f9e;overflow-wrap:anywhere}code{font-weight:700}"
-    "@media(max-width:60rem){.page-header{flex-direction:column;align-items:flex-start}"
+    "@media(max-width:60rem){.page-header,.summary-main{flex-direction:column;align-items:flex-start}"
     ".page-tabs{width:100%}.page-tabs a{flex:1;text-align:center}dl,.evidence-meta{grid-template-columns:1fr}}"
     "@media print{body{background:#fff}main{max-width:none;padding:0}.page-tabs{display:none}"
     ".evidence-card .hint{display:none}"
+    ".run-summary{background:#fff;color:#000}.run-summary .eyebrow,.summary-meta dt{color:#000}.primary-action{display:none}"
     "section,.turn,.evidence-card{break-inside:avoid;box-shadow:none}a{color:#000}}"
 )

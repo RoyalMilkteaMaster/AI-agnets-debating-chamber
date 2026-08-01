@@ -541,7 +541,7 @@ class EscapingAndUrlSafetyTest(unittest.TestCase):
         self.assertNotIn(url, rendered)
         self.assertIn("&quot;", rendered)
         self.assertEqual(
-            ["live.html", "report.html", "debate.html", html.escape(url)],
+            ["live.html", "report.html", "debate.html", "report.html", html.escape(url)],
             _HREF.findall(rendered),
         )
         self.assertEqual(url, html.unescape(_HREF.findall(rendered)[-1]))

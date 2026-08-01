@@ -35,6 +35,16 @@ SEAT_LABELS = {
     "counter-evidence": "反方證據席",
 }
 
+REPORT_AGENT_PROFILES = {
+    "spot-technical": ("Codex・圖表偵探", "📈"),
+    "derivatives": ("Codex・槓桿雷達", "⚙️"),
+    "onchain": ("Codex・鏈上獵人", "⛓️"),
+    "official-events": ("Claude・官方哨兵", "📣"),
+    "news": ("Claude・新聞探員", "📰"),
+    "social-macro": ("Claude・社群觀察員", "🌐"),
+    "counter-evidence": ("Gemini・反證稽核員", "🔎"),
+}
+
 STANCE_LABELS = {
     "bullish": "偏多",
     "bearish": "偏空",
@@ -486,30 +496,50 @@ def render_market_html(report, sources=None):
         '<a href="report.html" aria-current="page">市場報告</a>'
         '<a href="debate.html">完整辯論</a></nav></header>',
         '<section class="decision" aria-labelledby="decision-title">',
-        '<h2 id="decision-title">判斷摘要</h2>',
-        "<dl>",
-        "<dt>市場狀態</dt><dd>{}</dd>".format(_e(report["market_status"])),
-        "<dt>分析期間</dt><dd>{}</dd>".format(_e(report["period"]["label"])),
-        '<dt>信心</dt><dd class="confidence {}" aria-label="信心 {} {}">{} {}</dd>'.format(
+        '<div class="decision-main"><div><p class="eyebrow">本次結論</p>',
+        '<p class="decision-scope">{}｜{}</p>'.format(
+            _e("／".join(report.get("assets") or []) or "市場"),
+            _e(report["period"]["label"]),
+        ),
+        '<h2 class="market-status" id="decision-title">{}</h2>'.format(
+            _e(report["market_status"])
+        ),
+        '<p class="judgement">{}</p></div>'.format(_e(report["judgement"])),
+        '<a class="primary-action" href="debate.html">查看七席如何形成判斷</a></div>',
+        '<div class="decision-facts">',
+        '<span class="confidence {}" aria-label="信心 {} {}"><strong>{}</strong> {}</span>'.format(
             _e(confidence["level"]),
             _e(confidence["icon"]),
             _e(confidence["text"]),
             _e(confidence["icon"]),
             _e(confidence["text"]),
         ),
-        "<dt>票數</dt><dd>{}</dd>".format(_e(_market_tally(report))),
-        "<dt>共識狀態</dt><dd>{}</dd>".format(_e(_consensus_label(report["consensus_status"]))),
-        "<dt>判斷</dt><dd>{}</dd>".format(_e(report["judgement"])),
-        "</dl>",
-        "<h3>失效條件</h3>",
-        "<ul>",
+        '<span><strong>票數</strong> {}</span>'.format(_e(_market_tally(report))),
+        '<span><strong>共識</strong> {}</span>'.format(
+            _e(_consensus_label(report["consensus_status"]))
+        ),
+        "</div>",
+        "</section>",
+        '<section class="evidence-compare" aria-labelledby="evidence-compare-title">',
+        '<div class="section-heading"><div><p class="eyebrow">先看正反證據</p>',
+        '<h2 id="evidence-compare-title">支持與反方證據</h2></div>',
+        '<a class="text-link" href="#evidence-library">查看完整來源 →</a></div>',
+        '<div class="evidence-columns">',
+        '<article class="evidence-side support"><h3>支持證據</h3><ol>',
     ]
-    parts += ["<li>{}</li>".format(_e(item)) for item in report["invalidation_conditions"]]
-    parts += ["</ul>", "</section>", "<!--first-screen-end-->"]
+    support_cards = [card for card in evidence_by_id.values() if card.get("direction") == "support"]
+    oppose_cards = [card for card in evidence_by_id.values() if card.get("direction") == "oppose"]
+    parts += _comparison_items(support_cards, "本次沒有記錄支持證據。")
+    parts += ["</ol></article>", '<article class="evidence-side oppose"><h3>反方證據</h3><ol>']
+    parts += _comparison_items(oppose_cards, "本次沒有記錄反方證據。")
+    parts += ["</ol></article></div></section>"]
 
-    parts += ["<section><h2>限制</h2><ul>"]
+    parts += ['<section class="risk-section"><div><h2>失效條件</h2><ul>']
+    parts += ["<li>{}</li>".format(_e(item)) for item in report["invalidation_conditions"]]
+    parts += ["</ul></div><div><h2>限制</h2><ul>"]
     parts += ["<li>{}</li>".format(_e(item)) for item in report["limitations"]]
-    parts += ["</ul></section>"]
+    parts += ["</ul></div></section>", "<!--first-screen-end-->"]
+
     if report["validation_errors"]:
         parts += ["<section><h2>驗證錯誤</h2><ul>"]
         parts += ["<li>{}</li>".format(_e(item)) for item in report["validation_errors"]]
@@ -520,12 +550,8 @@ def render_market_html(report, sources=None):
         '<div class="section-heading"><div><p class="eyebrow">七個獨立研究角度</p>',
         "<h2>各席判斷與可驗證依據</h2></div>",
         '<a class="text-link" href="debate.html">前往完整辯論室 →</a></div>',
-        "<table>",
-        "<caption>每席初始與最終立場、公開理由、證據來源與替補紀錄</caption>",
-        "<thead><tr>",
-        '<th scope="col">研究席</th><th scope="col">立場演變</th>',
-        '<th scope="col">公開判斷理由</th><th scope="col">可驗證證據</th><th scope="col">流程紀錄</th>',
-        "</tr></thead><tbody>",
+        '<p class="section-intro">先讀每席最終理由；需要查證時，再展開其引用來源。</p>',
+        '<div class="seat-grid">',
     ]
     for seat in report["seats"]:
         change_text = (
@@ -540,26 +566,36 @@ def render_market_html(report, sources=None):
             card = evidence_by_id.get(evidence_id, {})
             evidence_items.append(_seat_evidence_html(evidence_id, card))
         evidence_html = "".join(evidence_items) or "<li>沒有可驗證證據</li>"
+        agent_name, avatar = REPORT_AGENT_PROFILES.get(
+            seat["seat_id"], (_seat_label(seat["seat_id"]), "❔")
+        )
         parts += [
-            "<tr>",
-            '<th scope="row"><span class="seat-name">{}</span><code>{}</code></th>'.format(
-                _e(_seat_label(seat["seat_id"])), _e(seat["seat_id"])
+            '<article class="seat-card">',
+            '<header class="seat-head"><span class="seat-avatar" aria-hidden="true">{}</span>'
+            '<div><h3>{}</h3><p>{}｜<code>{}</code></p></div></header>'.format(
+                _e(avatar),
+                _e(agent_name),
+                _e(_seat_label(seat["seat_id"])),
+                _e(seat["seat_id"]),
             ),
-            '<td><span class="stance initial">初始：{}</span><span class="arrow" aria-hidden="true">→</span>'
-            '<span class="stance final">最終：{}</span></td>'.format(
+            '<p class="stance-line"><span>初始 {}</span><span aria-hidden="true">→</span>'
+            '<strong>最終 {}</strong></p>'.format(
                 _e(_stance_label(seat["initial_stance"])),
                 _e(_stance_label(seat["final_stance"])),
             ),
-            '<td><p><strong>初始判斷：</strong>{}</p><p><strong>最終判斷：</strong>{}</p></td>'.format(
-                _e(seat["initial_public_reason"]), _e(seat["public_reason"])
+            '<div class="seat-reason"><h4>最終判斷理由</h4><p>{}</p></div>'.format(
+                _e(seat["public_reason"])
             ),
-            '<td><ul class="seat-evidence">{}</ul></td>'.format(evidence_html),
-            '<td><strong>{}</strong><br>替補紀錄：{}</td>'.format(
-                _e(change_text), _e(lineage)
+            '<p class="seat-process"><strong>是否改票：</strong>{}<br>'
+            '<strong>替補紀錄：</strong>{}</p>'.format(_e(change_text), _e(lineage)),
+            '<details class="seat-sources"><summary>查看 {} 項可驗證依據</summary>'
+            '<ul class="seat-evidence">{}</ul>'
+            '<p><strong>初始判斷：</strong>{}</p></details>'.format(
+                len(cited_ids), evidence_html, _e(seat["initial_public_reason"])
             ),
-            "</tr>",
+            "</article>",
         ]
-    parts += ["</tbody></table></section>"]
+    parts += ["</div></section>"]
 
     parts += [
         '<section id="evidence-library"><div class="section-heading"><div>',
@@ -577,18 +613,18 @@ def render_market_html(report, sources=None):
             )
         )
         parts.append(
-            '<article class="evidence-card" id="evidence-{}">'
-            '<div class="evidence-card-head"><code>{}</code><span class="tier">{}</span></div>'
-            '<h3>{}</h3><dl class="evidence-meta">'
+            '<details class="evidence-card" id="evidence-{}"><summary>'
+            '<span><code>{}</code><strong>{}</strong></span><span class="tier">{}</span></summary>'
+            '<div class="evidence-body"><dl class="evidence-meta">'
             '<dt>研究席</dt><dd>{}</dd><dt>資料分類</dt><dd>{}</dd>'
             '<dt>證據方向</dt><dd>{}</dd><dt>來源網站</dt><dd>{}</dd>'
             '<dt>發布時間</dt><dd>{}</dd><dt>取得時間</dt><dd>{}</dd></dl>'
             '<p><strong>原文或關鍵數值：</strong>{}</p>'
-            '<p><strong>可信度與限制：</strong>{}</p>{}</article>'.format(
+            '<p><strong>可信度與限制：</strong>{}</p>{}</div></details>'.format(
                 _e(evidence_id),
                 _e(evidence_id),
-                _e(_source_tier_label(card.get("source_tier"))),
                 _e(card.get("statement") or "未提供證據摘要"),
+                _e(_source_tier_label(card.get("source_tier"))),
                 _e(_seat_label(card.get("seat_id"))),
                 _e(_category_label(card.get("category"))),
                 _e(_direction_label(card.get("direction"))),
@@ -606,39 +642,50 @@ def render_market_html(report, sources=None):
 
 _MARKET_CSS = (
     ":root{--ink:#172033;--muted:#5d687b;--line:#d8dee9;--paper:#fff;--wash:#f3f6fb;"
-    "--brand:#173b70;--brand-soft:#eaf1fb;--positive:#17633b;--negative:#9a2f2f}"
+    "--brand:#173b70;--brand-2:#2d5f9d;--brand-soft:#eaf1fb;--positive:#17633b;--negative:#9a2f2f}"
     "*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);"
-    "font-family:system-ui,'Noto Sans TC',sans-serif;line-height:1.6}main{max-width:86rem;margin:auto;padding:1.5rem}"
+    "font-family:system-ui,'Noto Sans TC',sans-serif;line-height:1.6}main{max-width:90rem;margin:auto;padding:1.5rem}"
     ".page-header,.section-heading{display:flex;justify-content:space-between;align-items:center;gap:1rem}"
     ".page-header{margin:0 0 1rem}.eyebrow{margin:0;color:var(--brand);font-size:.78rem;font-weight:800;"
     "letter-spacing:.08em;text-transform:uppercase}h1{font-size:2rem;margin:.1rem 0}h2{margin:.2rem 0 .8rem}"
     ".page-tabs{display:flex;gap:.25rem;padding:.3rem;background:var(--brand-soft);border:1px solid var(--line);"
     "border-radius:.65rem}.page-tabs a{color:var(--brand);text-decoration:none;font-weight:800;"
     "padding:.55rem .75rem;border-radius:.4rem;white-space:nowrap}.page-tabs a[aria-current=page]{"
-    "background:var(--brand);color:#fff}.page-tabs a:focus-visible{outline:3px solid #f0b429;outline-offset:2px}"
-    ".text-link{color:var(--brand);font-weight:700;text-decoration:none}"
-    ".decision,section{background:var(--paper);border:1px solid var(--line);border-radius:.7rem;"
-    "padding:1.1rem;margin:0 0 1rem;box-shadow:0 3px 14px rgba(23,32,51,.05)}"
+    "background:var(--brand);color:#fff}.page-tabs a:focus-visible,.primary-action:focus-visible,summary:focus-visible{outline:3px solid #f0b429;outline-offset:2px}"
+    ".text-link{color:var(--brand);font-weight:700;text-decoration:none}.primary-action{flex:none;background:#fff;color:var(--brand);"
+    "font-weight:850;text-decoration:none;padding:.75rem 1rem;border-radius:.55rem}"
+    "section{background:var(--paper);border:1px solid var(--line);border-radius:.75rem;padding:1.1rem;margin:0 0 1rem;"
+    "box-shadow:0 3px 14px rgba(23,32,51,.05)}.decision{padding:1.35rem;background:linear-gradient(120deg,var(--brand),var(--brand-2));color:#fff}"
+    ".decision .eyebrow{color:#cbdcf2}.decision-main{display:flex;justify-content:space-between;align-items:center;gap:1.5rem}"
+    ".decision-scope{margin:.2rem 0;opacity:.82;font-weight:750}.market-status{font-size:clamp(1.8rem,3vw,2.75rem);line-height:1.22;margin:.2rem 0 .45rem}"
+    ".judgement{font-size:1.08rem;margin:0;max-width:58rem}.decision-facts{display:flex;gap:.65rem;flex-wrap:wrap;margin-top:1rem}"
+    ".decision-facts span{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);border-radius:2rem;padding:.35rem .7rem}"
     "dl{display:grid;grid-template-columns:9rem 1fr;gap:.45rem 1rem}dt{font-weight:750}dd{margin:0}"
     ".confidence{font-weight:800}.red{color:#8f1414}.orange{color:#8a3b00}.yellow{color:#6b5700}"
-    ".yellow_green{color:#315b10}.green{color:#12602e}table{border-collapse:separate;border-spacing:0;width:100%;"
-    "font-size:.94rem}th,td{border-right:1px solid var(--line);border-bottom:1px solid var(--line);"
-    "padding:.7rem;text-align:left;vertical-align:top}thead th{background:var(--brand-soft);border-top:1px solid var(--line)}"
-    "tr>*:first-child{border-left:1px solid var(--line)}caption{font-weight:700;text-align:left;margin-bottom:.6rem}"
-    ".seat-name{display:block;font-weight:850}.seat-name+code{font-size:.72rem;color:var(--muted)}"
-    ".stance{display:block;font-weight:750}.arrow{display:block;color:var(--muted);margin:.15rem 0}.final{color:var(--brand)}"
+    ".yellow_green{color:#315b10}.green{color:#12602e}.decision .confidence{color:#fff}"
+    ".evidence-columns{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.evidence-side{border:1px solid var(--line);border-radius:.65rem;padding:.9rem}"
+    ".evidence-side h3{margin:.1rem 0 .6rem}.evidence-side ol{margin:0;padding-left:1.35rem}.evidence-side li{padding:.45rem .2rem}"
+    ".evidence-side.support{border-top:4px solid var(--positive);background:#f6fbf8}.evidence-side.oppose{border-top:4px solid var(--negative);background:#fff8f8}"
+    ".comparison-meta{display:block;color:var(--muted);font-size:.78rem}.risk-section{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}"
+    ".risk-section h2{font-size:1.15rem}.section-intro{color:var(--muted);margin-top:-.45rem}"
+    ".seat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.85rem}.seat-card{border:1px solid var(--line);border-radius:.7rem;padding:.9rem;background:#fbfcfe}"
+    ".seat-head{display:flex;align-items:center;gap:.65rem}.seat-avatar{width:2.7rem;height:2.7rem;display:grid;place-items:center;border-radius:50%;background:var(--brand-soft);font-size:1.35rem}"
+    ".seat-head h3{margin:0;font-size:1rem}.seat-head p{margin:0;color:var(--muted);font-size:.76rem}.stance-line{display:flex;gap:.5rem;align-items:center;margin:.7rem 0;padding:.45rem .6rem;border-radius:.45rem;background:var(--brand-soft)}"
+    ".stance-line strong{color:var(--brand)}.seat-reason h4{margin:.5rem 0 .1rem;color:var(--muted);font-size:.78rem}.seat-reason p,.seat-process{margin:.15rem 0 .6rem}.seat-process{font-size:.84rem;color:var(--muted)}"
+    ".seat-sources{border-top:1px solid var(--line);padding-top:.55rem}.seat-sources summary{cursor:pointer;color:var(--brand);font-weight:800}"
     ".seat-evidence{list-style:none;padding:0;margin:0}.seat-evidence li{padding:.45rem 0;border-bottom:1px dashed var(--line)}"
     ".seat-evidence li:last-child{border:0}.evidence-summary{display:block;margin-top:.2rem}.meta{display:block;color:var(--muted);"
     "font-size:.78rem}.evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));gap:.8rem}"
-    ".evidence-card{border:1px solid var(--line);border-radius:.55rem;padding:.9rem;background:#fbfcfe}"
-    ".evidence-card-head{display:flex;justify-content:space-between;gap:.5rem;align-items:center}.tier{font-size:.75rem;"
-    "font-weight:750;color:var(--brand)}.evidence-card h3{font-size:1rem}.evidence-meta{grid-template-columns:5.5rem 1fr;"
+    ".evidence-card{border:1px solid var(--line);border-radius:.55rem;background:#fbfcfe;align-self:start}.evidence-card summary{cursor:pointer;padding:.8rem;display:flex;justify-content:space-between;gap:.6rem}"
+    ".evidence-card summary span:first-child{display:flex;flex-direction:column}.evidence-card summary strong{font-size:.9rem}.evidence-body{padding:0 .8rem .8rem}.tier{font-size:.75rem;"
+    "font-weight:750;color:var(--brand)}.evidence-meta{grid-template-columns:5.5rem 1fr;"
     "font-size:.83rem}.source-link{display:inline-block;margin-top:.3rem}a{color:#064f9e;overflow-wrap:anywhere}code{font-weight:700}"
     "@media(max-width:60rem){.page-header,.section-heading{align-items:flex-start;flex-direction:column}"
-    ".page-tabs{width:100%}.page-tabs a{flex:1;text-align:center}dl{grid-template-columns:1fr}"
-    "table{display:block;overflow-x:auto}}"
+    ".page-tabs{width:100%}.page-tabs a{flex:1;text-align:center}dl{grid-template-columns:1fr}.decision-main{align-items:flex-start;flex-direction:column}"
+    ".evidence-columns,.risk-section,.seat-grid{grid-template-columns:1fr}}"
     "@media print{body{background:#fff}main{max-width:none;padding:0}.page-tabs,.text-link{display:none}"
-    "section{break-inside:auto;border-color:#777;box-shadow:none}.evidence-card{break-inside:avoid}a{color:#000}}"
+    ".decision{background:#fff;color:#000}.decision .eyebrow,.decision .confidence{color:#000}.primary-action{display:none}"
+    "section{break-inside:auto;border-color:#777;box-shadow:none}.evidence-card,.seat-card{break-inside:avoid}a{color:#000}}"
 )
 
 
@@ -647,6 +694,21 @@ def _market_tally(report):
         "{}：{}".format(_stance_label(stance), count)
         for stance, count in report["tally"].items()
     )
+
+
+def _comparison_items(cards, empty_text):
+    if not cards:
+        return ['<li class="empty">{}</li>'.format(_e(empty_text))]
+    return [
+        '<li><strong>{}</strong><span class="comparison-meta">{}｜{}</span>'
+        '<a href="#evidence-{}">查看原始來源與可信度</a></li>'.format(
+            _e(card.get("statement") or "證據摘要未提供"),
+            _e(_source_tier_label(card.get("source_tier"))),
+            _e(card.get("source_origin") or "來源網站未提供"),
+            _e(card.get("evidence_id")),
+        )
+        for card in cards
+    ]
 
 
 def _market_evidence_index(report, sources):

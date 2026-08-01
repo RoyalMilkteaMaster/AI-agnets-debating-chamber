@@ -41,6 +41,7 @@ def build_live_state(data_root, run_id=None, now_utc=None, elapsed_override_ms=N
 
     question = _read_json(run_dir / "question.json") or {}
     manifest = _read_json(run_dir / "manifest.json") or {}
+    report = _read_json(run_dir / "report.json") or {}
     events = _read_jsonl(run_dir / "events.jsonl")
     if not events:
         events = _read_jsonl(run_dir / "debate.jsonl")
@@ -67,6 +68,7 @@ def build_live_state(data_root, run_id=None, now_utc=None, elapsed_override_ms=N
 
     completed = bool(manifest) and not replaying
     phase = _phase(elapsed_ms, completed=completed)
+    report_available = (run_dir / "report.html").is_file()
     research_status = _research_status(visible_events)
     seats = [
         _seat_state(seat_id, current_stances.get(seat_id), debate, research_status)
@@ -80,18 +82,20 @@ def build_live_state(data_root, run_id=None, now_utc=None, elapsed_override_ms=N
         "status": "演練重播" if replaying else ("已完成" if completed else "執行中"),
         "run_id": run_dir.name,
         "question": question.get("question") or manifest.get("question") or "題目尚未寫入",
+        "asset_label": _asset_label(question, report),
         "elapsed_ms": elapsed_ms,
         "total_remaining_ms": max(0, 900_000 - elapsed_ms),
         "report_remaining_ms": max(0, 780_000 - elapsed_ms),
         "phase": phase,
         "tally": tally,
         "tally_labels": dict(STANCE_LABELS),
+        "focus": _focus_state(tally, phase, report, report_available),
         "seats": seats,
         "debate": debate,
         "vote_history": vote_history,
         "evidence": evidence,
         "rules": list(RULES),
-        "report_available": (run_dir / "report.html").is_file(),
+        "report_available": report_available,
         "debate_report_available": (run_dir / "debate.html").is_file(),
         "updated_at_utc": _iso_utc(now_utc or datetime.now(timezone.utc)),
     }
@@ -273,7 +277,14 @@ def _live_elapsed_ms(question, manifest, events, now_utc):
 
 def _phase(elapsed_ms, completed=False):
     if completed:
-        return {"key": "completed", "label": "執行完成", "required_votes": None, "next_rule_label": "無", "next_rule_in_ms": 0}
+        return {
+            "key": "completed",
+            "label": "執行完成",
+            "required_votes": None,
+            "threshold_label": "已結算",
+            "next_rule_label": "流程已完成",
+            "next_rule_in_ms": 0,
+        }
     if elapsed_ms < 300_000:
         key, label, required = "research", "多方蒐證", None
     elif elapsed_ms < 420_000:
@@ -291,8 +302,56 @@ def _phase(elapsed_ms, completed=False):
         "key": key,
         "label": label,
         "required_votes": required,
+        "threshold_label": (
+            "{} 票".format(required)
+            if required is not None
+            else ("流程已結束" if key == "expired" else "尚未進入投票")
+        ),
         "next_rule_label": upcoming["label"] if upcoming else "無",
         "next_rule_in_ms": max(0, upcoming["at_ms"] - elapsed_ms) if upcoming else 0,
+    }
+
+
+def _asset_label(question, report):
+    assets = report.get("assets") if isinstance(report, dict) else None
+    if not isinstance(assets, list):
+        assets = question.get("assets") if isinstance(question, dict) else None
+    clean = [value for value in (assets or []) if isinstance(value, str) and value.strip()]
+    return "／".join(clean) if clean else "市場"
+
+
+def _focus_state(tally, phase, report, report_available):
+    ordered = ("bullish", "bearish", "neutral")
+    highest = max(tally.values(), default=0)
+    leaders = [stance for stance in ordered if tally.get(stance) == highest and highest > 0]
+    adopted = report.get("adopted_stance") if isinstance(report, dict) else None
+    consensus = report.get("consensus_status") if isinstance(report, dict) else None
+    if consensus == "consensus" and adopted in STANCE_LABELS:
+        headline = "已達共識：{}".format(STANCE_LABELS[adopted])
+    elif len(leaders) == 1:
+        headline = "目前{}領先".format(STANCE_LABELS[leaders[0]])
+    else:
+        headline = "尚未形成單一領先"
+
+    confidence = report.get("confidence") if isinstance(report, dict) else None
+    confidence = confidence if isinstance(confidence, dict) else {}
+    tally_text = "｜".join(
+        "{} {}".format(STANCE_LABELS[stance], tally.get(stance, 0)) for stance in ordered
+    )
+    if report_available:
+        action_label = "查看市場報告"
+        action_href = "report.html"
+    else:
+        action_label = "下一規則：{}".format(phase["next_rule_label"])
+        action_href = "#rules-detail"
+    return {
+        "headline": headline,
+        "tally_text": tally_text,
+        "market_status": report.get("market_status") if isinstance(report, dict) else None,
+        "confidence_icon": confidence.get("icon") or "⚪",
+        "confidence_text": confidence.get("text") or "尚未評估",
+        "action_label": action_label,
+        "action_href": action_href,
     }
 
 
@@ -408,17 +467,21 @@ def _seat_state(seat_id, stance, debate, research_status):
 
 
 def _waiting_state():
+    phase = _phase(0)
+    tally = {"bullish": 0, "bearish": 0, "neutral": 0}
     return {
         "schema_version": "1.0.0",
         "status": "等待執行",
         "run_id": None,
         "question": "等待新的市場題目",
+        "asset_label": "市場",
         "elapsed_ms": 0,
         "total_remaining_ms": 900_000,
         "report_remaining_ms": 780_000,
-        "phase": _phase(0),
-        "tally": {"bullish": 0, "bearish": 0, "neutral": 0},
+        "phase": phase,
+        "tally": tally,
         "tally_labels": dict(STANCE_LABELS),
+        "focus": _focus_state(tally, phase, {}, False),
         "seats": [_seat_state(seat_id, None, [], {}) for seat_id in SEAT_IDS],
         "debate": [],
         "vote_history": [],
@@ -472,37 +535,38 @@ def _state_signature(state):
 _LIVE_HTML = r'''<!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Hoya Bit 即時 Agent 辯論室</title><style>
-:root{--ink:#172033;--muted:#667085;--line:#dbe2ec;--paper:#fff;--wash:#f2f5fa;--brand:#173b70;--bull:#177245;--bear:#a33333;--neutral:#856600}
+:root{--ink:#172033;--muted:#667085;--line:#dbe2ec;--paper:#fff;--wash:#f2f5fa;--brand:#173b70;--brand-2:#2d5f9d;--bull:#177245;--bear:#a33333;--neutral:#856600}
 *{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);font-family:system-ui,'Noto Sans TC',sans-serif;line-height:1.5}
-main{max-width:96rem;margin:auto;padding:1rem}.top{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}.eyebrow{color:var(--brand);font-weight:850;font-size:.78rem;letter-spacing:.08em;margin:0}h1{margin:.15rem 0}.top-actions{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap;justify-content:flex-end}.connection{background:#e9f8ef;color:#17633b;padding:.35rem .65rem;border-radius:2rem;font-weight:750}.page-tabs{display:flex;gap:.25rem;padding:.3rem;background:#eaf1fb;border:1px solid var(--line);border-radius:.65rem}.page-tabs a{color:var(--brand);text-decoration:none;padding:.55rem .75rem;border-radius:.4rem;font-weight:800;white-space:nowrap}.page-tabs a[aria-current=page]{background:var(--brand);color:#fff}.page-tabs a[aria-disabled=true]{color:var(--muted);opacity:.55;cursor:not-allowed}.page-tabs a:focus-visible{outline:3px solid #f0b429;outline-offset:2px}
-.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem;margin:1rem 0}.panel,.metric{background:var(--paper);border:1px solid var(--line);border-radius:.75rem;box-shadow:0 3px 14px rgba(23,32,51,.05)}.metric{padding:.85rem}.metric small{display:block;color:var(--muted)}.metric strong{display:block;font-size:1.45rem;margin-top:.15rem}
-.layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(20rem,.8fr);gap:1rem}.panel{padding:1rem;margin-bottom:1rem}.panel h2{margin:.1rem 0 .8rem}.rules{display:flex;overflow:auto;gap:.5rem;padding-bottom:.25rem}.rule{min-width:10rem;border-left:4px solid var(--line);padding:.5rem;background:#fafbfd}.rule.active{border-color:var(--brand);background:#edf3fc}.rule time{font-weight:800;display:block}
+main{max-width:96rem;margin:auto;padding:1rem 1.25rem 2rem}.top{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem}.eyebrow{color:var(--brand);font-weight:850;font-size:.78rem;letter-spacing:.08em;margin:0}h1{margin:.15rem 0}.top p:last-child{margin:.25rem 0;color:var(--muted)}.top-actions{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap;justify-content:flex-end}.connection{background:#e9f8ef;color:#17633b;padding:.35rem .65rem;border-radius:2rem;font-weight:750}.page-tabs{display:flex;gap:.25rem;padding:.3rem;background:#eaf1fb;border:1px solid var(--line);border-radius:.65rem}.page-tabs a{color:var(--brand);text-decoration:none;padding:.55rem .75rem;border-radius:.4rem;font-weight:800;white-space:nowrap}.page-tabs a[aria-current=page]{background:var(--brand);color:#fff}.page-tabs a[aria-disabled=true]{color:var(--muted);opacity:.55;cursor:not-allowed}.page-tabs a:focus-visible,.focus-action:focus-visible,summary:focus-visible{outline:3px solid #f0b429;outline-offset:2px}
+.focus-bar{display:flex;align-items:center;justify-content:space-between;gap:1.5rem;margin:1rem 0;padding:1.2rem 1.35rem;border-radius:.9rem;background:linear-gradient(120deg,var(--brand),var(--brand-2));color:#fff;box-shadow:0 8px 24px rgba(23,59,112,.18)}.focus-bar p{margin:.15rem 0}.focus-asset{font-weight:850;letter-spacing:.08em;opacity:.78}.focus-bar h2{font-size:1.65rem;margin:.1rem 0}.focus-tally{font-size:1rem;font-weight:650;opacity:.9;margin-left:.45rem}.focus-detail{opacity:.9}.focus-action{flex:none;background:#fff;color:var(--brand);font-weight:850;text-decoration:none;padding:.75rem 1rem;border-radius:.55rem}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.65rem;margin:0 0 1rem}.panel,.metric,.detail-panel{background:var(--paper);border:1px solid var(--line);border-radius:.75rem;box-shadow:0 3px 14px rgba(23,32,51,.05)}.metric{padding:.65rem .8rem}.metric small{display:block;color:var(--muted)}.metric strong{display:block;font-size:1.08rem;margin-top:.1rem;font-variant-numeric:tabular-nums}
+.live-layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(20rem,.72fr);gap:1rem;align-items:start}.panel{padding:1rem;margin-bottom:1rem}.panel h2{margin:.1rem 0 .8rem}.chat-panel{min-height:38rem}.secondary-grid{display:grid;grid-template-columns:1.1fr .8fr 1.2fr;gap:1rem;margin-top:0}.detail-panel{padding:0;overflow:hidden}.detail-panel summary{cursor:pointer;padding:.9rem 1rem;font-weight:850;color:var(--brand);background:#fbfcfe}.detail-body{padding:0 1rem 1rem}.rules{display:flex;overflow:auto;gap:.5rem;padding-bottom:.25rem}.rule{min-width:10rem;border-left:4px solid var(--line);padding:.5rem;background:#fafbfd}.rule.active{border-color:var(--brand);background:#edf3fc}.rule time{font-weight:800;display:block}
 .tally{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem}.tally div{padding:.7rem;border-radius:.5rem;background:#f7f9fc;text-align:center}.tally strong{font-size:1.7rem;display:block}.bullish{color:var(--bull)}.bearish{color:var(--bear)}.neutral{color:var(--neutral)}
-.agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.65rem}.agent{border:1px solid var(--line);border-radius:.65rem;padding:.7rem;background:#fbfcfe}.agent-head{display:flex;gap:.6rem;align-items:center}.avatar{width:2.7rem;height:2.7rem;border-radius:50%;display:grid;place-items:center;font-size:1.35rem;background:#eaf1fb}.agent h3{font-size:.95rem;margin:0}.agent small{color:var(--muted)}.agent .stance{font-weight:850;margin:.5rem 0 .2rem}.agent p{font-size:.84rem;margin:.25rem 0}.agent .status{display:inline-block;background:#edf3fc;color:var(--brand);font-size:.75rem;padding:.2rem .45rem;border-radius:1rem}
-.feed{display:flex;flex-direction:column;gap:.8rem;max-height:42rem;overflow:auto;padding-right:.25rem}.message{width:min(46rem,94%);border:1px solid var(--line);border-left:4px solid var(--brand);background:#fbfcfe;padding:.8rem .9rem;border-radius:.25rem .85rem .85rem .85rem;box-shadow:0 2px 8px rgba(23,32,51,.05)}.message.claude{border-left-color:#b7602a}.message.gemini{border-left-color:#7357b4}.message-head{display:flex;justify-content:space-between;align-items:center;gap:.75rem}.speaker{display:flex;align-items:center;gap:.45rem}.speaker-avatar{width:2rem;height:2rem;border-radius:50%;display:grid;place-items:center;background:#eaf1fb}.message time{color:var(--muted);font-size:.8rem;white-space:nowrap}.message p{margin:.45rem 0}.message-reason strong,.stance-change strong{color:var(--muted)}.stance-change{font-size:.86rem}.stance-change.changed{color:var(--bear);font-weight:750}
+.agents{display:flex;flex-direction:column;gap:.45rem}.agent{border:1px solid var(--line);border-radius:.6rem;padding:.55rem .65rem;background:#fbfcfe}.agent-head{display:grid;grid-template-columns:2.25rem 1fr auto;gap:.55rem;align-items:center}.avatar{width:2.25rem;height:2.25rem;border-radius:50%;display:grid;place-items:center;font-size:1.15rem;background:#eaf1fb}.agent h3{font-size:.9rem;margin:0}.agent small{color:var(--muted);font-size:.72rem}.agent .stance{font-size:.82rem;font-weight:850;margin:0}.agent .status{grid-column:2/4;justify-self:start;background:#edf3fc;color:var(--brand);font-size:.72rem;padding:.16rem .42rem;border-radius:1rem}
+.feed{display:flex;flex-direction:column;gap:.8rem;max-height:48rem;overflow:auto;padding-right:.25rem}.message{width:min(52rem,96%);border:1px solid var(--line);border-left:4px solid var(--brand);background:#fbfcfe;padding:.8rem .9rem;border-radius:.25rem .85rem .85rem .85rem;box-shadow:0 2px 8px rgba(23,32,51,.05)}.message.claude{border-left-color:#b7602a}.message.gemini{border-left-color:#7357b4}.message-head{display:flex;justify-content:space-between;align-items:center;gap:.75rem}.speaker{display:flex;align-items:center;gap:.45rem}.speaker-avatar{width:2rem;height:2rem;border-radius:50%;display:grid;place-items:center;background:#eaf1fb}.message time{color:var(--muted);font-size:.8rem;white-space:nowrap}.message p{margin:.45rem 0}.message-reason strong,.stance-change strong{color:var(--muted)}.stance-change{font-size:.86rem}.stance-change.changed{color:var(--bear);font-weight:750}
 .history{list-style:none;padding:0}.history li{padding:.5rem 0;border-bottom:1px solid var(--line)}.evidence-card{border:1px solid var(--line);border-radius:.5rem;padding:.65rem;margin:.5rem 0;background:#fbfcfe}.evidence-card p{margin:.25rem 0}.evidence-card a{color:var(--brand)}
-@media(max-width:70rem){.metrics{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}}@media(max-width:38rem){.top{flex-direction:column}.top-actions,.page-tabs{width:100%}.page-tabs a{flex:1;text-align:center;padding:.5rem .3rem}.metrics{grid-template-columns:1fr}.tally{grid-template-columns:1fr}}
+@media(max-width:70rem){.metrics{grid-template-columns:repeat(2,1fr)}.live-layout,.secondary-grid{grid-template-columns:1fr}.focus-bar{align-items:flex-start}.focus-tally{display:block;margin-left:0}}@media(max-width:38rem){.top,.focus-bar{flex-direction:column}.top-actions,.page-tabs{width:100%}.page-tabs a{flex:1;text-align:center;padding:.5rem .3rem}.metrics{grid-template-columns:1fr}.tally{grid-template-columns:1fr}.focus-action{width:100%;text-align:center}}
 </style></head><body><main>
 <header class="top"><div><p class="eyebrow">HOYA BIT 即時研究流程</p><h1>即時 Agent 辯論室</h1><p id="question">等待新的市場題目</p></div><div class="top-actions"><nav class="page-tabs" aria-label="主要頁面"><a href="live.html" aria-current="page">即時辯論</a><a id="report-link" href="report.html" aria-disabled="true">市場報告</a><a id="debate-link" href="debate.html" aria-disabled="true">完整辯論</a></nav><span class="connection" id="connection">連線中</span></div></header>
-<section class="metrics"><div class="metric"><small>十五分鐘剩餘時間</small><strong id="total-time">15:00</strong></div><div class="metric"><small>報告期限剩餘時間</small><strong id="report-time">13:00</strong></div><div class="metric"><small>目前階段</small><strong id="phase">等待執行</strong></div><div class="metric"><small>目前共識門檻</small><strong id="threshold">尚未投票</strong></div></section>
-<section class="panel"><h2>規則與時間線</h2><div class="rules" id="rules"></div></section>
-<div class="layout"><div><section class="panel"><h2>即時票數</h2><div class="tally"><div class="bullish">偏多<strong id="bullish">0</strong></div><div class="bearish">偏空<strong id="bearish">0</strong></div><div class="neutral">方向不明<strong id="neutral">0</strong></div></div></section>
-<section class="panel"><h2>七席研究 Agent</h2><div class="agents" id="agents"></div></section><section class="panel"><h2>公開辯論直播</h2><div class="feed" id="feed"><p>尚未開始辯論。</p></div></section></div>
-<aside><section class="panel"><h2>票數變化</h2><ol class="history" id="history"><li>尚未投票。</li></ol></section><section class="panel"><h2>可驗證證據</h2><div id="evidence"><p>證據將在 T+5 封存後顯示。</p></div></section></aside></div>
+<section class="focus-bar" aria-labelledby="focus-title"><div><p class="focus-asset" id="focus-asset">市場</p><h2 id="focus-title"><span id="focus-headline">尚未形成單一領先</span><span class="focus-tally" id="focus-tally">偏多 0｜偏空 0｜方向不明 0</span></h2><p class="focus-detail" id="focus-detail">⚪ 信心尚未評估</p></div><a class="focus-action" id="focus-action" href="#rules-detail">查看下一規則</a></section>
+<section class="metrics"><div class="metric"><small>十五分鐘剩餘時間</small><strong id="total-time">15:00</strong></div><div class="metric"><small>報告期限剩餘時間</small><strong id="report-time">13:00</strong></div><div class="metric"><small>目前階段</small><strong id="phase">等待執行</strong></div><div class="metric"><small>目前共識門檻</small><strong id="threshold">尚未進入投票</strong></div></section>
+<div class="live-layout"><section class="panel chat-panel"><p class="eyebrow">現在正在發生</p><h2>公開辯論直播</h2><div class="feed" id="feed"><p>尚未開始辯論。</p></div></section><aside><section class="panel"><h2>即時票數</h2><div class="tally"><div class="bullish">偏多<strong id="bullish">0</strong></div><div class="bearish">偏空<strong id="bearish">0</strong></div><div class="neutral">方向不明<strong id="neutral">0</strong></div></div></section><section class="panel"><h2>七席研究 Agent</h2><div class="agents" id="agents"></div></section></aside></div>
+<div class="secondary-grid"><details class="detail-panel" id="rules-detail"><summary>規則與時間線</summary><div class="detail-body"><div class="rules" id="rules"></div></div></details><details class="detail-panel"><summary>票數變化</summary><div class="detail-body"><ol class="history" id="history"><li>尚未投票。</li></ol></div></details><details class="detail-panel"><summary>可驗證證據</summary><div class="detail-body" id="evidence"><p>證據將在 T+5 封存後顯示。</p></div></details></div>
 </main><script>
 const byId=id=>document.getElementById(id);const node=(tag,cls,text)=>{const value=document.createElement(tag);if(cls)value.className=cls;if(text!==undefined)value.textContent=text;return value};
 const formatMs=value=>{const seconds=Math.max(0,Math.floor(value/1000));return String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0')};
 const params=new URLSearchParams(location.search);const replay=params.get('replay')==='1';const replaySpeed=Math.max(1,Math.min(200,Number(params.get('speed')||20)));const viewSignatures={rules:'',agents:'',debate:'',history:'',evidence:''};let latestState=null;let receivedAt=0;
 function clear(id){const target=byId(id);while(target.firstChild)target.removeChild(target.firstChild);return target}
 function renderRules(state){const root=clear('rules');state.rules.forEach(rule=>{const card=node('div','rule'+(state.elapsed_ms>=rule.at_ms?' active':''));card.append(node('time','',formatMs(rule.at_ms)));card.append(node('span','',rule.label));root.append(card)})}
-function renderAgents(state){const root=clear('agents');state.seats.forEach(agent=>{const card=node('article','agent '+agent.provider_class);const head=node('div','agent-head');head.append(node('div','avatar',agent.avatar));const names=node('div');names.append(node('h3','',agent.agent_name));names.append(node('small','',agent.agent_number+'｜'+agent.seat_label));head.append(names);card.append(head);card.append(node('p','stance '+(agent.stance||''),agent.stance_label));card.append(node('span','status',agent.status));card.append(node('p','',agent.last_reason));root.append(card)})}
+function renderAgents(state){const root=clear('agents');state.seats.forEach(agent=>{const card=node('article','agent '+agent.provider_class);const head=node('div','agent-head');head.append(node('div','avatar',agent.avatar));const names=node('div');names.append(node('h3','',agent.agent_name));names.append(node('small','',agent.agent_number+'｜'+agent.seat_label));head.append(names);head.append(node('p','stance '+(agent.stance||''),agent.stance_label));head.append(node('span','status',agent.status));card.append(head);root.append(card)})}
 function renderFeed(state){const root=clear('feed');if(!state.debate.length){root.append(node('p','','尚未開始辯論。'));return}state.debate.forEach(item=>{const card=node('article','message '+item.provider_class);const head=node('div','message-head');const speaker=node('div','speaker');speaker.append(node('span','speaker-avatar',item.avatar));speaker.append(node('strong','',item.agent_name));head.append(speaker);head.append(node('time','', 'T+'+formatMs(item.elapsed_ms)));card.append(head);card.append(node('p','stance '+(item.stance||''),item.stance_label));const reason=node('p','message-reason');reason.append(node('strong','', '判斷／挑戰理由：'));reason.append(document.createTextNode(item.public_reason));card.append(reason);const change=node('p','stance-change '+(item.stance_changed?'changed':''));change.append(node('strong','', '是否變更立場：'));change.append(document.createTextNode(item.stance_change_label));if(item.stance_changed&&item.stance_change_reason)change.append(document.createTextNode('｜'+item.stance_change_reason));card.append(change);root.append(card)});root.scrollTop=root.scrollHeight}
 function renderHistory(state){const root=clear('history');if(!state.vote_history.length){root.append(node('li','','尚未投票。'));return}state.vote_history.forEach(item=>{const row=node('li');row.append(node('strong','',item.agent_name+'｜T+'+formatMs(item.elapsed_ms)));row.append(node('p','',item.before_label+' → '+item.after_label));row.append(node('small','',item.reason));root.append(row)})}
 function safeUrl(value){try{const url=new URL(value);return ['http:','https:'].includes(url.protocol)?url.href:null}catch{return null}}
 function renderEvidence(state){const root=clear('evidence');if(!state.evidence.length){root.append(node('p','','證據將在 T+5 封存後顯示。'));return}state.evidence.forEach(item=>{const card=node('article','evidence-card');card.dataset.evidence=item.evidence_id||'';card.append(node('strong','',item.evidence_id||'證據識別碼未提供'));card.append(node('p','',item.statement||'摘要未提供'));card.append(node('p','', '原文或數值：'+(item.excerpt||'未提供')));card.append(node('small','', (item.source_tier_label||'來源等級未提供')+'｜'+(item.published_at_label||'發布時間未提供')));const href=safeUrl(item.source_url);if(href){const link=node('a','source-link','開啟原始來源');link.href=href;link.target='_blank';link.rel='noopener noreferrer';card.append(link)}root.append(card)})}
 function renderChanged(key,signature,callback){if(viewSignatures[key]===signature)return;viewSignatures[key]=signature;callback()}
 function setPageAvailability(id,available){const link=byId(id);link.setAttribute('aria-disabled',String(!available));link.onclick=available?null:event=>event.preventDefault()}
-function render(state){latestState=state;receivedAt=Date.now();byId('question').textContent=state.question;byId('phase').textContent=state.phase.label;byId('threshold').textContent=state.phase.required_votes?state.phase.required_votes+' 票':(state.elapsed_ms>=900000?'流程已結束':'尚未投票');['bullish','bearish','neutral'].forEach(key=>byId(key).textContent=state.tally[key]);renderChanged('rules',state.rules.filter(rule=>state.elapsed_ms>=rule.at_ms).length,()=>renderRules(state));renderChanged('agents',JSON.stringify(state.seats),()=>renderAgents(state));renderChanged('debate',state.debate.map(item=>item.message_id).join('|'),()=>renderFeed(state));renderChanged('history',JSON.stringify(state.vote_history),()=>renderHistory(state));renderChanged('evidence',state.evidence.map(item=>item.evidence_id).join('|'),()=>renderEvidence(state));setPageAvailability('report-link',state.report_available);setPageAvailability('debate-link',state.debate_report_available);byId('connection').textContent=(replay?'重播中｜':'')+state.status}
+function renderFocus(state){byId('focus-asset').textContent=state.asset_label;byId('focus-headline').textContent=state.focus.headline;byId('focus-tally').textContent=state.focus.tally_text;const detail=[state.focus.market_status,state.focus.confidence_icon+' '+state.focus.confidence_text].filter(Boolean).join('｜');byId('focus-detail').textContent=detail;const action=byId('focus-action');action.textContent=state.focus.action_label;action.href=state.focus.action_href;action.onclick=state.report_available?null:()=>{byId('rules-detail').open=true}}
+function render(state){latestState=state;receivedAt=Date.now();byId('question').textContent=state.question;byId('phase').textContent=state.phase.label;byId('threshold').textContent=state.phase.threshold_label;renderFocus(state);['bullish','bearish','neutral'].forEach(key=>byId(key).textContent=state.tally[key]);renderChanged('rules',state.rules.filter(rule=>state.elapsed_ms>=rule.at_ms).length,()=>renderRules(state));renderChanged('agents',JSON.stringify(state.seats),()=>renderAgents(state));renderChanged('debate',state.debate.map(item=>item.message_id).join('|'),()=>renderFeed(state));renderChanged('history',JSON.stringify(state.vote_history),()=>renderHistory(state));renderChanged('evidence',state.evidence.map(item=>item.evidence_id).join('|'),()=>renderEvidence(state));setPageAvailability('report-link',state.report_available);setPageAvailability('debate-link',state.debate_report_available);byId('connection').textContent=(replay?'重播中｜':'')+state.status}
 function updateClock(){if(latestState){const advances=latestState.status==='執行中'||replay;const speed=replay?replaySpeed:1;const elapsed=Math.min(900000,latestState.elapsed_ms+(advances?(Date.now()-receivedAt)*speed:0));byId('total-time').textContent=formatMs(900000-elapsed);byId('report-time').textContent=formatMs(780000-elapsed)}requestAnimationFrame(updateClock)}
 const streamQuery=replay?'?replay=1&speed='+encodeURIComponent(replaySpeed):'';const eventStream=new EventSource('/api/events'+streamQuery);eventStream.onopen=()=>{byId('connection').textContent=replay?'重播已連線':'即時連線'};eventStream.onmessage=event=>{try{render(JSON.parse(event.data))}catch(error){byId('connection').textContent='狀態格式錯誤'}};eventStream.onerror=()=>{byId('connection').textContent='連線中斷，正在重連';byId('connection').style.background='#fdecec';byId('connection').style.color='#9a2f2f'};requestAnimationFrame(updateClock);
 </script></body></html>'''

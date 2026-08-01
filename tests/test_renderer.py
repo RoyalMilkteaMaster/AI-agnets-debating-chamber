@@ -119,9 +119,9 @@ class HtmlSafetyTests(unittest.TestCase):
         self.assertEqual(self.html.count("<h1"), 1)
         self.assertIn("<h2", self.html)
         self.assertIn('lang="zh-Hant"', self.html)
-        self.assertIn("<table", self.html)
-        self.assertIn("<th ", self.html)
-        self.assertIn("<caption>", self.html)
+        self.assertEqual(7, self.html.count('<article class="seat-card">'))
+        self.assertEqual(7, self.html.count('<details class="seat-sources">'))
+        self.assertIn('aria-labelledby="decision-title"', self.html)
 
     def test_status_is_conveyed_by_text_and_icon_not_colour_alone(self):
         self.assertIn(self.report["confidence"]["icon"], self.html)
@@ -139,6 +139,20 @@ class HtmlSafetyTests(unittest.TestCase):
             self.assertIn("{}：{}".format(labels[stance], count), first_screen)
         for condition in self.report["invalidation_conditions"]:
             self.assertIn(condition, first_screen)
+
+    def test_page_leads_from_conclusion_to_evidence_then_seat_reasoning(self):
+        self.assertLess(self.html.index("本次結論"), self.html.index("支持與反方證據"))
+        self.assertLess(self.html.index("支持與反方證據"), self.html.index("各席判斷與可驗證依據"))
+        self.assertIn("查看七席如何形成判斷", self.html)
+
+    def test_full_evidence_library_is_collapsed_by_default(self):
+        self.assertEqual(
+            len(self.report["evidence"]),
+            self.html.count('<details class="evidence-card"'),
+        )
+        self.assertNotRegex(
+            self.html, r'<details class="evidence-card"[^>]*\sopen(?:\s|=|>)'
+        )
 
     def test_markup_is_escaped(self):
         report = _validated()

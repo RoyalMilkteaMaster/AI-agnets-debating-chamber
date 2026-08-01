@@ -32,6 +32,7 @@ class LiveStateTests(unittest.TestCase):
                 {
                     "run_id": RUN_ID,
                     "question": "分析 BTC 過去 14 日市場狀態",
+                    "assets": ["BTC"],
                     "created_at_utc": "2026-08-01T02:00:00Z",
                 },
                 ensure_ascii=False,
@@ -134,6 +135,38 @@ class LiveStateTests(unittest.TestCase):
         self.assertIsNone(state["run_id"])
         self.assertEqual([], state["debate"])
 
+    def test_completed_state_uses_report_focus_and_never_says_not_voted(self):
+        self._write_events(
+            [self._message("spot-technical", "final_vote", "bullish", 360_000)]
+        )
+        (self.run_dir / "manifest.json").write_text(
+            json.dumps({"elapsed_ms": 360_000}) + "\n", encoding="utf-8"
+        )
+        (self.run_dir / "report.json").write_text(
+            json.dumps(
+                {
+                    "assets": ["BTC"],
+                    "consensus_status": "consensus",
+                    "adopted_stance": "bullish",
+                    "market_status": "短期偏多，但存在過熱風險",
+                    "confidence": {"icon": "🟡🟢", "text": "中高信心"},
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (self.run_dir / "report.html").write_text("報告", encoding="utf-8")
+
+        state = build_live_state(self.data_root, RUN_ID)
+
+        self.assertEqual("已完成", state["status"])
+        self.assertEqual("已結算", state["phase"]["threshold_label"])
+        self.assertEqual("BTC", state["asset_label"])
+        self.assertEqual("已達共識：偏多", state["focus"]["headline"])
+        self.assertEqual("查看市場報告", state["focus"]["action_label"])
+        self.assertEqual("🟡🟢", state["focus"]["confidence_icon"])
+
     @staticmethod
     def _message(seat_id, kind, stance, elapsed_ms, stance_change_reason=None):
         return {
@@ -186,7 +219,10 @@ class LiveHtmlTests(unittest.TestCase):
             self.assertIn('href="{}"'.format(target), html)
         self.assertIn('href="live.html" aria-current="page"', html)
         self.assertIn("renderChanged", html)
-        self.assertIn("流程已結束", html)
+        self.assertIn("state.phase.threshold_label", html)
+        self.assertIn("現在正在發生", html)
+        self.assertIn("查看下一規則", html)
+        self.assertLess(html.index("公開辯論直播"), html.index("規則與時間線"))
         self.assertNotIn("https://cdn", html.lower())
 
     def test_local_server_serves_dashboard_and_json_state(self):
