@@ -91,6 +91,11 @@ class LiveStateTests(unittest.TestCase):
         self.assertEqual("bullish", change["before"])
         self.assertEqual("bearish", change["after"])
         self.assertEqual("反方證據推翻原先判斷。", change["reason"])
+        first_message, changed_message = state["debate"]
+        self.assertFalse(first_message["stance_changed"])
+        self.assertEqual("否（首次表態）", first_message["stance_change_label"])
+        self.assertTrue(changed_message["stance_changed"])
+        self.assertEqual("是：偏多 → 偏空", changed_message["stance_change_label"])
 
     def test_incomplete_last_jsonl_line_is_ignored(self):
         self._write_events(
@@ -172,6 +177,9 @@ class LiveHtmlTests(unittest.TestCase):
         self.assertEqual("Claude・官方哨兵", AGENT_PROFILES["official-events"][0])
         self.assertEqual("Gemini・反證稽核員", AGENT_PROFILES["counter-evidence"][0])
         self.assertIn("票數變化", html)
+        self.assertIn("判斷／挑戰理由", html)
+        self.assertIn("是否變更立場", html)
+        self.assertIn("speaker-avatar", html)
         self.assertIn("市場報告", html)
         self.assertIn("完整辯論", html)
         for target in ("live.html", "report.html", "debate.html"):

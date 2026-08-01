@@ -297,11 +297,13 @@ def _phase(elapsed_ms, completed=False):
 
 
 def _public_debate_entry(item):
+    profile = AGENT_PROFILES[item["seat_id"]]
     return {
         "message_id": item.get("message_id"),
         "seat_id": item.get("seat_id"),
-        "agent_name": AGENT_PROFILES[item["seat_id"]][0],
-        "avatar": AGENT_PROFILES[item["seat_id"]][2],
+        "agent_name": profile[0],
+        "avatar": profile[2],
+        "provider_class": profile[3],
         "kind": item.get("kind"),
         "round": item.get("round"),
         "stance": item.get("stance"),
@@ -331,9 +333,21 @@ def _vote_state(debate):
     for message in debate:
         stance = message.get("stance")
         if stance not in STANCE_LABELS:
+            message["stance_changed"] = None
+            message["stance_change_label"] = "未提供"
             continue
         seat_id = message["seat_id"]
         before = current.get(seat_id)
+        changed = before is not None and before != stance
+        message["stance_changed"] = changed
+        if before is None:
+            message["stance_change_label"] = "否（首次表態）"
+        elif changed:
+            message["stance_change_label"] = "是：{} → {}".format(
+                STANCE_LABELS[before], STANCE_LABELS[stance]
+            )
+        else:
+            message["stance_change_label"] = "否"
         if before == stance:
             continue
         current[seat_id] = stance
@@ -465,7 +479,7 @@ main{max-width:96rem;margin:auto;padding:1rem}.top{display:flex;justify-content:
 .layout{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(20rem,.8fr);gap:1rem}.panel{padding:1rem;margin-bottom:1rem}.panel h2{margin:.1rem 0 .8rem}.rules{display:flex;overflow:auto;gap:.5rem;padding-bottom:.25rem}.rule{min-width:10rem;border-left:4px solid var(--line);padding:.5rem;background:#fafbfd}.rule.active{border-color:var(--brand);background:#edf3fc}.rule time{font-weight:800;display:block}
 .tally{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem}.tally div{padding:.7rem;border-radius:.5rem;background:#f7f9fc;text-align:center}.tally strong{font-size:1.7rem;display:block}.bullish{color:var(--bull)}.bearish{color:var(--bear)}.neutral{color:var(--neutral)}
 .agents{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.65rem}.agent{border:1px solid var(--line);border-radius:.65rem;padding:.7rem;background:#fbfcfe}.agent-head{display:flex;gap:.6rem;align-items:center}.avatar{width:2.7rem;height:2.7rem;border-radius:50%;display:grid;place-items:center;font-size:1.35rem;background:#eaf1fb}.agent h3{font-size:.95rem;margin:0}.agent small{color:var(--muted)}.agent .stance{font-weight:850;margin:.5rem 0 .2rem}.agent p{font-size:.84rem;margin:.25rem 0}.agent .status{display:inline-block;background:#edf3fc;color:var(--brand);font-size:.75rem;padding:.2rem .45rem;border-radius:1rem}
-.feed{display:flex;flex-direction:column;gap:.65rem;max-height:42rem;overflow:auto;padding-right:.25rem}.message{border-left:4px solid var(--line);background:#fbfcfe;padding:.7rem;border-radius:.4rem}.message.challenge{border-color:var(--bear)}.message.response{border-color:var(--bull)}.message-head{display:flex;justify-content:space-between;gap:.5rem}.message p{margin:.35rem 0}.chips{display:flex;flex-wrap:wrap;gap:.3rem}.chip{border:0;background:#eaf1fb;color:var(--brand);padding:.2rem .45rem;border-radius:1rem;font:inherit;font-size:.76rem;cursor:pointer}
+.feed{display:flex;flex-direction:column;gap:.8rem;max-height:42rem;overflow:auto;padding-right:.25rem}.message{width:min(46rem,94%);border:1px solid var(--line);border-left:4px solid var(--brand);background:#fbfcfe;padding:.8rem .9rem;border-radius:.25rem .85rem .85rem .85rem;box-shadow:0 2px 8px rgba(23,32,51,.05)}.message.claude{border-left-color:#b7602a}.message.gemini{border-left-color:#7357b4}.message-head{display:flex;justify-content:space-between;align-items:center;gap:.75rem}.speaker{display:flex;align-items:center;gap:.45rem}.speaker-avatar{width:2rem;height:2rem;border-radius:50%;display:grid;place-items:center;background:#eaf1fb}.message time{color:var(--muted);font-size:.8rem;white-space:nowrap}.message p{margin:.45rem 0}.message-reason strong,.stance-change strong{color:var(--muted)}.stance-change{font-size:.86rem}.stance-change.changed{color:var(--bear);font-weight:750}
 .history{list-style:none;padding:0}.history li{padding:.5rem 0;border-bottom:1px solid var(--line)}.evidence-card{border:1px solid var(--line);border-radius:.5rem;padding:.65rem;margin:.5rem 0;background:#fbfcfe}.evidence-card p{margin:.25rem 0}.evidence-card a{color:var(--brand)}
 @media(max-width:70rem){.metrics{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}}@media(max-width:38rem){.top{flex-direction:column}.top-actions,.page-tabs{width:100%}.page-tabs a{flex:1;text-align:center;padding:.5rem .3rem}.metrics{grid-template-columns:1fr}.tally{grid-template-columns:1fr}}
 </style></head><body><main>
@@ -478,12 +492,11 @@ main{max-width:96rem;margin:auto;padding:1rem}.top{display:flex;justify-content:
 </main><script>
 const byId=id=>document.getElementById(id);const node=(tag,cls,text)=>{const value=document.createElement(tag);if(cls)value.className=cls;if(text!==undefined)value.textContent=text;return value};
 const formatMs=value=>{const seconds=Math.max(0,Math.floor(value/1000));return String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0')};
-const kindLabel={position:'初始立場',challenge:'提出質疑',response:'回應反方',final_vote:'最終投票'};const params=new URLSearchParams(location.search);const replay=params.get('replay')==='1';const replaySpeed=Math.max(1,Math.min(200,Number(params.get('speed')||20)));const viewSignatures={rules:'',agents:'',debate:'',history:'',evidence:''};let latestState=null;let receivedAt=0;
+const params=new URLSearchParams(location.search);const replay=params.get('replay')==='1';const replaySpeed=Math.max(1,Math.min(200,Number(params.get('speed')||20)));const viewSignatures={rules:'',agents:'',debate:'',history:'',evidence:''};let latestState=null;let receivedAt=0;
 function clear(id){const target=byId(id);while(target.firstChild)target.removeChild(target.firstChild);return target}
 function renderRules(state){const root=clear('rules');state.rules.forEach(rule=>{const card=node('div','rule'+(state.elapsed_ms>=rule.at_ms?' active':''));card.append(node('time','',formatMs(rule.at_ms)));card.append(node('span','',rule.label));root.append(card)})}
 function renderAgents(state){const root=clear('agents');state.seats.forEach(agent=>{const card=node('article','agent '+agent.provider_class);const head=node('div','agent-head');head.append(node('div','avatar',agent.avatar));const names=node('div');names.append(node('h3','',agent.agent_name));names.append(node('small','',agent.agent_number+'｜'+agent.seat_label));head.append(names);card.append(head);card.append(node('p','stance '+(agent.stance||''),agent.stance_label));card.append(node('span','status',agent.status));card.append(node('p','',agent.last_reason));root.append(card)})}
-function evidenceButton(id){const button=node('button','chip',id);button.type='button';button.addEventListener('click',()=>{const target=document.querySelector('[data-evidence="'+CSS.escape(id)+'"]');if(target)target.scrollIntoView({behavior:'smooth',block:'center'})});return button}
-function renderFeed(state){const root=clear('feed');if(!state.debate.length){root.append(node('p','','尚未開始辯論。'));return}state.debate.forEach(item=>{const card=node('article','message '+item.kind);const head=node('div','message-head');head.append(node('strong','',item.avatar+' '+item.agent_name));head.append(node('time','', 'T+'+formatMs(item.elapsed_ms)+'｜'+(kindLabel[item.kind]||'公開發言')));card.append(head);card.append(node('p','stance '+(item.stance||''),item.stance_label));card.append(node('p','',item.public_reason));if(item.target_seat_label)card.append(node('p','', '質疑對象：'+item.target_seat_label));const chips=node('div','chips');item.evidence_ids.forEach(id=>chips.append(evidenceButton(id)));card.append(chips);root.append(card)});root.scrollTop=root.scrollHeight}
+function renderFeed(state){const root=clear('feed');if(!state.debate.length){root.append(node('p','','尚未開始辯論。'));return}state.debate.forEach(item=>{const card=node('article','message '+item.provider_class);const head=node('div','message-head');const speaker=node('div','speaker');speaker.append(node('span','speaker-avatar',item.avatar));speaker.append(node('strong','',item.agent_name));head.append(speaker);head.append(node('time','', 'T+'+formatMs(item.elapsed_ms)));card.append(head);card.append(node('p','stance '+(item.stance||''),item.stance_label));const reason=node('p','message-reason');reason.append(node('strong','', '判斷／挑戰理由：'));reason.append(document.createTextNode(item.public_reason));card.append(reason);const change=node('p','stance-change '+(item.stance_changed?'changed':''));change.append(node('strong','', '是否變更立場：'));change.append(document.createTextNode(item.stance_change_label));if(item.stance_changed&&item.stance_change_reason)change.append(document.createTextNode('｜'+item.stance_change_reason));card.append(change);root.append(card)});root.scrollTop=root.scrollHeight}
 function renderHistory(state){const root=clear('history');if(!state.vote_history.length){root.append(node('li','','尚未投票。'));return}state.vote_history.forEach(item=>{const row=node('li');row.append(node('strong','',item.agent_name+'｜T+'+formatMs(item.elapsed_ms)));row.append(node('p','',item.before_label+' → '+item.after_label));row.append(node('small','',item.reason));root.append(row)})}
 function safeUrl(value){try{const url=new URL(value);return ['http:','https:'].includes(url.protocol)?url.href:null}catch{return null}}
 function renderEvidence(state){const root=clear('evidence');if(!state.evidence.length){root.append(node('p','','證據將在 T+5 封存後顯示。'));return}state.evidence.forEach(item=>{const card=node('article','evidence-card');card.dataset.evidence=item.evidence_id||'';card.append(node('strong','',item.evidence_id||'證據識別碼未提供'));card.append(node('p','',item.statement||'摘要未提供'));card.append(node('p','', '原文或數值：'+(item.excerpt||'未提供')));card.append(node('small','', (item.source_tier_label||'來源等級未提供')+'｜'+(item.published_at_label||'發布時間未提供')));const href=safeUrl(item.source_url);if(href){const link=node('a','source-link','開啟原始來源');link.href=href;link.target='_blank';link.rel='noopener noreferrer';card.append(link)}root.append(card)})}

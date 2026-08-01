@@ -11,6 +11,25 @@ Codex agent — it builds contracts, validates records and verifies artifacts.
 
 ## Invocation modes
 
+The Codex conversation is the operator's only question input. When the user
+pastes a supported market question here and says to start analysis, use that
+exact question as Core input; do not require or wait for a second web form.
+After the authorized competition run directory exists and before dispatching
+the seven seats, Core starts the read-only live server in WSL and opens the
+group-chat view in the Windows browser:
+
+```bash
+# WSL (Core only)
+nohup python3 -m hoya_market_agents live --data-root "$DATA_ROOT" \
+  --run-id "$COMPETITION_RUN_ID" --host 127.0.0.1 --port 8765 \
+  >/tmp/hoya-live-"$COMPETITION_RUN_ID".log 2>&1 &
+explorer.exe 'http://127.0.0.1:8765/live.html'
+```
+
+If the loopback server cannot start, report that operational error explicitly;
+never claim that the browser is live. The browser is only an observer and does
+not change the preflight, evidence, debate, vote or verification rules below.
+
 - `preflight system --mode fixture` validates schemas and failure handling only.
   It is always `NOT_READY` and cannot authorize a market run.
 - `drill --provider-mode fake` exercises the complete seven-seat timeline,

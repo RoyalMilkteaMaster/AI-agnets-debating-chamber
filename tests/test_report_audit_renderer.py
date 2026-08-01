@@ -11,8 +11,9 @@ import unittest
 
 from hoya_market_agents.report_audit_renderer import (
     CONSENSUS_LABELS,
-    MESSAGE_KIND_LABELS,
     MISSING,
+    SEAT_AVATARS,
+    SEAT_CHAT_NAMES,
     SEAT_LABELS,
     SOURCE_TIER_LABELS,
     STANCE_LABELS,
@@ -146,17 +147,13 @@ class DebateLabelTest(unittest.TestCase):
             "完整辯論室",
             "Hoya Bit 可稽核市場研究",
             "本場辯論摘要",
-            "公開發言逐則紀錄",
+            "七席公開辯論聊天室",
             "完整證據卡",
             "本頁限制",
-            "輪次",
-            "流程時間",
-            "發言時間",
-            "研究席",
-            "發言類型",
             "立場",
-            "公開理由",
-            "挑戰／回應對象",
+            "判斷理由",
+            "挑戰理由",
+            "是否變更立場",
             "引用證據",
             "證據陳述：",
             "原文摘錄：",
@@ -168,14 +165,15 @@ class DebateLabelTest(unittest.TestCase):
         ):
             self.assertIn(label, self.html, label)
 
-    def test_all_seven_seats_show_their_chinese_names(self):
-        self.assertEqual(set(SEAT_IDS), set(SEAT_LABELS))
+    def test_all_seven_seats_show_consistent_chat_names_and_avatars(self):
+        self.assertEqual(set(SEAT_IDS), set(SEAT_CHAT_NAMES))
+        self.assertEqual(set(SEAT_IDS), set(SEAT_AVATARS))
+        self.assertEqual(7, len(set(SEAT_AVATARS.values())))
+        transcript = self._transcript()
         for seat_id in SEAT_IDS:
-            self.assertIn(SEAT_LABELS[seat_id], self.html, seat_id)
-            # The internal id stays visible so artifacts remain cross-referenceable.
-            self.assertIn(
-                "{}（{}）".format(SEAT_LABELS[seat_id], seat_id), self.html, seat_id
-            )
+            self.assertIn(SEAT_CHAT_NAMES[seat_id], transcript, seat_id)
+            self.assertIn(SEAT_AVATARS[seat_id], transcript, seat_id)
+            self.assertNotIn(seat_id, transcript, seat_id)
 
     def test_stances_are_rendered_in_chinese_and_raw_codes_are_absent(self):
         self.assertEqual(
@@ -187,19 +185,12 @@ class DebateLabelTest(unittest.TestCase):
         for code in STANCE_LABELS:
             self.assertNotIn(">{}<".format(code), body)
 
-    def test_message_kinds_are_rendered_in_chinese(self):
-        self.assertEqual(
-            {
-                "position": "初始立場",
-                "challenge": "反方挑戰",
-                "response": "回應挑戰",
-                "final_vote": "最終投票",
-            },
-            MESSAGE_KIND_LABELS,
-        )
-        for code, label in MESSAGE_KIND_LABELS.items():
-            self.assertIn(label, self.html, code)
-            self.assertNotIn(">{}<".format(code), self._transcript())
+    def test_message_reasons_use_plain_traditional_chinese_headings(self):
+        transcript = self._transcript()
+        self.assertIn("判斷理由", transcript)
+        self.assertIn("挑戰理由", transcript)
+        for code in ("position", "challenge", "response", "final_vote"):
+            self.assertNotIn(">{}<".format(code), transcript)
 
     def test_source_tiers_are_rendered_in_chinese(self):
         self.assertEqual({1, 2, 3}, set(SOURCE_TIER_LABELS))
@@ -219,11 +210,11 @@ class DebateLabelTest(unittest.TestCase):
     def test_summary_counts_come_from_the_snapshot_not_from_a_guess(self):
         self.assertIn("{} 則".format(len(self.messages)), self.html)
         self.assertIn("{} 張".format(len(self.sources["evidence"])), self.html)
-        self.assertIn(_RUN_ID, self.html)
+        self.assertNotIn(_RUN_ID, self.html)
         self.assertIn("過去 14 日", self.html)
 
     def _transcript(self):
-        start = self.html.index("公開發言逐則紀錄")
+        start = self.html.index("七席公開辯論聊天室")
         return self.html[start : self.html.index("完整證據卡")]
 
 
@@ -241,7 +232,6 @@ class DebateTranscriptTest(unittest.TestCase):
                 self.html.count(html.escape(message["public_reason"])),
                 message["message_id"],
             )
-            self.assertIn(message["message_id"], self.html)
 
     def test_messages_keep_the_recorded_input_order(self):
         positions = [
@@ -285,29 +275,76 @@ class DebateTranscriptTest(unittest.TestCase):
         self.assertIn("T+12:34", self.html)   # 754000 ms
         self.assertIn("T+15:00", self.html)   # 900500 ms truncates, never rounds up
 
-    def test_each_message_shows_seat_kind_stance_and_public_reason(self):
+    def test_each_message_shows_who_when_stance_and_verbatim_reason(self):
         item = self._item(html.escape("公開理由 m-02。"))
-        self.assertIn(SEAT_LABELS["counter-evidence"], item)
-        self.assertIn(MESSAGE_KIND_LABELS["challenge"], item)
+        self.assertIn(SEAT_CHAT_NAMES["counter-evidence"], item)
+        self.assertIn(SEAT_AVATARS["counter-evidence"], item)
         self.assertIn(STANCE_LABELS["bearish"], item)
         self.assertIn("公開理由 m-02。", item)
-        self.assertIn("2026-08-01T02:01:00Z", self.html)
+        self.assertIn("T+12:34", item)
 
-    def test_challenge_shows_target_seat_and_challenged_claim(self):
+    def test_challenge_shows_its_reason_without_internal_reply_metadata(self):
         item = self._item(html.escape("公開理由 m-02。"))
-        self.assertIn("對象席位：{}".format(SEAT_LABELS["spot-technical"]), item)
-        self.assertIn("被挑戰發言：現貨技術席宣稱突破已確認。", item)
+        self.assertIn("挑戰理由", item)
+        self.assertNotIn("現貨技術席宣稱突破已確認。", item)
+        self.assertNotIn("m-02", self._item(html.escape("公開理由 m-03。")))
 
-    def test_response_shows_the_messages_it_replies_to(self):
-        item = self._item(html.escape("公開理由 m-03。"))
-        self.assertIn("回應發言：m-02", item)
-        self.assertIn("對象席位：{}".format(SEAT_LABELS["counter-evidence"]), item)
+    def test_internal_message_metadata_is_not_rendered(self):
+        message = _message(
+            "MESSAGE-METADATA-SENTINEL",
+            "news",
+            "position",
+            public_reason="這是可公開的完整理由。",
+            attempt_id="ATTEMPT-METADATA-SENTINEL",
+            content_sha256="HASH-METADATA-SENTINEL",
+        )
+        rendered = render_debate_html(
+            self.report, {"evidence": [], "debate": [message]}
+        )
+        for hidden in (
+            "發言識別碼",
+            "嘗試識別碼",
+            "內容雜湊",
+            "MESSAGE-METADATA-SENTINEL",
+            "ATTEMPT-METADATA-SENTINEL",
+            "HASH-METADATA-SENTINEL",
+        ):
+            self.assertNotIn(hidden, rendered)
 
-    def test_untargeted_kinds_say_so_instead_of_leaving_it_blank(self):
-        for message_id in ("m-01", "m-09"):
-            item = self._item(html.escape("公開理由 {}。".format(message_id)))
-            self.assertIn("不適用", item)
-            self.assertNotIn("對象席位", item)
+    def test_real_stance_change_shows_old_new_and_public_reason(self):
+        messages = [
+            _message("before", "news", "position", stance="bearish", public_reason="起初偏空。"),
+            _message(
+                "after",
+                "news",
+                "final_vote",
+                stance="bullish",
+                public_reason="重新檢視後偏多。",
+                stance_change_reason="現貨量能證據推翻原判斷。",
+            ),
+        ]
+        rendered = render_debate_html(
+            self.report, {"evidence": [], "debate": messages}
+        )
+        changed = self._item_from(rendered, "重新檢視後偏多。")
+        self.assertIn("是：偏空 → 偏多", changed)
+        self.assertIn("現貨量能證據推翻原判斷。", changed)
+
+    def test_first_recorded_stance_never_invents_a_change(self):
+        message = _message(
+            "only",
+            "news",
+            "final_vote",
+            public_reason="第一則可見表態。",
+            stance_change_reason="只有公開補充說明。",
+        )
+        rendered = render_debate_html(
+            self.report, {"evidence": [], "debate": [message]}
+        )
+        item = self._item_from(rendered, "第一則可見表態。")
+        self.assertIn("否（首次公開表態）", item)
+        self.assertIn("只有公開補充說明。", item)
+        self.assertNotIn("是：", item)
 
     def test_messages_link_every_cited_evidence_id(self):
         item = self._item(html.escape("公開理由 m-03。"))
@@ -330,9 +367,14 @@ class DebateTranscriptTest(unittest.TestCase):
         self.assertNotIn("<ol", rendered)
 
     def _item(self, needle):
-        end = self.html.index(needle)
-        start = self.html.rindex('<li class="message"', 0, end)
-        return self.html[start : self.html.index("</li>", end)]
+        return self._item_from(self.html, needle)
+
+    @staticmethod
+    def _item_from(rendered, needle):
+        needle = html.escape(needle)
+        end = rendered.index(needle)
+        start = rendered.rindex('<li class="turn ', 0, end)
+        return rendered[start : rendered.index("</li>", end)]
 
 
 class EvidenceCardTest(unittest.TestCase):
@@ -354,6 +396,14 @@ class EvidenceCardTest(unittest.TestCase):
             self.assertIn(html.escape(card["credibility_note"]), block)
             self.assertIn(html.escape(card["source_url"]), block)
             self.assertIn('href="{}"'.format(html.escape(card["source_url"])), block)
+
+    def test_evidence_cards_are_native_and_collapsed_by_default(self):
+        self.assertEqual(
+            len(self.sources["evidence"]),
+            self.html.count('<details class="evidence-card"'),
+        )
+        self.assertNotRegex(self.html, r'<details class="evidence-card"[^>]*\sopen(?:\s|=|>)')
+        self.assertEqual(len(self.sources["evidence"]), self.html.count("<summary>"))
 
     def test_every_card_has_an_anchor_that_messages_can_jump_to(self):
         for card in self.sources["evidence"]:
@@ -403,7 +453,7 @@ class EvidenceCardTest(unittest.TestCase):
 
     def _card(self, evidence_id):
         start = self.html.index('id="{}"'.format(evidence_anchor(evidence_id)))
-        return self.html[start : self.html.index("</article>", start)]
+        return self.html[start : self.html.index("</details>", start)]
 
 
 class ThreePageNavigationTest(unittest.TestCase):
@@ -595,16 +645,20 @@ class MissingDataAndFailClosedTest(unittest.TestCase):
     def test_message_with_no_recorded_fields_shows_not_provided(self):
         message = {"event": "seat_message", "kind": "position"}
         rendered = render_debate_html(self.report, {"evidence": [], "debate": [message]})
-        item = rendered[rendered.index('<li class="message"') : rendered.index("</li>")]
-        for term in ("輪次", "流程時間", "發言時間", "研究席", "立場", "公開理由", "發言識別碼"):
+        item = rendered[rendered.index('<li class="turn ') : rendered.index("</li>")]
+        for term in ("立場", "判斷理由", "是否變更立場"):
             self.assertIn(term, item)
-        self.assertGreaterEqual(item.count(MISSING), 7)
+        self.assertGreaterEqual(item.count(MISSING), 3)
         self.assertNotIn("T+", item)
+        for hidden in ("發言識別碼", "嘗試識別碼", "內容雜湊"):
+            self.assertNotIn(hidden, item)
 
     def test_evidence_card_with_no_recorded_fields_shows_not_provided(self):
         card = {"evidence_id": "ev-01"}
         rendered = render_debate_html(self.report, {"evidence": [card], "debate": []})
-        block = rendered[rendered.index('<article') : rendered.index("</article>")]
+        block = rendered[
+            rendered.index('<details class="evidence-card"') : rendered.index("</details>")
+        ]
         self.assertGreaterEqual(block.count(MISSING), 8)
         self.assertIn("ev-01", block)
         self.assertNotIn('href="http', block)
@@ -621,14 +675,18 @@ class MissingDataAndFailClosedTest(unittest.TestCase):
         rendered = render_debate_html(
             self.report, {"evidence": [card], "debate": [message]}
         )
+        self.assertIn("未提供（無法對應的研究席）", rendered)
+        self.assertNotIn("unknown-seat", rendered)
         for noun, value in (
-            ("席位", "unknown-seat"),
             ("發言類型", "gossip"),
             ("立場", "sideways"),
             ("來源等級", "9"),
             ("證據方向", "maybe"),
         ):
-            self.assertIn("{}（未知{}代碼：{}）".format(MISSING, noun, value), rendered)
+            if noun == "發言類型":
+                self.assertNotIn(value, rendered)
+            else:
+                self.assertIn("{}（未知{}代碼：{}）".format(MISSING, noun, value), rendered)
 
     def test_out_of_range_round_and_elapsed_are_not_provided(self):
         for field, value in (
@@ -651,11 +709,12 @@ class MissingDataAndFailClosedTest(unittest.TestCase):
             else:
                 self.assertNotIn("第 {} 輪".format(value), rendered)
 
-    def test_untargeted_wording_is_not_reused_for_targeted_kinds(self):
+    def test_missing_challenge_target_does_not_create_a_target(self):
         message = _message("m-01", "news", "challenge")
         rendered = render_debate_html(self.report, {"evidence": [], "debate": [message]})
-        self.assertNotIn("不適用", rendered)
-        self.assertIn(MISSING, rendered)
+        self.assertIn("挑戰理由", rendered)
+        self.assertNotIn("挑戰對象", rendered)
+        self.assertNotIn("回應對象", rendered)
 
     def test_structurally_unusable_snapshots_fail_closed(self):
         good = {"evidence": [], "debate": []}

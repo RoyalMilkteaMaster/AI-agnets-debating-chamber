@@ -120,12 +120,18 @@ run ID/challenge，並由最終 `verify-run` 驗證七席 receipts，不能再�
 $hoya-market-research 分析 BTC 過去 14 日市場狀態
 ```
 
+Codex 對話框就是正式題目的唯一輸入入口。使用者貼上支援題目並要求「開始分析」後，
+Core 直接使用該題目；不需要再到網頁重複輸入。
+
 若仍為 `NOT_READY`，不得啟動正式計時 run；先展示 manifest 的 blocker。支援資產僅
 BTC、ETH、SOL、BNB、XRP。
 
 ## 6. 即時觀看七席辯論
 
-先在一個 WSL 終端啟動唯讀直播；不指定 `--run-id` 時會選取 Data Root 中最新的 run：
+正式 run 目錄建立後，Core 會在派送七席前於 WSL 啟動唯讀直播，並以 Windows 瀏覽器
+開啟 `http://127.0.0.1:8765/live.html`。網頁只負責觀看，不會建立或控制 Agent。
+
+若需要人工重啟直播，可執行：
 
 ```bash
 # WSL
