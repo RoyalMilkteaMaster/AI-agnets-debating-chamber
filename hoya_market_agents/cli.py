@@ -9,6 +9,7 @@ command can verify a real provider without silently using it for a market run.
 """
 
 import argparse
+import hashlib
 import json
 import secrets
 import sys
@@ -25,6 +26,10 @@ from .codex_bridge import (
 )
 from .fake_provider import FakeProvider
 from .question import UnsupportedQuestionError
+from .report_contract import ReportContractError, canonical_sha256, validate_market_report
+from .report_fixtures import FIXTURE_CASES, load_fixture
+from .report_renderer import render_market_html, render_market_markdown
+from .report_workflow import build_red_audit_report
 from .run_controller import RunController
 from .run_store import RunStore, RunStoreError
 from .seats import RosterError
@@ -88,6 +93,11 @@ def build_parser():
         default=str(DEFAULT_DATA_ROOT),
         help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
     )
+    fixture = subcommands.add_parser(
+        "render-fixture", help="驗證並渲染固定 Ticket #10 報告 fixture"
+    )
+    fixture.add_argument("--case", required=True, choices=FIXTURE_CASES)
+    fixture.add_argument("--output-dir", required=True)
     return parser
 
 
@@ -101,6 +111,8 @@ def main(argv=None, stdout=None, stderr=None):
         return _preflight(args, out, err)
     if args.command == "verify-preflight":
         return _verify_preflight(args, out, err)
+    if args.command == "render-fixture":
+        return _render_fixture(args, out, err)
 
     data_root = Path(args.data_root)
     controller = RunController(
@@ -209,3 +221,49 @@ def _report_result(result, out):
     ]
     lines += ["  - {}：{}".format(seat_id, stance) for seat_id, stance in result.seat_stances.items()]
     print("\n".join(lines), file=out)
+
+
+def _render_fixture(args, out, err):
+    fixture = load_fixture(args.case)
+    status = "accepted"
+    exit_code = EXIT_OK
+    try:
+        report = validate_market_report(fixture["report"], fixture["sources"])
+    except ReportContractError as exc:
+        report = build_red_audit_report(
+            fixture["sources"],
+            exc.problems,
+            generated_at_utc=fixture["report"].get("generated_at_utc"),
+        )
+        validate_market_report(report, fixture["sources"])
+        status = "red_audit"
+        exit_code = EXIT_FAILED
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rendered = {
+        "report.json": json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        "report.md": render_market_markdown(report),
+        "report.html": render_market_html(report),
+    }
+    for name, content in rendered.items():
+        (output_dir / name).write_text(content, encoding="utf-8")
+    audit = {
+        "case": args.case,
+        "status": status,
+        "hash_lineage": {
+            "sources": canonical_sha256(fixture["sources"]),
+            **{
+                name: hashlib.sha256(content.encode("utf-8")).hexdigest()
+                for name, content in rendered.items()
+            },
+        },
+    }
+    (output_dir / "audit.json").write_text(
+        json.dumps(audit, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(
+        "{}: {} -> {}".format(status.upper(), args.case, output_dir),
+        file=out if exit_code == EXIT_OK else err,
+    )
+    return exit_code
