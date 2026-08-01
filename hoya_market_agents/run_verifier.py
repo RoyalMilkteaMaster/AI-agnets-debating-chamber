@@ -177,10 +177,14 @@ def verify_run(data_root, run_id):
                 "{} 缺少離線 HTML 或列印樣式。".format(html_name)
             )
     if presentation_version == PRESENTATION_VERSION:
-        if 'href="debate.html"' not in html_documents["report.html"]:
-            raise RunVerificationError("report.html 缺少完整辯論室入口。")
-        if 'href="report.html"' not in html_documents["debate.html"]:
-            raise RunVerificationError("debate.html 缺少返回市場結論入口。")
+        expected_tabs = ('href="live.html"', 'href="report.html"', 'href="debate.html"')
+        for html_name, html in html_documents.items():
+            if any(target not in html for target in expected_tabs):
+                raise RunVerificationError("{} 缺少三頁共用導覽。".format(html_name))
+        if 'href="report.html" aria-current="page"' not in html_documents["report.html"]:
+            raise RunVerificationError("report.html 未標示目前頁面。")
+        if 'href="debate.html" aria-current="page"' not in html_documents["debate.html"]:
+            raise RunVerificationError("debate.html 未標示目前頁面。")
 
     timeline = manifest.get("competition_timeline")
     if declares_real and not isinstance(timeline, dict):

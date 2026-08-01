@@ -2,7 +2,7 @@
 
 The renderer under test is read-only for these tests: every expectation here is
 derived from the recorded snapshot, the Traditional-Chinese label tables and the
-two-page navigation contract shared with ``report_renderer``.
+three-page navigation contract shared with ``report_renderer``.
 """
 
 import html
@@ -406,8 +406,8 @@ class EvidenceCardTest(unittest.TestCase):
         return self.html[start : self.html.index("</article>", start)]
 
 
-class TwoPageNavigationTest(unittest.TestCase):
-    """The market page and the debate page must reference each other."""
+class ThreePageNavigationTest(unittest.TestCase):
+    """Every static page must expose the same live/report/debate navigation."""
 
     def setUp(self):
         self.fixture = load_fixture("consensus-6-1")
@@ -418,20 +418,16 @@ class TwoPageNavigationTest(unittest.TestCase):
             self.fixture["report"], self.fixture["sources"]
         )
 
-    def test_debate_page_links_back_to_the_market_conclusion(self):
-        self.assertIn('href="report.html"', self.debate_html)
-        anchor = re.search(
-            r'<a[^>]*href="report\.html"[^>]*>([^<]*)</a>', self.debate_html
-        )
-        self.assertIsNotNone(anchor)
-        self.assertIn("返回市場結論", anchor.group(1))
+    def test_both_pages_expose_all_three_destinations(self):
+        for rendered in (self.market_html, self.debate_html):
+            for target in ("live.html", "report.html", "debate.html"):
+                self.assertIn('href="{}"'.format(target), rendered)
 
-    def test_market_page_links_forward_to_the_debate_room(self):
-        self.assertIn('href="debate.html"', self.market_html)
+    def test_each_static_page_marks_its_current_tab(self):
+        self.assertIn('href="report.html" aria-current="page"', self.market_html)
+        self.assertIn('href="debate.html" aria-current="page"', self.debate_html)
 
     def test_navigation_is_bidirectional_and_relative(self):
-        self.assertIn('href="debate.html"', self.market_html)
-        self.assertIn('href="report.html"', self.debate_html)
         for target in _HREF.findall(self.debate_html):
             self.assertFalse(target.startswith("/"), target)
 
@@ -494,8 +490,11 @@ class EscapingAndUrlSafetyTest(unittest.TestCase):
         # value and the injected handler never becomes an attribute of its own.
         self.assertNotIn(url, rendered)
         self.assertIn("&quot;", rendered)
-        self.assertEqual(["report.html", html.escape(url)], _HREF.findall(rendered))
-        self.assertEqual(url, html.unescape(_HREF.findall(rendered)[1]))
+        self.assertEqual(
+            ["live.html", "report.html", "debate.html", html.escape(url)],
+            _HREF.findall(rendered),
+        )
+        self.assertEqual(url, html.unescape(_HREF.findall(rendered)[-1]))
 
     def test_unsafe_source_urls_never_become_hrefs(self):
         unsafe = (
@@ -546,7 +545,7 @@ class EscapingAndUrlSafetyTest(unittest.TestCase):
         rendered = render_debate_html(self.report, sources)
         for target in _HREF.findall(rendered):
             self.assertTrue(
-                target in ("report.html",)
+                target in ("live.html", "report.html", "debate.html")
                 or target.startswith("#")
                 or target.startswith("https://")
                 or target.startswith("http://"),

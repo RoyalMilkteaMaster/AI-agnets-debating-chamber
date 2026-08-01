@@ -1,8 +1,8 @@
 """Traditional-Chinese audit view of the shared debate room (Ticket #12).
 
-``render_debate_html`` renders the debate end of the two-page report.  The
-market page (``report.html``) links here for the full record; this page's only
-navigation responsibility is the link back to 「返回市場結論」.
+``render_debate_html`` renders the full public debate record.  Its shared page
+tabs link to the live dashboard, market report and this audit view, with the
+current page marked for assistive technology.
 
 The renderer never authors, ranks or summarises a market judgement.  It shows
 the seats' own public messages in the exact order the run recorded them, plus
@@ -72,8 +72,10 @@ def render_debate_html(report, sources):
         "<main>",
         '<header class="page-header">',
         '<div><p class="eyebrow">Hoya Bit 可稽核市場研究</p><h1>完整辯論室</h1></div>',
-        '<nav aria-label="頁面導覽">'
-        '<a class="button" href="report.html">返回市場結論</a></nav>',
+        '<nav class="page-tabs" aria-label="主要頁面">'
+        '<a href="live.html">即時辯論</a>'
+        '<a href="report.html">市場報告</a>'
+        '<a href="debate.html" aria-current="page">完整辯論</a></nav>',
         "</header>",
     ]
     parts += _summary_section(report, messages, evidence)
@@ -427,8 +429,10 @@ _CSS = (
     ".page-header{display:flex;justify-content:space-between;align-items:center;gap:1rem;margin:0 0 1rem}"
     ".eyebrow{margin:0;color:var(--brand);font-size:.78rem;font-weight:800;letter-spacing:.08em}"
     "h1{font-size:2rem;margin:.1rem 0}h2{margin:.2rem 0 .8rem}h3{font-size:1rem;margin:.1rem 0 .6rem}"
-    ".button{display:inline-block;background:var(--brand);color:#fff;text-decoration:none;"
-    "font-weight:800;padding:.7rem 1rem;border-radius:.5rem}"
+    ".page-tabs{display:flex;gap:.25rem;padding:.3rem;background:var(--brand-soft);border:1px solid var(--line);"
+    "border-radius:.65rem}.page-tabs a{color:var(--brand);text-decoration:none;font-weight:800;"
+    "padding:.55rem .75rem;border-radius:.4rem;white-space:nowrap}.page-tabs a[aria-current=page]{"
+    "background:var(--brand);color:#fff}.page-tabs a:focus-visible{outline:3px solid #f0b429;outline-offset:2px}"
     "section,.page-footer{background:var(--paper);border:1px solid var(--line);border-radius:.7rem;"
     "padding:1.1rem;margin:0 0 1rem}"
     "dl{display:grid;grid-template-columns:10rem 1fr;gap:.4rem 1rem;margin:0}"
@@ -444,7 +448,7 @@ _CSS = (
     ".unsafe-url,.unknown{color:var(--warn);font-weight:700;overflow-wrap:anywhere}"
     "a{color:#064f9e;overflow-wrap:anywhere}code{font-weight:700}"
     "@media(max-width:60rem){.page-header{flex-direction:column;align-items:flex-start}"
-    "dl,.evidence-meta{grid-template-columns:1fr}}"
-    "@media print{body{background:#fff}main{max-width:none;padding:0}.button{display:none}"
+    ".page-tabs{width:100%}.page-tabs a{flex:1;text-align:center}dl,.evidence-meta{grid-template-columns:1fr}}"
+    "@media print{body{background:#fff}main{max-width:none;padding:0}.page-tabs{display:none}"
     "section,.message,.evidence-card{break-inside:avoid;box-shadow:none}a{color:#000}}"
 )

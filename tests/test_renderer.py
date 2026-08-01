@@ -102,7 +102,11 @@ class HtmlSafetyTests(unittest.TestCase):
             if href.startswith("https://"):
                 self.assertIn(href, allowed)
             else:
-                self.assertTrue(href == "debate.html" or href.startswith("#evidence-"), href)
+                self.assertTrue(
+                    href in ("live.html", "report.html", "debate.html")
+                    or href.startswith("#evidence-"),
+                    href,
+                )
 
     def test_styles_are_inline_in_a_single_file(self):
         self.assertIn("<style>", self.html)
@@ -161,9 +165,10 @@ class TraditionalChineseAuditViewTests(unittest.TestCase):
         self.sources = self.bundle["sources"]
         self.html = render_market_html(self.report, self.sources)
 
-    def test_first_page_links_to_the_complete_debate_room(self):
-        self.assertIn('href="debate.html"', self.html)
-        self.assertIn("查看完整辯論與證據", self.html)
+    def test_first_page_has_the_shared_three_page_navigation(self):
+        for target in ("live.html", "report.html", "debate.html"):
+            self.assertIn('href="{}"'.format(target), self.html)
+        self.assertIn('href="report.html" aria-current="page"', self.html)
 
     def test_seat_and_stance_labels_are_traditional_chinese(self):
         self.assertIn("現貨技術席", self.html)

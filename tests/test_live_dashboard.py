@@ -172,8 +172,11 @@ class LiveHtmlTests(unittest.TestCase):
         self.assertEqual("Claude・官方哨兵", AGENT_PROFILES["official-events"][0])
         self.assertEqual("Gemini・反證稽核員", AGENT_PROFILES["counter-evidence"][0])
         self.assertIn("票數變化", html)
-        self.assertIn("市場判斷報告", html)
-        self.assertIn("完整辯論紀錄", html)
+        self.assertIn("市場報告", html)
+        self.assertIn("完整辯論", html)
+        for target in ("live.html", "report.html", "debate.html"):
+            self.assertIn('href="{}"'.format(target), html)
+        self.assertIn('href="live.html" aria-current="page"', html)
         self.assertIn("renderChanged", html)
         self.assertIn("流程已結束", html)
         self.assertNotIn("https://cdn", html.lower())

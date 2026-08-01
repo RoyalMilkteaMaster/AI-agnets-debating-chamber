@@ -189,7 +189,8 @@ python3 -m hoya_market_agents live \
 
 在 Windows 瀏覽器開啟 `http://127.0.0.1:8765/`。如要固定觀看某次執行，加上
 `--run-id <RUN_ID>`。賽前可用 `http://127.0.0.1:8765/?replay=1&speed=20` 快速重播。
-最終交付物完成後，直播頁會出現「市場判斷報告」與「完整辯論紀錄」按鈕。
+三個頁面頂部固定提供「即時辯論／市場報告／完整辯論」頁籤；報告尚未產生時，後兩個
+頁籤會顯示為不可用，完成後即可在三頁間自由切換。
 
 直播頁需要 JavaScript 才能非同步更新，只監聽 loopback；正式 `report.html` 與
 `debate.html` 仍是無 JavaScript、無 CDN、可離線開啟的稽核成品。直播只呈現 Agent

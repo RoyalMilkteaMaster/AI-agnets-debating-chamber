@@ -481,7 +481,10 @@ def render_market_html(report, sources=None):
         "<main>",
         '<header class="page-header"><div><p class="eyebrow">Hoya Bit 可稽核市場研究</p>',
         "<h1>市場判斷報告</h1></div>",
-        '<nav aria-label="報告頁面"><a class="button" href="debate.html">查看完整辯論與證據</a></nav></header>',
+        '<nav class="page-tabs" aria-label="主要頁面">'
+        '<a href="live.html">即時辯論</a>'
+        '<a href="report.html" aria-current="page">市場報告</a>'
+        '<a href="debate.html">完整辯論</a></nav></header>',
         '<section class="decision" aria-labelledby="decision-title">',
         '<h2 id="decision-title">判斷摘要</h2>',
         "<dl>",
@@ -609,8 +612,11 @@ _MARKET_CSS = (
     ".page-header,.section-heading{display:flex;justify-content:space-between;align-items:center;gap:1rem}"
     ".page-header{margin:0 0 1rem}.eyebrow{margin:0;color:var(--brand);font-size:.78rem;font-weight:800;"
     "letter-spacing:.08em;text-transform:uppercase}h1{font-size:2rem;margin:.1rem 0}h2{margin:.2rem 0 .8rem}"
-    ".button{display:inline-block;background:var(--brand);color:#fff;text-decoration:none;font-weight:800;"
-    "padding:.7rem 1rem;border-radius:.5rem}.text-link{color:var(--brand);font-weight:700;text-decoration:none}"
+    ".page-tabs{display:flex;gap:.25rem;padding:.3rem;background:var(--brand-soft);border:1px solid var(--line);"
+    "border-radius:.65rem}.page-tabs a{color:var(--brand);text-decoration:none;font-weight:800;"
+    "padding:.55rem .75rem;border-radius:.4rem;white-space:nowrap}.page-tabs a[aria-current=page]{"
+    "background:var(--brand);color:#fff}.page-tabs a:focus-visible{outline:3px solid #f0b429;outline-offset:2px}"
+    ".text-link{color:var(--brand);font-weight:700;text-decoration:none}"
     ".decision,section{background:var(--paper);border:1px solid var(--line);border-radius:.7rem;"
     "padding:1.1rem;margin:0 0 1rem;box-shadow:0 3px 14px rgba(23,32,51,.05)}"
     "dl{display:grid;grid-template-columns:9rem 1fr;gap:.45rem 1rem}dt{font-weight:750}dd{margin:0}"
@@ -629,8 +635,9 @@ _MARKET_CSS = (
     "font-weight:750;color:var(--brand)}.evidence-card h3{font-size:1rem}.evidence-meta{grid-template-columns:5.5rem 1fr;"
     "font-size:.83rem}.source-link{display:inline-block;margin-top:.3rem}a{color:#064f9e;overflow-wrap:anywhere}code{font-weight:700}"
     "@media(max-width:60rem){.page-header,.section-heading{align-items:flex-start;flex-direction:column}"
-    "dl{grid-template-columns:1fr}table{display:block;overflow-x:auto}}"
-    "@media print{body{background:#fff}main{max-width:none;padding:0}.button,.text-link{display:none}"
+    ".page-tabs{width:100%}.page-tabs a{flex:1;text-align:center}dl{grid-template-columns:1fr}"
+    "table{display:block;overflow-x:auto}}"
+    "@media print{body{background:#fff}main{max-width:none;padding:0}.page-tabs,.text-link{display:none}"
     "section{break-inside:auto;border-color:#777;box-shadow:none}.evidence-card{break-inside:avoid}a{color:#000}}"
 )
 
