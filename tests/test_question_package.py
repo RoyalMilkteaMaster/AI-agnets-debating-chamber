@@ -69,12 +69,18 @@ class QuestionPackageTest(unittest.TestCase):
         for question in (
             "評估 doge 升級事件對加密市場的影響",
             "分析 doge 市場狀態",
+            "doge 事件對加密市場的影響",
         ):
             with self.subTest(question=question):
                 with self.assertRaises(UnsupportedQuestionError) as caught:
                     build_question_package(question)
 
                 self.assertIn("DOGE", str(caught.exception))
+
+    def test_general_english_after_analysis_verb_is_not_treated_as_a_ticker(self):
+        package = build_question_package("分析 price action，判斷 BTC 市場狀態")
+
+        self.assertEqual(("BTC",), package.assets)
 
     def test_comparison_assets_follow_first_appearance_without_duplicates(self):
         package = build_question_package("比較 BTC 與 ETH，BTC 相對 ETH 誰較強？")
@@ -87,6 +93,11 @@ class QuestionPackageTest(unittest.TestCase):
 
         self.assertEqual((7, True), (one_week.period_days, one_week.period_stated))
         self.assertEqual((14, True), (two_weeks.period_days, two_weeks.period_stated))
+
+    def test_multi_character_chinese_week_count_uses_the_complete_token(self):
+        package = build_question_package("分析 BTC 過去十二週市場狀態")
+
+        self.assertEqual((84, True), (package.period_days, package.period_stated))
 
     def test_unparseable_explicit_period_hint_fails_closed(self):
         with self.assertRaises(UnsupportedQuestionError):

@@ -26,19 +26,22 @@ _COMPARISON_PAIR_PATTERN = re.compile(
 )
 _PERIOD_PATTERN = re.compile(r"(\d{1,3})\s*(?:日|天|days?)", re.IGNORECASE)
 _WEEK_PERIOD_PATTERN = re.compile(r"(\d{1,3})\s*(?:週|周|weeks?)", re.IGNORECASE)
-_CHINESE_WEEK_PERIOD_PATTERN = re.compile(r"([一二兩三四五六七八九十])\s*(?:週|周)")
+_CHINESE_WEEK_PERIOD_PATTERN = re.compile(
+    r"(?<![一二兩三四五六七八九十百])"
+    r"([一二兩三四五六七八九十]{1,3})"
+    r"(?![一二兩三四五六七八九十百])\s*(?:週|周)"
+)
 _PERIOD_HINT_PATTERN = re.compile(
     r"(?:過去|最近|近)\s*[^\s，。！？,;；]{0,8}?(?:日|天|週|周|星期|月|年)"
 )
 _CONTEXTUAL_ASSET_PATTERNS = (
-    re.compile(r"(?:分析|評估|研究|關注)\s*([A-Za-z]{2,5})(?![A-Za-z])", re.IGNORECASE),
     re.compile(
         r"(?<![A-Za-z])([A-Za-z]{2,5})(?![A-Za-z])\s*"
-        r"(?:代幣|幣種|升級(?:事件)?|市場狀態|價格(?:走勢)?|鏈上)",
+        r"(?:代幣|幣種|事件|升級(?:事件)?|市場狀態|價格(?:走勢)?|鏈上)",
         re.IGNORECASE,
     ),
 )
-_CHINESE_WEEK_COUNTS = {
+_CHINESE_DIGITS = {
     "一": 1,
     "二": 2,
     "兩": 2,
@@ -49,7 +52,6 @@ _CHINESE_WEEK_COUNTS = {
     "七": 7,
     "八": 8,
     "九": 9,
-    "十": 10,
 }
 
 
@@ -149,7 +151,9 @@ def _read_period(text):
 
     match = _CHINESE_WEEK_PERIOD_PATTERN.search(text)
     if match:
-        return _positive_period(_CHINESE_WEEK_COUNTS[match.group(1)] * 7)
+        week_count = _parse_chinese_week_count(match.group(1))
+        if week_count is not None:
+            return _positive_period(week_count * 7)
 
     if _PERIOD_HINT_PATTERN.search(text):
         raise UnsupportedQuestionError(
@@ -162,3 +166,14 @@ def _positive_period(days):
     if days <= 0:
         raise UnsupportedQuestionError("分析期間必須為正整數日數；fail closed。")
     return days, True
+
+
+def _parse_chinese_week_count(token):
+    if "十" not in token:
+        return _CHINESE_DIGITS.get(token)
+    tens, ones = token.split("十", 1)
+    tens_value = 1 if not tens else _CHINESE_DIGITS.get(tens)
+    ones_value = 0 if not ones else _CHINESE_DIGITS.get(ones)
+    if tens_value is None or ones_value is None:
+        return None
+    return tens_value * 10 + ones_value
