@@ -3,15 +3,21 @@
 import json
 import re
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fakes import FixedClock, ScriptedTokenSource
+from tests.fakes import FixedClock, ScriptedTokenSource
 from hoya_market_agents.run_store import (
     ArtifactAlreadyExistsError,
+    ArtifactTamperedError,
+    FormatRepairSemanticChangeError,
     RunAlreadyExistsError,
     RunStore,
+    SnapshotSealedError,
+    deduplicate_evidence,
     new_run_id,
 )
 
@@ -51,6 +57,9 @@ class RunStoreTest(unittest.TestCase):
         self.assertEqual(self.data_root / "runs" / "20260801T073000Z-btc-8f3a2c", run.path)
         self.assertTrue(run.seat_dir("spot-technical").is_dir())
         self.assertTrue(run.seat_dir("news").is_dir())
+        self.assertTrue((run.seat_dir("news") / "attempts").is_dir())
+        for name in ("snapshots", "reports", "late", "diagnostics"):
+            self.assertTrue((run.path / name).is_dir(), name)
 
     def test_creating_the_same_run_id_twice_fails_closed(self):
         self.store.create_run("20260801T073000Z-btc-8f3a2c", ["news"])
@@ -107,6 +116,125 @@ class RunStoreTest(unittest.TestCase):
         digest = run.artifact_hashes["report.md"]
         self.assertEqual(64, len(digest))
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_parallel_seat_attempt_writes_are_isolated_and_atomic(self):
+        run = self.store.create_run(
+            "20260801T073000Z-btc-aaa111", ["spot-technical", "news"]
+        )
+        barrier = threading.Barrier(2)
+
+        def submit(seat_id):
+            barrier.wait()
+            return run.record_attempt(
+                seat_id,
+                seat_id + "-a1",
+                raw_text='{"seat_id":"' + seat_id + '"}',
+                validated_payload={"seat_id": seat_id, "records": []},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(submit, ("spot-technical", "news")))
+
+        self.assertEqual([True, True], results)
+        for seat_id in ("spot-technical", "news"):
+            attempt = run.seat_dir(seat_id) / "attempts" / (seat_id + "-a1")
+            self.assertEqual(
+                seat_id,
+                json.loads((attempt / "validated.json").read_text(encoding="utf-8"))["seat_id"],
+            )
+
+    def test_first_valid_attempt_is_adopted_and_later_success_is_diagnostic(self):
+        run = self.store.create_run("20260801T073000Z-btc-aaa111", ["news"])
+
+        first = run.record_attempt("news", "news-a1", "{}", {"records": [1]})
+        second = run.record_attempt("news", "news-a2", "{}", {"records": [2]})
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        adopted = json.loads((run.seat_dir("news") / "adopted.json").read_text(encoding="utf-8"))
+        self.assertEqual("news-a1", adopted["attempt_id"])
+        diagnostic = json.loads(
+            (run.path / "diagnostics" / "attempts" / "news-a2.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("not_adopted_first_valid_already_selected", diagnostic["reason"])
+
+    def test_syndicated_sources_are_not_counted_twice(self):
+        cards = [
+            {
+                "evidence_id": "news-01",
+                "source_url": "https://wire.invalid/story",
+                "source_origin": "press-release:abc",
+            },
+            {
+                "evidence_id": "news-02",
+                "source_url": "https://publisher.invalid/repost",
+                "source_origin": "press-release:abc",
+            },
+        ]
+
+        unique, duplicates = deduplicate_evidence(cards)
+
+        self.assertEqual(["news-01"], [card["evidence_id"] for card in unique])
+        self.assertEqual(
+            [{"evidence_id": "news-02", "duplicate_of": "news-01"}], duplicates
+        )
+
+    def test_sealed_snapshot_cannot_be_replaced_and_tampering_is_detected(self):
+        run = self.store.create_run("20260801T073000Z-btc-aaa111", ["news"])
+        records = [{"evidence_id": "news-01"}]
+
+        seal = run.seal_evidence_snapshot(records, "2026-08-01T07:35:00Z", 300000)
+        self.assertEqual(64, len(seal["sha256"]))
+        self.assertEqual(seal, run.verify_evidence_snapshot())
+        with self.assertRaises(SnapshotSealedError):
+            run.seal_evidence_snapshot(records, "2026-08-01T07:35:01Z", 301000)
+
+        (run.path / seal["path"]).write_text("tampered\n", encoding="utf-8")
+        with self.assertRaises(ArtifactTamperedError):
+            run.verify_evidence_snapshot()
+
+    def test_format_repair_preserves_before_after_and_rejects_semantic_change(self):
+        run = self.store.create_run("20260801T073000Z-btc-aaa111", ["news"])
+
+        path = run.record_format_repair(
+            repair_id="repair-01",
+            seat_id="news",
+            source_attempt_id="news-a1",
+            repair_attempt_id="format-repair-a1",
+            before_text='{"stance":"bullish","evidence_ids":["news-01"]}',
+            after_text='{\n  "stance": "bullish",\n  "evidence_ids": ["news-01"]\n}',
+            reason="normalize JSON formatting",
+            operator="format-repair-agent",
+        )
+        record = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIn("before", record)
+        self.assertIn("after", record)
+        self.assertEqual("news-a1", record["lineage"]["source_attempt_id"])
+
+        with self.assertRaises(FormatRepairSemanticChangeError):
+            run.record_format_repair(
+                repair_id="repair-02",
+                seat_id="news",
+                source_attempt_id="news-a1",
+                repair_attempt_id="format-repair-a2",
+                before_text='{"stance":"bullish"}',
+                after_text='{"stance":"bearish"}',
+                reason="not a format-only repair",
+                operator="format-repair-agent",
+            )
+
+    def test_manifest_index_traces_hash_and_source_and_detects_tamper(self):
+        run = self.store.create_run("20260801T073000Z-btc-aaa111", ["news"])
+        run.write_text("evidence.jsonl", "{}\n", source="validated seat attempts")
+
+        index = run.artifact_index()
+
+        self.assertEqual("evidence.jsonl", index["evidence.jsonl"]["path"])
+        self.assertEqual("validated seat attempts", index["evidence.jsonl"]["source"])
+        self.assertTrue(run.verify_artifacts(index))
+        (run.path / "evidence.jsonl").write_text("tampered\n", encoding="utf-8")
+        with self.assertRaises(ArtifactTamperedError):
+            run.verify_artifacts(index)
 
 
 if __name__ == "__main__":

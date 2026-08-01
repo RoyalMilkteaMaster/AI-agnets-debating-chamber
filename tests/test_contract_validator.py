@@ -3,6 +3,7 @@
 import unittest
 
 from hoya_market_agents.contract_validator import (
+    CONTRACT_VERSION,
     ContractViolationError,
     MAX_EVIDENCE_CARDS_PER_SEAT,
     validate_debate_turn,
@@ -15,6 +16,7 @@ from hoya_market_agents.seats import SEAT_IDS, load_roster
 
 def evidence_card(**overrides):
     card = {
+        "schema_version": CONTRACT_VERSION,
         "evidence_id": "spot-technical-01",
         "run_id": "20260801T073000Z-btc-8f3a2c",
         "seat_id": "spot-technical",
@@ -39,6 +41,7 @@ def evidence_card(**overrides):
 
 def debate_turn(**overrides):
     turn = {
+        "schema_version": CONTRACT_VERSION,
         "turn_id": "spot-technical-r1",
         "run_id": "20260801T073000Z-btc-8f3a2c",
         "seat_id": "spot-technical",
@@ -59,6 +62,7 @@ def debate_turn(**overrides):
 
 def vote(**overrides):
     record = {
+        "schema_version": CONTRACT_VERSION,
         "run_id": "20260801T073000Z-btc-8f3a2c",
         "seat_id": "spot-technical",
         "attempt_id": "spot-technical-a1",

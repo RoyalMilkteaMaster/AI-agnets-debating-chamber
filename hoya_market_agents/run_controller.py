@@ -10,11 +10,18 @@ replacements, format repair and the absolute 6/5/4 consensus thresholds arrive
 with their own tickets; the limits are recorded in every manifest.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from .clock import SystemClock, iso_utc
-from .contract_validator import STANCES, validate_seat_evidence
+from .contract_validator import (
+    CONTRACT_VERSION,
+    STANCES,
+    validate_question_package,
+    validate_run_manifest,
+    validate_seat_evidence,
+)
 from .prompt_builder import build_seat_prompt, load_research_snapshot
 from .provider_gateway import ProviderGateway
 from .question import UnsupportedQuestionError, analyze_question
@@ -22,7 +29,7 @@ from .report_renderer import build_report, render_html, render_markdown
 from .run_store import default_token, new_run_id
 from .seats import SEAT_IDS, load_roster
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = CONTRACT_VERSION
 DEBATE_ROUND = 1
 
 SCOPE_LIMITS = (
@@ -61,6 +68,20 @@ class RunController:
 
         run_id = new_run_id(started_at_utc, scope.asset_slug, self.token_source())
         run = self.store.create_run(run_id, SEAT_IDS)
+        question_package = validate_question_package(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "run_id": run_id,
+                "phase": "question",
+                "created_at_utc": iso_utc(started_at_utc),
+                "elapsed_ms": 0,
+                "question": scope.question,
+                "question_type": "single_asset",
+                "assets": list(scope.assets),
+                "period_days": scope.period_days,
+            }
+        )
+        run.write_json("question.json", question_package, source="approved question package")
         gateway = ProviderGateway(
             provider=self.provider,
             clock=self.clock,
@@ -110,6 +131,12 @@ class RunController:
             run.write_text(self._seat_file(seat, "prompt-research.txt"), prompt.text)
             cards = gateway.collect_evidence(seat, scope, prompt)
             validate_seat_evidence(seat.seat_id, cards)
+            run.record_attempt(
+                seat.seat_id,
+                gateway.attempt_id(seat.seat_id),
+                json.dumps(cards, ensure_ascii=False),
+                {"schema_version": SCHEMA_VERSION, "records": cards},
+            )
             run.write_jsonl(self._seat_file(seat, "research.jsonl"), cards)
             evidence += cards
         run.write_jsonl("evidence.jsonl", evidence)
@@ -184,39 +211,35 @@ class RunController:
         stances = {record["seat_id"]: record["stance"] for record in votes}
         research_snapshot = load_research_snapshot()
 
-        run.write_json(
-            "manifest.json",
-            {
-                "run_id": run.run_id,
-                "schema_version": SCHEMA_VERSION,
-                "provider_mode": gateway.mode,
-                "question": scope.question,
-                "assets": list(scope.assets),
-                "period_days": scope.period_days,
-                "period_stated": scope.period_stated,
-                "research_snapshot": {
-                    "upstream_commit": research_snapshot.upstream_commit,
-                    "git_blob_sha": research_snapshot.git_blob_sha,
-                    "local_sha256": research_snapshot.sha256,
-                },
-                "started_at_utc": iso_utc(started_at_utc),
-                "completed_at_utc": iso_utc(completed_at_utc),
-                "elapsed_ms": self.clock.monotonic_ms() - start_monotonic_ms,
-                "code_root": str(Path(__file__).resolve().parent.parent),
-                "data_root": str(self.store.data_root),
-                "run_dir": str(run.path),
-                "seats": [
-                    _seat_manifest_entry(seat, gateway.attempts, stances[seat.seat_id])
-                    for seat in self.roster
-                ],
-                "tally": tally,
-                "artifacts": {
-                    name: {"path": name, "sha256": digest}
-                    for name, digest in sorted(run.artifact_hashes.items())
-                },
-                "scope_limits": list(SCOPE_LIMITS),
+        manifest = {
+            "run_id": run.run_id,
+            "schema_version": SCHEMA_VERSION,
+            "provider_mode": gateway.mode,
+            "question": scope.question,
+            "assets": list(scope.assets),
+            "period_days": scope.period_days,
+            "period_stated": scope.period_stated,
+            "research_snapshot": {
+                "upstream_commit": research_snapshot.upstream_commit,
+                "git_blob_sha": research_snapshot.git_blob_sha,
+                "local_sha256": research_snapshot.sha256,
             },
-        )
+            "started_at_utc": iso_utc(started_at_utc),
+            "completed_at_utc": iso_utc(completed_at_utc),
+            "elapsed_ms": self.clock.monotonic_ms() - start_monotonic_ms,
+            "code_root": str(Path(__file__).resolve().parent.parent),
+            "data_root": str(self.store.data_root),
+            "run_dir": str(run.path),
+            "seats": [
+                _seat_manifest_entry(seat, gateway.attempts, stances[seat.seat_id])
+                for seat in self.roster
+            ],
+            "tally": tally,
+            "artifacts": run.artifact_index(),
+            "scope_limits": list(SCOPE_LIMITS),
+        }
+        validate_run_manifest(manifest)
+        run.write_json("manifest.json", manifest, source="final run manifest")
 
     @staticmethod
     def _seat_file(seat, name):

@@ -10,7 +10,12 @@ neither forge its own identity nor bypass validation.
 from dataclasses import dataclass, field
 
 from .clock import iso_utc
-from .contract_validator import validate_debate_turn, validate_evidence_card, validate_vote
+from .contract_validator import (
+    CONTRACT_VERSION,
+    validate_debate_turn,
+    validate_evidence_card,
+    validate_vote,
+)
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,9 @@ class ProviderGateway:
             "stance_change_reason": content["stance_change_reason"],
         }
         self._record_attempt(seat.seat_id, "debate", 1)
-        return validate_debate_turn(turn)
+        return validate_debate_turn(
+            turn, {card["evidence_id"] for card in evidence_snapshot}
+        )
 
     def collect_vote(self, seat, scope, prompt, evidence_snapshot, debate_snapshot, round_number):
         call = self._call(
@@ -104,7 +111,7 @@ class ProviderGateway:
             "stance_change_reason": content["stance_change_reason"],
         }
         self._record_attempt(seat.seat_id, "vote", 1)
-        return validate_vote(record)
+        return validate_vote(record, {card["evidence_id"] for card in evidence_snapshot})
 
     def _call(self, seat, scope, prompt, phase, evidence_snapshot=(), debate_snapshot=()):
         return SeatCall(
@@ -122,6 +129,7 @@ class ProviderGateway:
     def _stamp(self, seat_id, phase):
         elapsed_ms = self.clock.monotonic_ms() - self.start_monotonic_ms
         return {
+            "schema_version": CONTRACT_VERSION,
             "run_id": self.run_id,
             "seat_id": seat_id,
             "attempt_id": self.attempt_id(seat_id),

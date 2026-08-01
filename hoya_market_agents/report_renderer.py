@@ -12,9 +12,10 @@ vote tally.
 
 import html
 
+from .contract_validator import CONTRACT_VERSION, validate_report
 from .seats import SEAT_IDS
 
-REPORT_SCHEMA_VERSION = "0.1.0"
+REPORT_SCHEMA_VERSION = CONTRACT_VERSION
 
 DIRECTION_LABELS = (
     ("support", "支持證據"),
@@ -72,7 +73,7 @@ def build_report(
     focus_by_seat = {seat.seat_id: seat.focus for seat in roster}
     turns_by_seat = {turn["seat_id"]: turn for turn in debate}
 
-    return {
+    report = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "run_id": run_id,
         "question": question,
@@ -92,6 +93,7 @@ def build_report(
         "scope_limits": list(scope_limits),
         "raw_records": [{"file": name, "label": label} for name, label in RAW_RECORDS],
     }
+    return validate_report(report)
 
 
 def render_markdown(report):
