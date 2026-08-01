@@ -13,6 +13,7 @@ from hoya_market_agents.codex_bridge import (
     CODEX_SEAT_IDS,
     CORE_ROLE,
     CONTRACT_TEXT,
+    SEAT_TOOL_POLICY,
     SOURCE_TIME_POLICY,
     STATUS_NOT_READY,
     STATUS_READY,
@@ -56,11 +57,66 @@ def threads(**overrides):
             "model_confirmed": True,
             "capability_confirmed": True,
             "persistent": True,
+            "dispatch_id": "dispatch-{}".format(seat_id),
+            "tool_policy": dict(SEAT_TOOL_POLICY),
+            "tool_policy_confirmed": True,
+            "runtime_policy_receipt": "runtime-receipt-{}".format(seat_id),
         }
         for seat_id in CODEX_SEAT_IDS
     }
     value.update(overrides)
     return value
+
+
+def evidence_card(seat_id="onchain", attempt_id="attempt-1", **overrides):
+    card = {
+        "schema_version": "1.0.0",
+        "evidence_id": "{}-01".format(seat_id),
+        "run_id": RUN_ID,
+        "seat_id": seat_id,
+        "attempt_id": attempt_id,
+        "phase": "research",
+        "created_at_utc": CREATED_AT,
+        "elapsed_ms": 1000,
+        "asset": "BTC",
+        "category": "onchain",
+        "statement": "公開測試證據。",
+        "direction": "support",
+        "source_url": "https://example.invalid/source",
+        "source_origin": "example:source",
+        "source_tier": 1,
+        "published_at_utc": CREATED_AT,
+        "retrieved_at_utc": CREATED_AT,
+        "excerpt": "public value 1",
+        "credibility_note": "unit contract fixture",
+    }
+    card.update(overrides)
+    return card
+
+
+def raw_handoff(seat_id="onchain", attempt_id="attempt-1", **overrides):
+    payload = {
+        "schema_version": "1.0.0",
+        "run_id": RUN_ID,
+        "seat_id": seat_id,
+        "attempt_id": attempt_id,
+        "phase": "research",
+        "evidence_cards": [evidence_card(seat_id, attempt_id)],
+    }
+    payload.update(overrides)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+def write_ready_preflight(run):
+    payload = build_codex_handoff(
+        run_id=RUN_ID,
+        package=build_question_package(QUESTION),
+        core=core_identity(),
+        threads=threads(),
+        created_at_utc=CREATED_AT,
+    )
+    write_codex_handoff(run, payload)
+    return payload
 
 
 def continuation_message(**overrides):
@@ -159,6 +215,38 @@ class CodexHandoffTest(unittest.TestCase):
             with self.subTest(override=override):
                 with self.assertRaises(PreflightNotReadyError):
                     self.build(core=core_identity(**override))
+
+    def test_core_metadata_is_an_exact_four_field_allowlist(self):
+        with self.assertRaises(PreflightNotReadyError):
+            self.build(core=core_identity(debug=True))
+
+    def test_dispatch_policy_requires_no_tools_and_runtime_evidence(self):
+        cases = (
+            {"tool_policy": {**SEAT_TOOL_POLICY, "allowed_tools": ["filesystem"]}},
+            {"tool_policy_confirmed": False},
+            {"runtime_policy_receipt": ""},
+        )
+        for override in cases:
+            with self.subTest(override=override):
+                broken = threads()
+                broken["onchain"] = dict(broken["onchain"], **override)
+                with self.assertRaises(PreflightNotReadyError):
+                    self.build(threads=broken)
+
+    def test_dispatch_policy_is_auditable_in_preflight_artifact(self):
+        payload = self.build()
+
+        self.assertEqual(SEAT_TOOL_POLICY, payload["dispatch_tool_policy"])
+        self.assertRegex(payload["dispatch_tool_policy_sha256"], r"^[0-9a-f]{64}$")
+        for seat in payload["seats"]:
+            self.assertEqual([], seat["tool_policy"]["allowed_tools"])
+            self.assertFalse(seat["tool_policy"]["filesystem_access"])
+            self.assertFalse(seat["tool_policy"]["secret_access"])
+            self.assertTrue(seat["tool_policy_confirmed"])
+            self.assertTrue(seat["runtime_policy_receipt"])
+            self.assertRegex(
+                seat["runtime_policy_receipt_sha256"], r"^[0-9a-f]{64}$"
+            )
 
     def test_invalid_created_at_timestamp_is_rejected(self):
         with self.assertRaises(CodexBridgeError):
@@ -260,6 +348,7 @@ class PublicCheckpointTest(unittest.TestCase):
     def test_public_checkpoint_is_write_once_inside_the_seat_attempt(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             run = RunStore(temporary_directory).create_run(RUN_ID, CODEX_SEAT_IDS)
+            write_ready_preflight(run)
             record = seal_public_checkpoint(
                 run, "derivatives", "derivatives-codex-1", self.checkpoint()
             )
@@ -270,6 +359,36 @@ class PublicCheckpointTest(unittest.TestCase):
                 seal_public_checkpoint(
                     run, "derivatives", "derivatives-codex-1", self.checkpoint()
                 )
+
+    def test_checkpoint_must_match_sealed_preflight_seat_thread_mapping(self):
+        cases = (
+            ("derivatives", self.checkpoint(thread_id="thread-onchain")),
+            ("onchain", self.checkpoint()),
+        )
+        for seat_id, checkpoint in cases:
+            with self.subTest(seat_id=seat_id, thread_id=checkpoint["thread_id"]):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    run = RunStore(temporary_directory).create_run(
+                        RUN_ID, CODEX_SEAT_IDS
+                    )
+                    write_ready_preflight(run)
+                    with self.assertRaises(CodexBridgeError):
+                        seal_public_checkpoint(
+                            run,
+                            seat_id,
+                            "{}-codex-1".format(seat_id),
+                            checkpoint,
+                        )
+
+    def test_checkpoint_without_sealed_preflight_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            run = RunStore(temporary_directory).create_run(RUN_ID, CODEX_SEAT_IDS)
+            target = run.path / "agents/derivatives/attempts/derivatives-codex-1"
+            with self.assertRaises(CodexBridgeError):
+                seal_public_checkpoint(
+                    run, "derivatives", "derivatives-codex-1", self.checkpoint()
+                )
+            self.assertFalse(target.exists())
 
 
 class SeatIsolationTest(unittest.TestCase):
@@ -312,7 +431,7 @@ class SeatIsolationTest(unittest.TestCase):
         )
 
     def test_raw_handoff_bytes_and_sha256_are_preserved_exactly(self):
-        raw = '{"stance":"bullish",  "note":"原文 保留"}\n'
+        raw = raw_handoff()
         record = seal_seat_handoff(self.run, "onchain", "attempt-1", raw)
 
         stored = (self.run.path / record["path"]).read_bytes()
@@ -322,9 +441,41 @@ class SeatIsolationTest(unittest.TestCase):
         self.assertIn("agents/onchain/", record["path"])
 
     def test_core_may_not_rewrite_a_sealed_seat_handoff(self):
-        seal_seat_handoff(self.run, "onchain", "attempt-1", '{"stance":"bullish"}')
+        seal_seat_handoff(self.run, "onchain", "attempt-1", raw_handoff())
         with self.assertRaises(CodexBridgeError):
-            seal_seat_handoff(self.run, "onchain", "attempt-1", '{"stance":"bearish"}')
+            seal_seat_handoff(self.run, "onchain", "attempt-1", raw_handoff())
+
+    def test_invalid_or_private_raw_handoff_writes_zero_bytes(self):
+        attempt_root = seat_output_dir(self.data_root, RUN_ID, "onchain")
+        cases = ["not json"]
+        for field in (
+            "hidden",
+            "private",
+            "chain_of_thought",
+            "secret",
+            "api_key",
+            "unknown_field",
+        ):
+            cases.append(raw_handoff(**{field: "must-not-land"}))
+            cases.append(
+                raw_handoff(
+                    evidence_cards=[evidence_card(**{field: "must-not-land"})]
+                )
+            )
+
+        for index, raw in enumerate(cases):
+            attempt_id = "invalid-{}".format(index)
+            if raw != "not json":
+                payload = json.loads(raw)
+                payload["attempt_id"] = attempt_id
+                payload["evidence_cards"][0]["attempt_id"] = attempt_id
+                raw = json.dumps(
+                    payload, ensure_ascii=False, separators=(",", ":")
+                ) + "\n"
+            with self.subTest(attempt_id=attempt_id):
+                with self.assertRaises(CodexBridgeError):
+                    seal_seat_handoff(self.run, "onchain", attempt_id, raw)
+                self.assertFalse((attempt_root / attempt_id).exists())
 
 
 class PreflightVerificationTest(unittest.TestCase):
@@ -390,6 +541,17 @@ class PreflightVerificationTest(unittest.TestCase):
     def test_verify_fails_closed_on_tampered_shared_prompt_hash(self):
         broken = json.loads(json.dumps(self.payload))
         broken["shared_prompt_sha256"] = "0" * 64
+        write_codex_handoff(self.run, broken)
+
+        code, out, err = self.verify_cli()
+
+        self.assertEqual(1, code)
+        self.assertIn(STATUS_NOT_READY, err)
+        self.assertEqual("", out)
+
+    def test_verify_fails_closed_on_tampered_dispatch_tool_policy(self):
+        broken = json.loads(json.dumps(self.payload))
+        broken["seats"][0]["tool_policy"]["allowed_tools"] = ["filesystem"]
         write_codex_handoff(self.run, broken)
 
         code, out, err = self.verify_cli()

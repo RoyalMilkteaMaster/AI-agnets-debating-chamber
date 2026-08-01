@@ -9,7 +9,9 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 
+from .contract_validator import CONTRACT_VERSION, validate_seat_evidence
 from .prompt_builder import build_seat_prompt, load_research_snapshot
 from .question_package import (
     COMPARISON_STANCES,
@@ -27,6 +29,63 @@ TARGET_MODEL = "gpt-5.6-sol"
 STATUS_READY = "READY"
 STATUS_NOT_READY = "NOT READY"
 HANDOFF_PATH = "preflight/codex-handoff.json"
+
+_CORE_FIELDS = frozenset(
+    {"role", "model", "model_confirmed", "created_threads_by"}
+)
+_THREAD_FIELDS = frozenset(
+    {
+        "thread_id",
+        "actual_model",
+        "model_confirmed",
+        "capability_confirmed",
+        "persistent",
+        "dispatch_id",
+        "tool_policy",
+        "tool_policy_confirmed",
+        "runtime_policy_receipt",
+    }
+)
+SEAT_TOOL_POLICY = MappingProxyType({
+    "allowed_tools": [],
+    "filesystem_access": False,
+    "secret_access": False,
+    "response_mode": "public_structured_response_only",
+    "data_root_writer": "core_python_bridge",
+})
+_RAW_HANDOFF_FIELDS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "seat_id",
+        "attempt_id",
+        "phase",
+        "evidence_cards",
+    }
+)
+_EVIDENCE_CARD_FIELDS = frozenset(
+    {
+        "schema_version",
+        "evidence_id",
+        "run_id",
+        "seat_id",
+        "attempt_id",
+        "phase",
+        "created_at_utc",
+        "elapsed_ms",
+        "asset",
+        "category",
+        "statement",
+        "direction",
+        "source_url",
+        "source_origin",
+        "source_tier",
+        "published_at_utc",
+        "retrieved_at_utc",
+        "excerpt",
+        "credibility_note",
+    }
+)
 
 _PUBLIC_CONTINUATION_FIELDS = frozenset(
     {
@@ -54,6 +113,7 @@ _PUBLIC_CHECKPOINT_FIELDS = frozenset(
 
 CONTRACT_TEXT = """Codex public handoff v1
 - raw seat output is write-once UTF-8 and must be forwarded byte-for-byte
+- seats receive no filesystem or secret tools and only return public structured data
 - Core must not summarize, change market meaning, choose a side, or change a vote
 - debate continuation contains only claim_id, evidence_ids, stance,
   public_reason, responds_to, and stance_change_reason
@@ -98,6 +158,7 @@ def build_codex_handoff(run_id, package, core, threads, created_at_utc):
     package_hash = _sha256_json(package_value)
     contract_hash = _sha256_text(CONTRACT_TEXT)
     policy_hash = _sha256_text(SOURCE_TIME_POLICY)
+    dispatch_policy_hash = _sha256_json(dict(SEAT_TOOL_POLICY))
     seats = []
     shared_prompt = None
 
@@ -122,6 +183,14 @@ def build_codex_handoff(run_id, package, core, threads, created_at_utc):
                 "model_confirmed": metadata["model_confirmed"],
                 "capability_confirmed": metadata["capability_confirmed"],
                 "persistent": metadata["persistent"],
+                "dispatch_id": metadata["dispatch_id"],
+                "tool_policy": dict(metadata["tool_policy"]),
+                "tool_policy_confirmed": metadata["tool_policy_confirmed"],
+                "runtime_policy_receipt": metadata["runtime_policy_receipt"],
+                "runtime_policy_receipt_sha256": _sha256_text(
+                    metadata["runtime_policy_receipt"]
+                ),
+                "tool_policy_sha256": dispatch_policy_hash,
                 "output_path": "agents/{}/attempts/{}".format(
                     seat.seat_id, attempt_id
                 ),
@@ -154,6 +223,8 @@ def build_codex_handoff(run_id, package, core, threads, created_at_utc):
         "contract_text_sha256": contract_hash,
         "source_time_policy": SOURCE_TIME_POLICY,
         "source_time_policy_sha256": policy_hash,
+        "dispatch_tool_policy": dict(SEAT_TOOL_POLICY),
+        "dispatch_tool_policy_sha256": dispatch_policy_hash,
         "seats": seats,
     }
 
@@ -186,6 +257,10 @@ def verify_codex_preflight(data_root, run_id):
                         "model_confirmed",
                         "capability_confirmed",
                         "persistent",
+                        "dispatch_id",
+                        "tool_policy",
+                        "tool_policy_confirmed",
+                        "runtime_policy_receipt",
                     )
                 }
                 for seat in payload["seats"]
@@ -259,6 +334,16 @@ def seal_public_checkpoint(run, seat_id, attempt_id, checkpoint):
         raise CodexBridgeError("不是固定 GPT 席：{}".format(seat_id))
     _require_safe_segment(attempt_id, "attempt_id")
     validate_public_checkpoint(checkpoint)
+    preflight = verify_codex_preflight(run.path.parent.parent, run.run_id)
+    seat_mapping = {
+        seat["seat_id"]: (seat["thread_id"], seat["attempt_id"])
+        for seat in preflight["seats"]
+    }
+    expected_thread_id, expected_attempt_id = seat_mapping[seat_id]
+    if checkpoint["thread_id"] != expected_thread_id:
+        raise CodexBridgeError("checkpoint thread_id 與 sealed preflight 不一致。")
+    if attempt_id != expected_attempt_id:
+        raise CodexBridgeError("checkpoint attempt_id 與 sealed preflight 不一致。")
     name = "agents/{}/attempts/{}/public-checkpoint.json".format(
         seat_id, attempt_id
     )
@@ -301,6 +386,11 @@ def seal_seat_handoff(run, seat_id, attempt_id, raw_text):
     _require_safe_segment(attempt_id, "attempt_id")
     if not isinstance(raw_text, str):
         raise CodexBridgeError("raw handoff 必須為文字。")
+    try:
+        raw_bytes = raw_text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise CodexBridgeError("raw handoff 必須為有效 UTF-8。") from exc
+    _validate_raw_handoff(raw_text, run.run_id, seat_id, attempt_id)
     name = "agents/{}/attempts/{}/raw-codex-handoff.txt".format(
         seat_id, attempt_id
     )
@@ -309,7 +399,6 @@ def seal_seat_handoff(run, seat_id, attempt_id, raw_text):
         run.write_text(name, raw_text, source="verbatim Codex seat handoff")
     except (ArtifactAlreadyExistsError, RunStoreError) as exc:
         raise CodexBridgeError("raw handoff 已 sealed 或路徑不安全。") from exc
-    raw_bytes = raw_text.encode("utf-8")
     return {
         "run_id": run.run_id,
         "seat_id": seat_id,
@@ -323,6 +412,8 @@ def seal_seat_handoff(run, seat_id, attempt_id, raw_text):
 def _validate_core(core):
     if not isinstance(core, dict):
         raise PreflightNotReadyError("無法確認 Core metadata。")
+    if set(core) != _CORE_FIELDS:
+        raise PreflightNotReadyError("Core metadata 必須恰好包含四個固定欄位。")
     if core.get("role") != CORE_ROLE:
         raise PreflightNotReadyError("Core role 未確認。")
     if core.get("model") != TARGET_MODEL or core.get("model_confirmed") is not True:
@@ -339,6 +430,8 @@ def _validate_threads(threads):
         metadata = threads[seat_id]
         if not isinstance(metadata, dict):
             raise PreflightNotReadyError("{} thread metadata 無效。".format(seat_id))
+        if set(metadata) != _THREAD_FIELDS:
+            raise PreflightNotReadyError("{} thread metadata 欄位不符。".format(seat_id))
         if not isinstance(metadata.get("thread_id"), str) or not metadata["thread_id"].strip():
             raise PreflightNotReadyError("{} thread_id 未確認。".format(seat_id))
         thread_ids.append(metadata["thread_id"])
@@ -347,6 +440,19 @@ def _validate_threads(threads):
         for field in ("model_confirmed", "capability_confirmed", "persistent"):
             if metadata.get(field) is not True:
                 raise PreflightNotReadyError("{} 的 {} 未確認。".format(seat_id, field))
+        if not isinstance(metadata.get("dispatch_id"), str) or not metadata[
+            "dispatch_id"
+        ].strip():
+            raise PreflightNotReadyError("{} dispatch_id 未確認。".format(seat_id))
+        if metadata.get("tool_policy") != dict(SEAT_TOOL_POLICY):
+            raise PreflightNotReadyError("{} 未證明 no-tool dispatch policy。".format(seat_id))
+        if metadata.get("tool_policy_confirmed") is not True:
+            raise PreflightNotReadyError("{} tool policy 未由 runtime 確認。".format(seat_id))
+        receipt = metadata.get("runtime_policy_receipt")
+        if not isinstance(receipt, str) or not receipt.strip():
+            raise PreflightNotReadyError(
+                "{} 缺少 runtime tool-policy receipt。".format(seat_id)
+            )
     if len(set(thread_ids)) != len(CODEX_SEAT_IDS):
         raise PreflightNotReadyError("三個 GPT 席必須使用不同 persistent threads。")
 
@@ -355,6 +461,45 @@ def _sha256_json(value):
     return _sha256_text(
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
+
+
+def _validate_raw_handoff(raw_text, run_id, seat_id, attempt_id):
+    try:
+        payload = json.loads(raw_text, object_pairs_hook=_object_without_duplicate_keys)
+    except (json.JSONDecodeError, CodexBridgeError) as exc:
+        raise CodexBridgeError("raw handoff 不是唯一鍵的有效 JSON。") from exc
+    if not isinstance(payload, dict) or set(payload) != _RAW_HANDOFF_FIELDS:
+        raise CodexBridgeError("raw handoff 只能包含公開 research envelope 欄位。")
+    expected = {
+        "schema_version": CONTRACT_VERSION,
+        "run_id": run_id,
+        "seat_id": seat_id,
+        "attempt_id": attempt_id,
+        "phase": "research",
+    }
+    for field, value in expected.items():
+        if payload.get(field) != value:
+            raise CodexBridgeError("raw handoff {} 與 sealed context 不一致。".format(field))
+    cards = payload.get("evidence_cards")
+    if not isinstance(cards, list):
+        raise CodexBridgeError("evidence_cards 必須為陣列。")
+    for card in cards:
+        if not isinstance(card, dict) or set(card) != _EVIDENCE_CARD_FIELDS:
+            raise CodexBridgeError("EvidenceCard 含 private、secret 或未知欄位。")
+    try:
+        validate_seat_evidence(seat_id, cards)
+    except ValueError as exc:
+        raise CodexBridgeError("EvidenceCard contract 無效：{}".format(exc)) from exc
+    return payload
+
+
+def _object_without_duplicate_keys(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise CodexBridgeError("JSON key 重複：{}".format(key))
+        value[key] = item
+    return value
 
 
 def _bridge_shared_prompt(prompt_shared_section):
