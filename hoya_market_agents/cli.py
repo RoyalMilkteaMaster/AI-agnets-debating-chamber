@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .antigravity_adapter import AntigravityAdapter, AntigravityError
+from .claude_adapter import run_claude_preflight
 from .fake_provider import FakeProvider
 from .question import UnsupportedQuestionError
 from .run_controller import RunController
@@ -55,12 +56,14 @@ def build_parser():
     preflight = subcommands.add_parser(
         "preflight", help="賽前驗證真實 provider；不啟動市場研究 run"
     )
-    preflight.add_argument("--provider", required=True, choices=("antigravity",))
+    preflight.add_argument(
+        "--provider", required=True, choices=("antigravity", "claude")
+    )
     preflight.add_argument("--seats", required=True, type=int)
     preflight.add_argument(
         "--data-root",
         default=str(DEFAULT_DATA_ROOT),
-        help="所有 preflight schema、log 與 raw envelope 的 Data Root",
+        help="preflight session、schema、log 與 raw envelope 的 Data Root",
     )
     return parser
 
@@ -94,6 +97,15 @@ def main(argv=None, stdout=None, stderr=None):
 
 
 def _preflight(args, out, err):
+    if args.provider == "claude":
+        report = run_claude_preflight(
+            seats=args.seats,
+            code_root=CODE_ROOT,
+            data_root=Path(args.data_root),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2), file=out)
+        return EXIT_OK if report["ready"] else EXIT_FAILED
+
     if args.seats != 1:
         print("NOT READY：antigravity preflight 此票只支援 --seats 1", file=err)
         return EXIT_FAILED

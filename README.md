@@ -3,8 +3,8 @@
 七席多模型加密市場研究流程的 WSL Python 控制程式。
 
 本版本的分析指令仍使用離線 fake provider 打通「題目 → 七席研究 → 共享辯論 → 投票 →
-報告」骨架，輸出內容一律為示範資料，不得作為市場依據。Antigravity 真實模型目前只接到
-單席 preflight，尚未接入完整分析 run。
+報告」骨架，輸出內容一律為示範資料，不得作為市場依據。Claude 與 Antigravity 真實模型
+目前只接到各自的 preflight，尚未接入完整分析 run。
 
 Ticket #3 另外提供版本化 Question Package 與 Research Prompt Builder：可正規化單幣、
 兩幣比較、整體市場、事件影響四種題型，並把 repo-local 固定 research 規則、來源時間政策、
@@ -14,7 +14,8 @@ EvidenceCard contract 與操作邊界等價注入七席。這不代表 Ticket #2
 ## 執行環境
 
 - WSL Ubuntu 24.04、Python 3.12（只使用標準函式庫）。
-- fake run 與單元測試不需要 API key、登入或網路；真實 preflight 使用既有 OAuth 登入。
+- fake run 與單元測試不需要 API key、登入或網路。
+- Claude preflight 使用既有 claude.ai Max 登入；Antigravity preflight 使用既有 Google OAuth 登入。
 - 不需要安裝套件、不需要 venv。
 
 所有指令都在 **WSL** 中、從 Code Root 執行。
@@ -48,6 +49,29 @@ python3 -m unittest tests.test_question_package tests.test_prompt_builder -v
 ```
 
 測試全部離線：使用可注入的 fake clock 與 fake provider，不呼叫真實模型、不讀網路。
+
+只執行 Claude Adapter 單元測試（WSL）：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m unittest tests.test_claude_adapter -v
+```
+
+## Claude Opus 三席 preflight
+
+此指令會使用既有 claude.ai Max 訂閱登入，並行驗證三個固定席位的 Opus、WebSearch、
+structured output 與固定 session resume。它不接受 `ANTHROPIC_API_KEY`，也不輸出憑證或完整
+session UUID：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m hoya_market_agents preflight --provider claude --seats 3
+```
+
+任一 CLI、登入、模型、搜尋、schema、resume 或路徑隔離檢查失敗時，輸出 `NOT READY`
+並以非零 exit code 結束。
 
 只執行 Antigravity Adapter 單元測試（WSL）：
 
@@ -145,7 +169,7 @@ cat latest.json
 
 以下項目不在 Ticket #2 範圍，並記錄在每次執行的 `manifest.json` 與報告的「限制與失效條件」中：
 
-- 真實 provider（Claude CLI、Codex、Antigravity CLI）。
+- 將 Claude、Antigravity adapters 接入完整 run，以及 Codex CLI adapter。
 - 時間關卡（T+5／7／9／10／13）與強制停止。
 - 重試、替補與 Format Repair Agent。
 - 絕對 6／5／4 共識門檻與信心燈號分級。
