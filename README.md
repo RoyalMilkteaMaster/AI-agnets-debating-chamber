@@ -6,6 +6,11 @@
 共享辯論 → 投票 → 報告」的完整骨架。**尚未接上任何真實模型**，輸出內容一律為示範資料，
 不得作為市場依據。
 
+Ticket #3 另外提供版本化 Question Package 與 Research Prompt Builder：可正規化單幣、
+兩幣比較、整體市場、事件影響四種題型，並把 repo-local 固定 research 規則、來源時間政策、
+EvidenceCard contract 與操作邊界等價注入七席。這不代表 Ticket #2 的 fake run controller
+已經執行兩幣或事件題；正式 controller 支援會依後續 tickets 接上。
+
 ## 執行環境
 
 - WSL Ubuntu 24.04、Python 3.12（只使用標準函式庫）。
@@ -32,6 +37,14 @@ python3 --version
 # WSL
 cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
 python3 -m unittest discover -s tests -v
+```
+
+只執行 Ticket #3 必跑測試（WSL）：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m unittest tests.test_question_package tests.test_prompt_builder -v
 ```
 
 測試全部離線：使用可注入的 fake clock 與 fake provider，不呼叫真實模型、不讀網路。

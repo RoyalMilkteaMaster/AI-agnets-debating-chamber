@@ -134,6 +134,17 @@ class RunControllerTest(unittest.TestCase):
         self.assertEqual(QUESTION, manifest["question"])
         self.assertEqual(["BTC"], manifest["assets"])
         self.assertEqual(14, manifest["period_days"])
+        self.assertEqual(
+            "2ab958093e83e0ec752e6c1c5932da465bf23e0c",
+            manifest["research_snapshot"]["upstream_commit"],
+        )
+        self.assertEqual(
+            "0ba594a07f306479baa67104381f48e209ab6aae",
+            manifest["research_snapshot"]["git_blob_sha"],
+        )
+        self.assertRegex(
+            manifest["research_snapshot"]["local_sha256"], r"^[0-9a-f]{64}$"
+        )
         for name in ("evidence.jsonl", "debate.jsonl", "votes.json"):
             self.assertRegex(manifest["artifacts"][name]["sha256"], r"^[0-9a-f]{64}$")
 

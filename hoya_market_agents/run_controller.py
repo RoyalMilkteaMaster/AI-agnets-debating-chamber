@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .clock import SystemClock, iso_utc
 from .contract_validator import STANCES, validate_seat_evidence
-from .prompt_builder import build_seat_prompt
+from .prompt_builder import build_seat_prompt, load_research_snapshot
 from .provider_gateway import ProviderGateway
 from .question import UnsupportedQuestionError, analyze_question
 from .report_renderer import build_report, render_html, render_markdown
@@ -182,6 +182,7 @@ class RunController:
     ):
         completed_at_utc = self.clock.utc_now()
         stances = {record["seat_id"]: record["stance"] for record in votes}
+        research_snapshot = load_research_snapshot()
 
         run.write_json(
             "manifest.json",
@@ -193,6 +194,11 @@ class RunController:
                 "assets": list(scope.assets),
                 "period_days": scope.period_days,
                 "period_stated": scope.period_stated,
+                "research_snapshot": {
+                    "upstream_commit": research_snapshot.upstream_commit,
+                    "git_blob_sha": research_snapshot.git_blob_sha,
+                    "local_sha256": research_snapshot.sha256,
+                },
                 "started_at_utc": iso_utc(started_at_utc),
                 "completed_at_utc": iso_utc(completed_at_utc),
                 "elapsed_ms": self.clock.monotonic_ms() - start_monotonic_ms,

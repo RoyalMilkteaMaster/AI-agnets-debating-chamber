@@ -47,6 +47,22 @@ class QuestionScope:
 
 def analyze_question(question):
     """Return the :class:`QuestionScope` for ``question`` or fail closed."""
+    scope = inspect_question(question)
+    if not scope.assets:
+        raise UnsupportedQuestionError(
+            "題目未指名任何已核准資產（{}）；fail closed。".format(
+                ", ".join(SUPPORTED_ASSETS)
+            )
+        )
+    return scope
+
+
+def inspect_question(question):
+    """Normalize text, approved assets and period without requiring an asset.
+
+    Overall-market questions intentionally have no named asset. Unsupported
+    symbols still fail closed before the question-type classifier runs.
+    """
     text = (question or "").strip()
     if not text:
         raise UnsupportedQuestionError("題目為空；無法判定分析資產，fail closed。")
@@ -66,13 +82,6 @@ def analyze_question(question):
         )
 
     found = {token for token in asset_tokens if token in SUPPORTED_ASSETS}
-    if not found:
-        raise UnsupportedQuestionError(
-            "題目未指名任何已核准資產（{}）；fail closed。".format(
-                ", ".join(SUPPORTED_ASSETS)
-            )
-        )
-
     assets = tuple(asset for asset in SUPPORTED_ASSETS if asset in found)
     period_days, period_stated = _read_period(text)
     return QuestionScope(
