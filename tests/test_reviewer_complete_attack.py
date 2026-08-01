@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from hoya_market_agents.competition_drill import run_fake_competition_drill
+from hoya_market_agents.report_audit_renderer import render_debate_html
 from hoya_market_agents.report_renderer import render_market_html, render_market_markdown
 from hoya_market_agents.run_verifier import RunVerificationError, verify_run
 from hoya_market_agents.seats import SEAT_IDS
@@ -95,8 +96,18 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
         self._write_jsonl(run_dir / "debate.jsonl", debate)
         self._write_json(run_dir / "votes.json", votes)
         self._write_json(run_dir / "report.json", report)
+        sources = {
+            "evidence": evidence,
+            "debate": [entry for entry in debate if entry.get("seat_id")],
+            "votes": votes,
+        }
         (run_dir / "report.md").write_bytes(render_market_markdown(report).encode("utf-8"))
-        (run_dir / "report.html").write_bytes(render_market_html(report).encode("utf-8"))
+        (run_dir / "report.html").write_bytes(
+            render_market_html(report, sources).encode("utf-8")
+        )
+        (run_dir / "debate.html").write_bytes(
+            render_debate_html(report, sources).encode("utf-8")
+        )
 
         for relative in (
             "evidence.jsonl",
@@ -106,6 +117,7 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
             "report.json",
             "report.md",
             "report.html",
+            "debate.html",
         ):
             self._index(manifest, run_dir, relative)
         snapshot_sha = manifest["artifacts"]["evidence.jsonl"]["sha256"]

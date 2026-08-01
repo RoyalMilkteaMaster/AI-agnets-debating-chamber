@@ -173,6 +173,28 @@ python3 -m hoya_market_agents run --provider-mode fake --question "分析 BTC �
 指令會印出唯一 `Run ID`、Data Root、Run 目錄、Markdown 與 HTML 報告的絕對路徑，
 以及票數與七席立場。
 
+## 即時觀看辯論
+
+執行中的 run 會把七席公開發言逐筆追加到 `events.jsonl`。以下唯讀本機頁面以 SSE
+長連線非同步接收新發言、改票與規則切換；倒數由瀏覽器本地即時更新，不會每隔固定時間
+重送 HTTP 請求，也不會改寫任何 run artifact：
+
+```bash
+# WSL
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+python3 -m hoya_market_agents live \
+  --data-root "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data" \
+  --host 127.0.0.1 --port 8765
+```
+
+在 Windows 瀏覽器開啟 `http://127.0.0.1:8765/`。如要固定觀看某次執行，加上
+`--run-id <RUN_ID>`。賽前可用 `http://127.0.0.1:8765/?replay=1&speed=20` 快速重播。
+最終交付物完成後，直播頁會出現「市場判斷報告」與「完整辯論紀錄」按鈕。
+
+直播頁需要 JavaScript 才能非同步更新，只監聽 loopback；正式 `report.html` 與
+`debate.html` 仍是無 JavaScript、無 CDN、可離線開啟的稽核成品。直播只呈現 Agent
+主動發布的公開理由與來源，不顯示或宣稱保存模型隱藏思考過程。
+
 指定另一個 Data Root（WSL）：
 
 ```bash
@@ -207,10 +229,12 @@ python3 -m hoya_market_agents verify-run --run-id <RUN_ID>
 │  ├─ manifest.json      # 題目、資產、期間、七席、attempt、artifact SHA-256、範圍限制
 │  ├─ evidence.jsonl     # 合併後的不可變證據快照
 │  ├─ debate.jsonl       # 共享原文辯論紀錄
+│  ├─ events.jsonl       # 執行中逐筆追加的公開事件，供 SSE 直播推送
 │  ├─ votes.json         # 七席有效立場與票數
 │  ├─ report.json        # 報告 contract（Markdown 與 HTML 的唯一來源）
 │  ├─ report.md
 │  ├─ report.html        # 單一自包含檔案，離線可開啟
+│  ├─ debate.html        # 完整公開辯論與證據頁，離線可開啟
 │  └─ agents/<seat-id>/  # 每席只寫自己的目錄：prompt、研究、辯論、投票
 └─ latest.json           # 唯一可變檔案，指向最近一次執行
 ```
@@ -227,8 +251,8 @@ cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data/runs"
 cat latest.json
 ```
 
-`report.html` 內嵌 CSS，不依賴 CDN、外部字型、JavaScript 或圖片，斷網仍可完整開啟，
-來源網址維持可點擊，並以相對連結指向 `evidence.jsonl` 與 `debate.jsonl`。
+`report.html` 與 `debate.html` 內嵌 CSS，不依賴 CDN、外部字型、JavaScript 或圖片，
+斷網仍可完整開啟；兩頁互相連結，來源網址維持可點擊，並保留 evidence ID 供追溯。
 
 ## 支援範圍與 fail closed
 

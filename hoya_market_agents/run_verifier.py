@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 from .report_contract import ReportContractError, validate_market_report
+from .report_audit_renderer import render_debate_html
 from .report_renderer import render_market_html, render_market_markdown
 from .seats import SEAT_IDS
 from .system_preflight import (
@@ -25,6 +26,7 @@ REQUIRED_ARTIFACTS = (
     "report.md",
     "report.html",
 )
+PRESENTATION_VERSION = "2.0.0"
 _FORBIDDEN_HTML_DEPENDENCIES = (
     re.compile(r"<script\b", re.IGNORECASE),
     re.compile(r"<link\b", re.IGNORECASE),
@@ -101,8 +103,22 @@ def verify_run(data_root, run_id):
     if not isinstance(artifact_index, dict):
         raise RunVerificationError("manifest 缺少 artifact index。")
 
+    provider_mode = manifest.get("provider_mode")
+    competition_ready = manifest.get("competition_ready") is True
+    declares_real = provider_mode == "real-subscription" or competition_ready
+    if declares_real and not (provider_mode == "real-subscription" and competition_ready):
+        raise RunVerificationError("real provider mode 與 competition_ready 必須同時成立。")
+    presentation_version = manifest.get("presentation_version")
+    if presentation_version not in (None, PRESENTATION_VERSION):
+        raise RunVerificationError("未知的報告 presentation_version。")
+    if declares_real and presentation_version != PRESENTATION_VERSION:
+        raise RunVerificationError("real competition run 必須提供可稽核雙頁報告。")
+    required_artifacts = list(REQUIRED_ARTIFACTS)
+    if presentation_version == PRESENTATION_VERSION:
+        required_artifacts.append("debate.html")
+
     digests = {}
-    for name in REQUIRED_ARTIFACTS:
+    for name in required_artifacts:
         path = run_dir / name
         _require_regular_file(path, run_dir)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -145,23 +161,34 @@ def verify_run(data_root, run_id):
         raise RunVerificationError("evidence/debate/votes 無法回查固定七席。")
     _verify_vote_table(votes, vote_records)
 
-    html = (run_dir / "report.html").read_text(encoding="utf-8")
-    if any(pattern.search(html) for pattern in _FORBIDDEN_HTML_DEPENDENCIES):
-        raise RunVerificationError("report.html 含 script 或外部 runtime dependency。")
-    if "<html" not in html.lower() or "@media print" not in html.lower():
-        raise RunVerificationError("report.html 缺少離線 HTML 或列印樣式。")
-
-    provider_mode = manifest.get("provider_mode")
-    competition_ready = manifest.get("competition_ready") is True
-    declares_real = provider_mode == "real-subscription" or competition_ready
-    if declares_real and not (provider_mode == "real-subscription" and competition_ready):
-        raise RunVerificationError("real provider mode 與 competition_ready 必須同時成立。")
+    html_names = ["report.html"]
+    if presentation_version == PRESENTATION_VERSION:
+        html_names.append("debate.html")
+    html_documents = {}
+    for html_name in html_names:
+        html = (run_dir / html_name).read_text(encoding="utf-8")
+        html_documents[html_name] = html
+        if any(pattern.search(html) for pattern in _FORBIDDEN_HTML_DEPENDENCIES):
+            raise RunVerificationError(
+                "{} 含 script 或外部 runtime dependency。".format(html_name)
+            )
+        if "<html" not in html.lower() or "@media print" not in html.lower():
+            raise RunVerificationError(
+                "{} 缺少離線 HTML 或列印樣式。".format(html_name)
+            )
+    if presentation_version == PRESENTATION_VERSION:
+        if 'href="debate.html"' not in html_documents["report.html"]:
+            raise RunVerificationError("report.html 缺少完整辯論室入口。")
+        if 'href="report.html"' not in html_documents["debate.html"]:
+            raise RunVerificationError("debate.html 缺少返回市場結論入口。")
 
     timeline = manifest.get("competition_timeline")
     if declares_real and not isinstance(timeline, dict):
         raise RunVerificationError("real competition run 缺少完整 timeline。")
     if timeline is not None:
-        _verify_report_lineage(run_dir, evidence, debate, votes)
+        _verify_report_lineage(
+            run_dir, evidence, debate, votes, presentation_version=presentation_version
+        )
         _verify_competition_timeline(run_dir, manifest, votes, timeline)
     operational_advisories = []
     if declares_real:
@@ -318,27 +345,36 @@ def _verify_stop_semantics(votes, stop_reason, stop_ms):
         raise RunVerificationError("辯論門檻、停止時間或採用立場與票數不一致。")
 
 
-def _verify_report_lineage(run_dir, evidence, debate, votes):
+def _verify_report_lineage(
+    run_dir, evidence, debate, votes, presentation_version=None
+):
     report_path = run_dir / "report.json"
     _require_regular_file(report_path, run_dir)
     report = _read_json(report_path)
+    sources = {
+        "evidence": evidence,
+        "debate": [entry for entry in debate if entry.get("seat_id")],
+        "votes": votes,
+    }
     try:
         validate_market_report(
             report,
-            {
-                "evidence": evidence,
-                "debate": [entry for entry in debate if entry.get("seat_id")],
-                "votes": votes,
-            },
+            sources,
         )
     except ReportContractError as exc:
         raise RunVerificationError("report.json 無法回查正式 artifacts：{}".format(exc)) from exc
     expected_markdown = render_market_markdown(report).encode("utf-8")
-    expected_html = render_market_html(report).encode("utf-8")
+    expected_html = render_market_html(
+        report, sources if presentation_version == PRESENTATION_VERSION else None
+    ).encode("utf-8")
     if (run_dir / "report.md").read_bytes() != expected_markdown:
         raise RunVerificationError("report.md 不是由正式 report.json 產生。")
     if (run_dir / "report.html").read_bytes() != expected_html:
         raise RunVerificationError("report.html 不是由正式 report.json 產生。")
+    if presentation_version == PRESENTATION_VERSION:
+        expected_debate_html = render_debate_html(report, sources).encode("utf-8")
+        if (run_dir / "debate.html").read_bytes() != expected_debate_html:
+            raise RunVerificationError("debate.html 不是由正式公開辯論 artifacts 產生。")
 
 
 def _verify_real_provider_lineage(data_root, manifest):

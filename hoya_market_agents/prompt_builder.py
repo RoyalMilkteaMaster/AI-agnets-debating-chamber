@@ -157,6 +157,13 @@ def _shared_section(scope, phase, evidence_snapshot, debate_snapshot, research_s
         "- Tier 2：可信資料聚合商／具名新聞機構。",
         "- Tier 3：社群／KOL／重要帳戶。",
         "",
+        "## 繁體中文公開輸出政策",
+        "- 所有 statement、credibility_note、public_reason 與 stance_change_reason "
+        "必須使用繁體中文。",
+        "- evidence_id、URL、資產代號與 contract enum 維持原格式，不得翻譯。",
+        "- excerpt 必須忠實保存來源原文或原始數值；來源是英文時不得改寫成中文冒充原文。",
+        "- 英文來源的繁體中文解讀寫在 statement，來源限制寫在 credibility_note。",
+        "",
         "## EvidenceCard 輸出 contract",
         "- 每張卡必須包含 evidence_id、run_id、seat_id、attempt_id、phase、"
         "created_at_utc、elapsed_ms。",

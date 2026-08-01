@@ -351,6 +351,7 @@ class RunStore:
             "run_dir": str(run.path),
             "report_md": str(run.path / "report.md"),
             "report_html": str(run.path / "report.html"),
+            "debate_html": str(run.path / "debate.html"),
         }
         target = self.runs_root / "latest.json"
         tmp = target.with_suffix(".json.tmp")

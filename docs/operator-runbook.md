@@ -123,18 +123,34 @@ $hoya-market-research 分析 BTC 過去 14 日市場狀態
 若仍為 `NOT_READY`，不得啟動正式計時 run；先展示 manifest 的 blocker。支援資產僅
 BTC、ETH、SOL、BNB、XRP。
 
-## 6. 驗證與開啟報告
+## 6. 即時觀看七席辯論
+
+先在一個 WSL 終端啟動唯讀直播；不指定 `--run-id` 時會選取 Data Root 中最新的 run：
+
+```bash
+# WSL
+python3 -m hoya_market_agents live --data-root "$DATA_ROOT" \
+  --host 127.0.0.1 --port 8765
+```
+
+在 Windows 瀏覽器開啟 `http://127.0.0.1:8765/`。賽前可在已完成的 drill 上用
+`http://127.0.0.1:8765/?replay=1&speed=20` 驗證票數與規則時間線。只允許使用 loopback；
+不要把 `--host` 改成區網位址。直播頁是唯讀觀察介面，正式稽核依據仍是 run artifacts。
+
+## 7. 驗證與開啟報告
 
 ```bash
 # WSL
 RUN_ID='<EXACT_RUN_ID>'
 python3 -m hoya_market_agents verify-run --run-id "$RUN_ID" --data-root "$DATA_ROOT"
 REPORT="$DATA_ROOT/runs/$RUN_ID/report.html"
+DEBATE="$DATA_ROOT/runs/$RUN_ID/debate.html"
 test -f "$REPORT"
+test -f "$DEBATE"
 explorer.exe "$(wslpath -w "$REPORT")"
 ```
 
-`verify-run` 必須 exit `0` 並輸出 `VERIFIED`。它會檢查六個必要 artifact、manifest hash
+`verify-run` 必須 exit `0` 並輸出 `VERIFIED`。它會檢查必要 artifact、manifest hash
 index、七席 lineage、T+4:45、T+5、辯論停止、T+13 與離線 HTML。
 任何宣稱 `real-subscription`／`competition_ready=true` 的 run 還必須包含完整 timeline、
 report.json 同源驗證、七席 target/actual provider/model，以及可回查且 hash 相符的 real
@@ -156,7 +172,7 @@ messages 與 votes attempt_ids。structured output 必須可解析，canonical n
 provider 官方簽章。缺少可信 provider/runtime attestation 時，驗證結果保留
 `provider_runtime_attestation` advisory，但可依完整 operational evidence 通過。
 
-## 7. 精確 Run ID 清理（只由 operator 執行）
+## 8. 精確 Run ID 清理（只由 operator 執行）
 
 系統不會自動刪除任何 run。先指定完整 Run ID 並確認路徑仍位於 Data Root：
 

@@ -126,6 +126,9 @@ is Core-only audit metadata and must not grant the seat filesystem access.
 
 ## During the run
 
+- 所有 Agent 公開分析、反駁、改票原因與 Core 報告文字使用繁體中文；
+  evidence ID、URL、資產代號、contract enum 與來源原文維持原始格式。
+  英文來源必須另寫繁體中文 `statement`，但不得把翻譯冒充 `excerpt` 原文。
 - Continuation messages to a persistent thread carry only public fields:
   `claim_id`, `evidence_ids`, `stance`, `public_reason`, `responds_to` and
   `stance_change_reason`. Never request, accept or store hidden

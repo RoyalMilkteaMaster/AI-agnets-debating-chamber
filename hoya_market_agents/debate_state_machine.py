@@ -665,6 +665,7 @@ class DebateStateMachine:
         ).hexdigest()
         entry["public_history_sha256"] = self.public_history_sha256
         self.entries.append(entry)
+        self.run.append_event(entry)
         return entry
 
     def verify_public_history(self):

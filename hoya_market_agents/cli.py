@@ -29,8 +29,10 @@ from .codex_bridge import (
     verify_codex_preflight,
 )
 from .fake_provider import FakeProvider
+from .live_dashboard import create_live_server
 from .question import UnsupportedQuestionError
 from .report_contract import ReportContractError, canonical_sha256, validate_market_report
+from .report_audit_renderer import render_debate_html
 from .report_fixtures import FIXTURE_CASES, load_fixture
 from .report_renderer import render_market_html, render_market_markdown
 from .report_workflow import build_red_audit_report
@@ -149,6 +151,11 @@ def build_parser():
     verify = subcommands.add_parser("verify-run", help="唯讀驗證一個完整 run artifact bundle")
     verify.add_argument("--run-id", required=True)
     verify.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    live = subcommands.add_parser("live", help="啟動唯讀的即時 Agent 辯論儀表板")
+    live.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    live.add_argument("--run-id", help="指定 run_id；省略時監看最新建立的 run 目錄")
+    live.add_argument("--host", choices=("127.0.0.1", "localhost"), default="127.0.0.1")
+    live.add_argument("--port", type=int, default=8765)
     return parser
 
 
@@ -168,6 +175,8 @@ def main(argv=None, stdout=None, stderr=None):
         return _verify_run(args, out, err)
     if args.command == "drill":
         return _drill(args, out, err)
+    if args.command == "live":
+        return _live(args, out, err)
 
     data_root = Path(args.data_root)
     controller = RunController(
@@ -595,8 +604,15 @@ def _apply_local_observations(checks, artifact_root):
         fixture = load_fixture("consensus-6-1")
         report = validate_market_report(fixture["report"], fixture["sources"])
         markdown = render_market_markdown(report)
-        html = render_market_html(report)
-        renderer_ok = bool(markdown and "@media print" in html and "<script" not in html.lower() and "<link" not in html.lower())
+        html = render_market_html(report, fixture["sources"])
+        debate_html = render_debate_html(report, fixture["sources"])
+        renderer_ok = bool(
+            markdown
+            and "@media print" in html
+            and "@media print" in debate_html
+            and "<script" not in (html + debate_html).lower()
+            and "<link" not in (html + debate_html).lower()
+        )
     except Exception as exc:
         _set_check(checks, "renderer", False, "failed", type(exc).__name__)
     else:
@@ -605,9 +621,10 @@ def _apply_local_observations(checks, artifact_root):
             "renderer",
             renderer_ok,
             "offline render ok" if renderer_ok else "invalid render",
-            "md_sha256={} html_sha256={}".format(
+            "md_sha256={} html_sha256={} debate_html_sha256={}".format(
                 hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
                 hashlib.sha256(html.encode("utf-8")).hexdigest(),
+                hashlib.sha256(debate_html.encode("utf-8")).hexdigest(),
             ),
         )
 
@@ -823,11 +840,36 @@ def _report_result(result, out):
         "Run 目錄：{}".format(result.run_dir),
         "報告（Markdown）：{}".format(result.run_dir / "report.md"),
         "報告（HTML）：{}".format(result.run_dir / "report.html"),
+        "完整辯論（HTML）：{}".format(result.run_dir / "debate.html"),
         "票數：{}".format(tally),
         "七席立場：",
     ]
     lines += ["  - {}：{}".format(seat_id, stance) for seat_id, stance in result.seat_stances.items()]
     print("\n".join(lines), file=out)
+
+
+def _live(args, out, err):
+    if not 1 <= args.port <= 65535:
+        print("啟動失敗：port 必須介於 1 到 65535。", file=err)
+        return EXIT_REJECTED
+    try:
+        server = create_live_server(
+            Path(args.data_root), run_id=args.run_id, host=args.host, port=args.port
+        )
+    except OSError as exc:
+        print("啟動失敗：{}".format(exc), file=err)
+        return EXIT_FAILED
+    url = "http://{}:{}/".format(args.host, server.server_address[1])
+    print("即時 Agent 辯論室：{}".format(url), file=out)
+    print("演練重播：{}?replay=1&speed=20".format(url), file=out)
+    print("按 Ctrl+C 停止唯讀儀表板。", file=out)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("即時儀表板已停止。", file=out)
+    finally:
+        server.server_close()
+    return EXIT_OK
 
 
 def _render_fixture(args, out, err):
@@ -851,7 +893,8 @@ def _render_fixture(args, out, err):
     rendered = {
         "report.json": json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         "report.md": render_market_markdown(report),
-        "report.html": render_market_html(report),
+        "report.html": render_market_html(report, fixture["sources"]),
+        "debate.html": render_debate_html(report, fixture["sources"]),
     }
     for name, content in rendered.items():
         (output_dir / name).write_text(content, encoding="utf-8")

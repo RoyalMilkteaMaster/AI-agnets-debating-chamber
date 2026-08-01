@@ -216,6 +216,26 @@ class DebateHarness:
 
 
 class DebateStateMachineTest(unittest.TestCase):
+    def test_public_debate_messages_are_appended_to_live_event_stream(self):
+        harness = DebateHarness(self)
+        message = harness.message(
+            SEAT_IDS[0],
+            "position",
+            "position",
+            stance="bullish",
+            round=0,
+        )
+
+        harness.machine.relay(message)
+
+        events = [
+            json.loads(line)
+            for line in (harness.run.path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual("debate_opened", events[0]["event"])
+        self.assertEqual("seat_message", events[-1]["event"])
+        self.assertEqual(SEAT_IDS[0], events[-1]["seat_id"])
+
     def test_scripted_gateway_runs_without_sleep_and_persists_consensus(self):
         harness = DebateHarness(self)
         stances = ["bullish"] * 6 + ["bearish"]

@@ -162,8 +162,10 @@ hoya-bit-market-agents\
 │  └─ counter-evidence\
 ├─ evidence.jsonl
 ├─ debate.jsonl
+├─ events.jsonl
 ├─ votes.jsonl
 ├─ report.html
+├─ debate.html
 └─ report.md
 ```
 
@@ -174,6 +176,15 @@ hoya-bit-market-agents\
 - `T+5:00` 產生不可修改的證據快照。
 - 已被引用的證據不得覆寫；修正必須新增更正紀錄並指向原證據 ID。
 - 共享快照與 Agent 發言保存內容雜湊，以證明 Core 未改寫原文。
+
+### 4.0.1 即時可視化邊界
+
+- `events.jsonl` 只追加七席已發布的公開事件，直播頁不得顯示模型隱藏思考過程。
+- Python 標準函式庫 HTTP server 只監聽 `127.0.0.1`；前端以 SSE 長連線非同步接收公開事件。
+- 新發言、改票與規則切換才由伺服器推送；倒數由瀏覽器本地更新，不使用固定間隔 HTTP 輪詢。
+- 直播頁顯示票數變化、倒數、當前門檻、Agent 公開理由與 evidence ID，不參與投票或報告判斷。
+- `report.html` 與 `debate.html` 是正式稽核 artifact，維持無 JavaScript、無 CDN、可離線列印。
+- 直播故障不得破壞研究流程；run artifact 仍是唯一事實來源。
 
 檔案名稱與子目錄仍可在 Schema 與 CLI contract 核准時微調；寫入所有權及不可變原則不可自行更改。
 
@@ -339,6 +350,7 @@ Core Agent 撰寫結構化 report.json
 HTML 呈現邊界：
 
 - `report.html` 是單一、自包含檔案；CSS 內嵌，不依賴 CDN、外部字型、JavaScript 或前端框架。
+- `debate.html` 完整保留七席公開發言、改票與 evidence ID，並與 `report.html` 雙向連結。
 - 第一個畫面只顯示市場狀態、分析期間、信心燈號與文字、票數、判斷及失效條件。
 - 支持／反方證據、每席理由、改票、替補與限制放在下方詳細區段。
 - 報告斷網時仍可完整開啟；來源網址維持可點擊。

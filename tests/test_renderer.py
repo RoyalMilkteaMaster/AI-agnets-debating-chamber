@@ -23,6 +23,12 @@ def _validated(case="consensus-6-1"):
     return validate_market_report(fixture["report"], fixture["sources"])
 
 
+def _validated_bundle(case="consensus-6-1"):
+    fixture = load_fixture(case)
+    fixture["report"] = validate_market_report(fixture["report"], fixture["sources"])
+    return fixture
+
+
 class FieldParityTests(unittest.TestCase):
     def setUp(self):
         self.report = _validated()
@@ -45,8 +51,9 @@ class FieldParityTests(unittest.TestCase):
                 self.assertIn(value, self.html)
 
     def test_full_tally_appears_in_both_renderings(self):
+        labels = {"bullish": "偏多", "bearish": "偏空", "neutral": "方向不明"}
         for stance, count in self.report["tally"].items():
-            entry = "{}：{}".format(stance, count)
+            entry = "{}：{}".format(labels[stance], count)
             self.assertIn(entry, self.markdown)
             self.assertIn(entry, self.html)
 
@@ -72,7 +79,7 @@ class FieldParityTests(unittest.TestCase):
     def test_no_consensus_rendering_states_the_absence_of_direction(self):
         report = _validated("no-consensus-3-3-1")
         for text in (render_market_markdown(report), render_market_html(report)):
-            self.assertIn(report["consensus_status"], text)
+            self.assertIn("未達共識", text)
             self.assertIn("無方向", text)
 
 
@@ -92,7 +99,10 @@ class HtmlSafetyTests(unittest.TestCase):
         hrefs = re.findall(r'href="([^"]+)"', self.html)
         allowed = {card["url"] for card in self.report["evidence"]}
         for href in hrefs:
-            self.assertIn(href, allowed)
+            if href.startswith("https://"):
+                self.assertIn(href, allowed)
+            else:
+                self.assertTrue(href == "debate.html" or href.startswith("#evidence-"), href)
 
     def test_styles_are_inline_in_a_single_file(self):
         self.assertIn("<style>", self.html)
@@ -120,8 +130,9 @@ class HtmlSafetyTests(unittest.TestCase):
         self.assertIn(self.report["period"]["label"], first_screen)
         self.assertIn(self.report["confidence"]["text"], first_screen)
         self.assertIn(self.report["judgement"], first_screen)
+        labels = {"bullish": "偏多", "bearish": "偏空", "neutral": "方向不明"}
         for stance, count in self.report["tally"].items():
-            self.assertIn("{}：{}".format(stance, count), first_screen)
+            self.assertIn("{}：{}".format(labels[stance], count), first_screen)
         for condition in self.report["invalidation_conditions"]:
             self.assertIn(condition, first_screen)
 
@@ -143,8 +154,45 @@ class HtmlSafetyTests(unittest.TestCase):
         self.assertEqual(source.count("_MARKET_CSS ="), 1)
 
 
+class TraditionalChineseAuditViewTests(unittest.TestCase):
+    def setUp(self):
+        self.bundle = _validated_bundle()
+        self.report = self.bundle["report"]
+        self.sources = self.bundle["sources"]
+        self.html = render_market_html(self.report, self.sources)
+
+    def test_first_page_links_to_the_complete_debate_room(self):
+        self.assertIn('href="debate.html"', self.html)
+        self.assertIn("查看完整辯論與證據", self.html)
+
+    def test_seat_and_stance_labels_are_traditional_chinese(self):
+        self.assertIn("現貨技術席", self.html)
+        self.assertIn("衍生品席", self.html)
+        self.assertIn("偏多：6", self.html)
+        self.assertIn("偏空：1", self.html)
+        self.assertNotIn("bullish：", self.html)
+        self.assertNotIn("bearish：", self.html)
+
+    def test_each_seat_row_expands_verifiable_source_details(self):
+        for card in self.sources["evidence"]:
+            with self.subTest(evidence_id=card["evidence_id"]):
+                self.assertIn(card["evidence_id"], self.html)
+                self.assertIn(card["source_origin"], self.html)
+                self.assertIn(card["published_at_utc"], self.html)
+                self.assertIn(card["retrieved_at_utc"], self.html)
+                self.assertIn(card["excerpt"], self.html)
+                self.assertIn(card["credibility_note"], self.html)
+        self.assertIn("第一級：官方或原始資料", self.html)
+
+    def test_evidence_ids_link_to_detailed_cards(self):
+        for card in self.sources["evidence"]:
+            evidence_id = card["evidence_id"]
+            self.assertIn('href="#evidence-{}"'.format(evidence_id), self.html)
+            self.assertIn('id="evidence-{}"'.format(evidence_id), self.html)
+
+
 class RenderFixtureCommandTests(unittest.TestCase):
-    def test_command_writes_report_json_markdown_html_and_audit(self):
+    def test_command_writes_report_json_markdown_html_debate_and_audit(self):
         with tempfile.TemporaryDirectory() as tmp:
             code = main(["render-fixture", "--case", "consensus-6-1", "--output-dir", tmp])
             self.assertEqual(code, 0)
@@ -153,10 +201,13 @@ class RenderFixtureCommandTests(unittest.TestCase):
             self.assertEqual(report["consensus_status"], "consensus")
             self.assertIn(report["market_status"], (out / "report.md").read_text(encoding="utf-8"))
             self.assertIn(report["market_status"], (out / "report.html").read_text(encoding="utf-8"))
+            debate_html = (out / "debate.html").read_text(encoding="utf-8")
+            self.assertIn("完整辯論室", debate_html)
+            self.assertIn('href="report.html"', debate_html)
             audit = json.loads((out / "audit.json").read_text(encoding="utf-8"))
             self.assertEqual(audit["case"], "consensus-6-1")
             self.assertEqual(audit["status"], "accepted")
-            for name in ("report.json", "report.md", "report.html"):
+            for name in ("report.json", "report.md", "report.html", "debate.html"):
                 self.assertRegex(audit["hash_lineage"][name], r"^[0-9a-f]{64}$")
             self.assertRegex(audit["hash_lineage"]["sources"], r"^[0-9a-f]{64}$")
 
@@ -164,7 +215,7 @@ class RenderFixtureCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             main(["render-fixture", "--case", "consensus-6-1", "--output-dir", first])
             main(["render-fixture", "--case", "consensus-6-1", "--output-dir", second])
-            for name in ("report.json", "report.md", "report.html"):
+            for name in ("report.json", "report.md", "report.html", "debate.html"):
                 self.assertEqual(
                     (Path(first) / name).read_text(encoding="utf-8"),
                     (Path(second) / name).read_text(encoding="utf-8"),

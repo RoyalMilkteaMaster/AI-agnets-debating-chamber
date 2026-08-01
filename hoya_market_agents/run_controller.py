@@ -26,6 +26,7 @@ from .prompt_builder import build_seat_prompt, load_research_snapshot
 from .provider_gateway import ProviderGateway
 from .question import UnsupportedQuestionError, analyze_question
 from .report_renderer import build_report, render_html, render_markdown
+from .report_audit_renderer import render_debate_html
 from .run_store import default_token, new_run_id
 from .seats import SEAT_IDS, load_roster
 
@@ -202,6 +203,13 @@ class RunController:
         run.write_json("report.json", report)
         run.write_text("report.md", render_markdown(report))
         run.write_text("report.html", render_html(report))
+        run.write_text(
+            "debate.html",
+            render_debate_html(
+                report,
+                {"evidence": evidence, "debate": debate, "votes": {"votes": votes}},
+            ),
+        )
         return report
 
     def _write_manifest(

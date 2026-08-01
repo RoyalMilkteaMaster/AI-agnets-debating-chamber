@@ -10,6 +10,7 @@ from .clock import iso_utc
 from .contract_validator import CONTRACT_VERSION, validate_evidence_card
 from .debate_state_machine import DebateStateMachine
 from .question import UnsupportedQuestionError, analyze_question
+from .report_audit_renderer import render_debate_html
 from .report_fixtures import load_fixture
 from .report_renderer import render_market_html, render_market_markdown
 from .report_workflow import run_report_workflow
@@ -185,7 +186,8 @@ def run_fake_competition_drill(*, data_root, question, token):
         clock.advance(10_000)
         return {
             "markdown": render_market_markdown(report),
-            "html": render_market_html(report),
+            "html": render_market_html(report, sources),
+            "debate_html": render_debate_html(report, sources),
         }
 
     outcome = run_report_workflow(
@@ -200,6 +202,9 @@ def run_fake_competition_drill(*, data_root, question, token):
     run.write_json("report.json", outcome.report, source="fake Core authored report")
     run.write_text("report.md", outcome.rendered["markdown"], source="validated report")
     run.write_text("report.html", outcome.rendered["html"], source="validated report")
+    run.write_text(
+        "debate.html", outcome.rendered["debate_html"], source="validated public debate"
+    )
 
     timeline = {
         "all_seats_dispatched_at_ms": 0,
@@ -217,6 +222,7 @@ def run_fake_competition_drill(*, data_root, question, token):
         "run_id": run_id,
         "provider_mode": "fake-competition-drill",
         "competition_ready": False,
+        "presentation_version": "2.0.0",
         "question": question,
         "assets": ["BTC"],
         "period_days": scope.period_days,
@@ -258,15 +264,15 @@ def _evidence(run_id, seat_id, attempt_id, clock):
         "elapsed_ms": clock.monotonic_ms(),
         "asset": "BTC",
         "category": seat_id,
-        "statement": "{} 的固定 fake drill 證據。".format(seat_id),
+        "statement": "本席提交的固定流程演練證據。",
         "direction": "oppose" if seat_id == "counter-evidence" else "support",
         "source_url": "https://fake.invalid/{}/1".format(seat_id),
         "source_origin": "fake-source:{}".format(seat_id),
         "source_tier": 1 if index < 4 else 2,
         "published_at_utc": iso_utc(DRILL_START_UTC - timedelta(hours=1)),
         "retrieved_at_utc": retrieved,
-        "excerpt": "fixture numeric value {}".format(index + 1),
-        "credibility_note": "deterministic fixture; not real market evidence",
+        "excerpt": "固定測試數值 {}，僅用於驗證報告呈現。".format(index + 1),
+        "credibility_note": "固定測試資料，不是真實市場證據。",
     }
 
 
@@ -280,7 +286,7 @@ def _message(seat_id, kind, suffix, stance, snapshot_sha, **overrides):
         "round": 1,
         "evidence_snapshot_sha256": snapshot_sha,
         "evidence_ids": ["{}-01".format(seat_id)],
-        "public_reason": "{} 的公開 fake drill 理由。".format(seat_id),
+        "public_reason": "本席依據已引用的示範證據維持目前立場；本內容僅用於流程演練。",
         "stance": stance,
         "stance_change_reason": None,
     }
@@ -356,8 +362,8 @@ def _core_report(run_id, sources, clock):
         consensus_status=sources["votes"]["consensus_status"],
         adopted_stance=sources["votes"]["adopted_stance"],
         limitations=[
-            "本資料為固定 fake drill，不代表真實市場。",
-            "票數代表 Agent 共識，不代表客觀真理。",
+            "本資料為固定流程演練，不代表真實市場。",
+            "票數代表七席代理人的共識，不代表客觀真理。",
         ],
     )
     report["period"] = {

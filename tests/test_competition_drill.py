@@ -38,7 +38,7 @@ class CompetitionDrillTest(unittest.TestCase):
             180_000,
         )
 
-    def test_drill_preserves_all_votes_dissent_and_six_required_artifacts(self):
+    def test_drill_preserves_votes_dissent_and_two_page_audit_report(self):
         result = run_fake_competition_drill(
             data_root=self.data_root,
             question="分析 BTC 過去 14 日市場狀態",
@@ -50,8 +50,20 @@ class CompetitionDrillTest(unittest.TestCase):
         self.assertEqual(6, votes["tally"]["bullish"])
         self.assertEqual(1, votes["tally"]["bearish"])
         self.assertEqual("counter-evidence", votes["dissent"][0]["seat_id"])
-        for name in ("manifest.json", "evidence.jsonl", "debate.jsonl", "votes.json", "report.md", "report.html"):
+        for name in (
+            "manifest.json",
+            "evidence.jsonl",
+            "debate.jsonl",
+            "votes.json",
+            "report.md",
+            "report.html",
+            "debate.html",
+        ):
             self.assertTrue((result.run_dir / name).is_file(), name)
+        report_html = (result.run_dir / "report.html").read_text(encoding="utf-8")
+        debate_html = (result.run_dir / "debate.html").read_text(encoding="utf-8")
+        self.assertIn('href="debate.html"', report_html)
+        self.assertIn('href="report.html"', debate_html)
         self.assertEqual("VERIFIED", verify_run(self.data_root, result.run_id)["status"])
 
     def test_drill_is_explicitly_fake_and_cannot_be_live_readiness_evidence(self):
@@ -64,6 +76,7 @@ class CompetitionDrillTest(unittest.TestCase):
 
         self.assertEqual("fake-competition-drill", manifest["provider_mode"])
         self.assertFalse(manifest["competition_ready"])
+        self.assertEqual("2.0.0", manifest["presentation_version"])
         self.assertIn("不得作為真實市場或訂閱 provider READY 證據", manifest["limitations"])
 
     def test_fake_manifest_cannot_be_promoted_to_real_by_flag_edits(self):
