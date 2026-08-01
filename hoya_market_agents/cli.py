@@ -17,6 +17,12 @@ from pathlib import Path
 
 from .antigravity_adapter import AntigravityAdapter, AntigravityError
 from .claude_adapter import run_claude_preflight
+from .codex_bridge import (
+    CodexBridgeError,
+    STATUS_NOT_READY,
+    TARGET_MODEL,
+    verify_codex_preflight,
+)
 from .fake_provider import FakeProvider
 from .question import UnsupportedQuestionError
 from .run_controller import RunController
@@ -65,6 +71,23 @@ def build_parser():
         default=str(DEFAULT_DATA_ROOT),
         help="preflight session、schema、log 與 raw envelope 的 Data Root",
     )
+
+    preflight = subcommands.add_parser(
+        "verify-preflight",
+        help="驗證 Core 已寫入的 provider 賽前產物；不會啟動任何 agent",
+    )
+    preflight.add_argument(
+        "--provider",
+        required=True,
+        choices=("codex",),
+        help="要驗證的 provider bridge；本版本只支援 codex。",
+    )
+    preflight.add_argument("--run-id", required=True, help="要驗證的 run_id")
+    preflight.add_argument(
+        "--data-root",
+        default=str(DEFAULT_DATA_ROOT),
+        help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
+    )
     return parser
 
 
@@ -76,6 +99,8 @@ def main(argv=None, stdout=None, stderr=None):
 
     if args.command == "preflight":
         return _preflight(args, out, err)
+    if args.command == "verify-preflight":
+        return _verify_preflight(args, out, err)
 
     data_root = Path(args.data_root)
     controller = RunController(
@@ -141,6 +166,33 @@ def _preflight(args, out, err):
         "schema_sha256": result.schema_sha256,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2), file=out)
+    return EXIT_OK
+
+
+def _verify_preflight(args, out, err):
+    """Read an already-written handoff artifact and report READY / NOT_READY."""
+    try:
+        payload = verify_codex_preflight(Path(args.data_root), args.run_id)
+    except CodexBridgeError as exc:
+        print("{}：{}".format(STATUS_NOT_READY, exc), file=err)
+        return EXIT_FAILED
+
+    lines = [
+        "Provider：{}".format(args.provider),
+        "Run ID：{}".format(payload["run_id"]),
+        "狀態：{}".format(payload["status"]),
+        "Core 模型：{}".format(payload["core"]["model"]),
+        "目標模型：{}".format(TARGET_MODEL),
+        "共享 prompt SHA-256：{}".format(payload["shared_prompt_sha256"]),
+        "固定 GPT 席位：",
+    ]
+    lines += [
+        "  - {}：thread={} model={}".format(
+            seat["seat_id"], seat["thread_id"], seat["actual_model"]
+        )
+        for seat in payload["seats"]
+    ]
+    print("\n".join(lines), file=out)
     return EXIT_OK
 
 
