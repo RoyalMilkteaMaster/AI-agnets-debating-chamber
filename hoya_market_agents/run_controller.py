@@ -5,9 +5,9 @@ only into its own directory, and merges the shared artifacts as the single
 writer. It never judges market direction: the tally it computes is arithmetic
 over the seats' own votes.
 
-Ticket #2 covers the fake happy path only. Deadline enforcement, retries,
-replacements, format repair and the absolute 6/5/4 consensus thresholds arrive
-with their own tickets; the limits are recorded in every manifest.
+This fake tracer path stays straight-through. Ticket #5 provides the separate
+research deadline state machine for the later real-provider adapters; the
+absolute 6/5/4 debate thresholds remain a later ticket.
 """
 
 import json
@@ -34,8 +34,8 @@ DEBATE_ROUND = 1
 
 SCOPE_LIMITS = (
     "本次執行使用 fake provider，內容為離線示範資料，不得作為市場依據。",
-    "尚未實作時間關卡（T+5／7／9／10／13）與強制停止。",
-    "尚未實作重試、替補與 Format Repair Agent。",
+    "本 fake tracer path 尚未接上 Ticket #5 的研究時間狀態機。",
+    "本 fake tracer path 不模擬重試、替補或 Format Repair Agent。",
     "尚未實作絕對 6／5／4 共識門檻與信心燈號；votes.json 只記錄實際票數。",
     "尚未實作兩幣比較與事件影響的投票詞彙；只支援單一資產／整體立場。",
 )

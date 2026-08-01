@@ -44,6 +44,16 @@ class FormatRepairSemanticChangeError(RunStoreError):
     """Raised when a format-only repair changes decoded content."""
 
 
+def validate_format_only_change(before_text, after_text):
+    """Return whether two JSON texts differ only in tolerated formatting."""
+    try:
+        before_value = _load_json_with_trailing_comma_repair(before_text)
+        after_value = json.loads(after_text)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return _typed_json(before_value) == _typed_json(after_value)
+
+
 def default_token():
     """Return the short random component of a run id."""
     return secrets.token_hex(_TOKEN_BYTES)
@@ -214,14 +224,7 @@ class RunDirectory:
             raise FormatRepairSemanticChangeError(
                 "before_text 與 source attempt raw output 不一致；fail closed。"
             )
-        try:
-            before_value = _load_json_with_trailing_comma_repair(before_text)
-            after_value = json.loads(after_text)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise FormatRepairSemanticChangeError(
-                "無法解碼 before/after；不能證明只修改格式。"
-            ) from exc
-        if _typed_json(before_value) != _typed_json(after_value):
+        if not validate_format_only_change(before_text, after_text):
             raise FormatRepairSemanticChangeError("Format Repair 改變市場語意；fail closed。")
 
         record_name = "diagnostics/format-repairs/{}.json".format(repair_id)
