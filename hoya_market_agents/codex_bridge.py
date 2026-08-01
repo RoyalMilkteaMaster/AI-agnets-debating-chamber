@@ -27,6 +27,7 @@ from .seats import CODE_ROOT, load_roster
 CODEX_SEAT_IDS = ("spot-technical", "derivatives", "onchain")
 CORE_ROLE = "core"
 TARGET_MODEL = "gpt-5.6-sol"
+REQUIRED_SKILLS = ("research",)
 STATUS_READY = "READY"
 STATUS_NOT_READY = "NOT READY"
 HANDOFF_PATH = "preflight/codex-handoff.json"
@@ -54,7 +55,7 @@ _RUNTIME_POLICY_RECEIPT_FIELDS = frozenset(
     {"receipt_id", "dispatch_id", "tool_policy_sha256"}
 )
 SEAT_TOOL_POLICY = MappingProxyType({
-    "allowed_tools": [],
+    "allowed_tools": ["web_search"],
     "filesystem_access": False,
     "secret_access": False,
     "response_mode": "public_structured_response_only",
@@ -120,7 +121,8 @@ _PUBLIC_CHECKPOINT_FIELDS = frozenset(
 
 CONTRACT_TEXT = """Codex public handoff v1
 - raw seat output is write-once UTF-8 and must be forwarded byte-for-byte
-- seats receive no filesystem or secret tools and only return public structured data
+- seats may use web_search, receive no filesystem or secret tools, and only return public structured data
+- every seat must follow the pinned research skill embedded in the shared prompt
 - Core must not summarize, change market meaning, choose a side, or change a vote
 - debate continuation contains only claim_id, evidence_ids, stance,
   public_reason, responds_to, and stance_change_reason
@@ -206,6 +208,7 @@ def build_codex_handoff(
                     metadata["runtime_policy_receipt"]
                 ),
                 "tool_policy_sha256": dispatch_policy_hash,
+                "required_skills": list(REQUIRED_SKILLS),
                 "output_path": "agents/{}/attempts/{}".format(
                     seat.seat_id, attempt_id
                 ),
@@ -233,6 +236,7 @@ def build_codex_handoff(
             "git_blob_sha": research.git_blob_sha,
             "sha256": research.sha256,
         },
+        "required_skills": list(REQUIRED_SKILLS),
         "shared_prompt": shared_prompt,
         "shared_prompt_sha256": shared_hash,
         "contract_text": CONTRACT_TEXT,
@@ -493,7 +497,9 @@ def _validate_threads(threads):
             raise PreflightNotReadyError("{} dispatch_id 未確認。".format(seat_id))
         dispatch_ids.append(metadata["dispatch_id"])
         if metadata.get("tool_policy") != dict(SEAT_TOOL_POLICY):
-            raise PreflightNotReadyError("{} 未證明 no-tool dispatch policy。".format(seat_id))
+            raise PreflightNotReadyError(
+                "{} 未證明受控 web_search dispatch policy。".format(seat_id)
+            )
         if metadata.get("tool_policy_confirmed") is not True:
             raise PreflightNotReadyError("{} tool policy 未由 runtime 確認。".format(seat_id))
         receipt = metadata.get("runtime_policy_receipt")
@@ -516,7 +522,7 @@ def _validate_threads(threads):
             )
         if receipt.get("tool_policy_sha256") != expected_policy_sha256:
             raise PreflightNotReadyError(
-                "{} runtime receipt 未綁定 no-tool policy。".format(seat_id)
+                "{} runtime receipt 未綁定受控 web_search policy。".format(seat_id)
             )
     if len(set(thread_ids)) != len(CODEX_SEAT_IDS):
         raise PreflightNotReadyError("三個 GPT 席必須使用不同 persistent threads。")

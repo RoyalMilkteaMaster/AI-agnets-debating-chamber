@@ -19,7 +19,7 @@ unit test can substitute for it, and no unit test in this repo has performed it.
    unsupported question type stops the run before any thread is opened.
 5. **Data Root** — confirm the Data Root is a directory separate from the Code
    Root, and that the run directory exists.
-6. **Dispatch policy** — use runtime-enforced `allowed_tools=[]`, no filesystem
+6. **Dispatch policy** — use runtime-enforced `allowed_tools=["web_search"]`, no filesystem
    or secret access, and public-structured-response-only mode. Record the
    runtime dispatch ID and receipt. Require unique dispatch and receipt IDs per
    seat, and require every receipt to bind its dispatch ID and exact policy
@@ -48,13 +48,13 @@ unit test can substitute for it, and no unit test in this repo has performed it.
     ```
 
     Current subscription CLIs lack independently verifiable provider/runtime
-    attestation, so require the exact `provider_runtime_attestation` blocker,
-    `provider_capabilities_ready=false`, and no competition authorization.
-    Local JSON, hashes and local signatures prove integrity, not provider
-    authenticity. Stop before real dispatch.
+    attestation. Require the exact `provider_runtime_attestation` advisory and
+    disclose that local hashes prove integrity, not provider authenticity. The
+    advisory does not block operational authorization when all capability
+    checks pass.
 12. **Search receipt gate** — require live receipts for three independent GPT
-    search executions in the authorized run. The current no-tool Codex handoff
-    does not prove this. Do not substitute a prompt claim, fixture, fake
+    search executions in the authorized run. The Codex preflight only proves
+    that `web_search` is allowed; it does not prove a completed search. Do not substitute a prompt claim, fixture, fake
     receipt, different model or fewer seats.
 13. **Live drill and launch** — require a verifier-passing drill marked
     `provider_mode=real-subscription` and `competition_ready=true`. A fake drill

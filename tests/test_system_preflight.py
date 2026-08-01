@@ -55,17 +55,28 @@ class FrozenRosterTest(unittest.TestCase):
             set(CLAUDE_SEAT_SESSIONS),
             {seat["seat_id"] for seat in roster["seats"] if seat["provider"] == "claude"},
         )
+        codex_seats = [seat for seat in roster["seats"] if seat["provider"] == "codex"]
+        self.assertTrue(codex_seats)
+        self.assertTrue(
+            all(seat["allowed_tools"] == ["web_search"] for seat in codex_seats)
+        )
+        self.assertTrue(
+            all(seat["required_skills"] == ["research"] for seat in roster["seats"])
+        )
 
     def test_roster_rejects_provider_or_tool_policy_drift(self):
         roster = load_frozen_roster()
-        for mutation in ("provider", "tools"):
+        for mutation in ("provider", "tools", "skills"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 changed = deepcopy(roster)
                 if mutation == "provider":
                     changed["seats"][0]["provider"] = "claude"
                     changed["seats"][3]["provider"] = "codex"
                 else:
-                    changed["seats"][0]["allowed_tools"] = ["WebSearch"]
+                    if mutation == "tools":
+                        changed["seats"][0]["allowed_tools"] = []
+                    else:
+                        changed["seats"][0]["required_skills"] = []
                 path = Path(temporary) / "roster.json"
                 path.write_text(json.dumps(changed), encoding="utf-8")
 
@@ -132,7 +143,7 @@ class SystemPreflightManifestTest(unittest.TestCase):
             manifest["blockers"],
         )
 
-    def test_unavailable_provider_attestation_blocks_capability_and_ready(self):
+    def test_unavailable_provider_attestation_is_advisory_not_a_ready_blocker(self):
         checks = passing_checks()
         next(
             item
@@ -142,9 +153,12 @@ class SystemPreflightManifestTest(unittest.TestCase):
 
         manifest = self.build(checks)
 
-        self.assertFalse(manifest["provider_capabilities_ready"])
-        self.assertFalse(manifest["ready"])
-        self.assertIn("provider_runtime_attestation", manifest["blockers"])
+        self.assertTrue(manifest["provider_capabilities_ready"])
+        self.assertTrue(manifest["ready"])
+        self.assertNotIn("provider_runtime_attestation", manifest["blockers"])
+        self.assertEqual(
+            ["provider_runtime_attestation"], manifest["advisories"]
+        )
 
     def test_missing_required_check_fails_closed(self):
         manifest = self.build(passing_checks()[:-1])

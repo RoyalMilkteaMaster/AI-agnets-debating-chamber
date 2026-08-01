@@ -284,10 +284,15 @@ class CodexHandoffTest(unittest.TestCase):
         self.assertEqual(SEAT_TOOL_POLICY, payload["dispatch_tool_policy"])
         self.assertRegex(payload["dispatch_tool_policy_sha256"], r"^[0-9a-f]{64}$")
         for seat in payload["seats"]:
-            self.assertEqual([], seat["tool_policy"]["allowed_tools"])
+            self.assertEqual(["web_search"], seat["tool_policy"]["allowed_tools"])
             self.assertFalse(seat["tool_policy"]["filesystem_access"])
             self.assertFalse(seat["tool_policy"]["secret_access"])
             self.assertTrue(seat["tool_policy_confirmed"])
+            self.assertEqual(["research"], seat["required_skills"])
+            self.assertEqual(
+                payload["research_snapshot"]["sha256"],
+                seat["research_snapshot_sha256"],
+            )
             self.assertEqual(
                 seat["dispatch_id"], seat["runtime_policy_receipt"]["dispatch_id"]
             )

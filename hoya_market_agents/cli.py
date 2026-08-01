@@ -458,14 +458,13 @@ def _real_system_checks(args, preflight_id):
         ),
     )
 
-    # #8 intentionally requires an enforced no-tool receipt. Current Codex
-    # runtime metadata therefore cannot also prove three independent searches.
-    # Do not turn Claude/Gemini search success into a seven-seat claim.
+    # Codex preflight proves that web_search is permitted. Actual successful
+    # searches remain run-scoped and are verified from each seat's receipt.
     search_evidence = (
-        "Codex seats have verified no-tool policy; per-seat search receipts are "
-        "not observable without changing the #8 trust boundary"
+        "Codex seats permit controlled web_search; seven successful per-seat "
+        "search receipts are verified after the authorized run"
     )
-    _set_check(checks, "search", False, "3 Codex searches not observed", search_evidence)
+    _set_check(checks, "search", False, "run_scoped_not_observed", search_evidence)
 
     boundary_ok = bool(
         codex
@@ -722,7 +721,7 @@ def _apply_drill_observation(checks, data_root, run_id):
         summary = verify_run(data_root, run_id)
     except RunVerificationError as exc:
         evidence = "drill rejected: {}".format(exc)
-        for check_id in ("seven_seat_timeline", "report_deadline"):
+        for check_id in ("search", "seven_seat_timeline", "report_deadline"):
             next(item for item in checks if item["check_id"] == check_id)["evidence"] = evidence
         return
     if (
@@ -733,14 +732,14 @@ def _apply_drill_observation(checks, data_root, run_id):
         evidence = "verified {} is not live competition evidence".format(
             summary.get("provider_mode") or "unknown provider mode"
         )
-        for check_id in ("seven_seat_timeline", "report_deadline"):
+        for check_id in ("search", "seven_seat_timeline", "report_deadline"):
             next(item for item in checks if item["check_id"] == check_id).update(
                 ok=False,
                 actual="not_observed",
                 evidence=evidence,
             )
         return
-    for check_id in ("seven_seat_timeline", "report_deadline"):
+    for check_id in ("search", "seven_seat_timeline", "report_deadline"):
         next(item for item in checks if item["check_id"] == check_id).update(
             ok=True,
             actual="observed",

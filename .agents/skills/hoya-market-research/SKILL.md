@@ -66,11 +66,11 @@ non-persistent thread.
 3. The question passes `question_package.build_question_package` — an
    unapproved question type is rejected before launch.
 4. The Data Root is a separate directory from the Code Root.
-5. The runtime enforces `allowed_tools=[]`, no filesystem access, no secret
+5. The runtime permits only `allowed_tools=["web_search"]`, with no filesystem access, no secret
    access, and public-structured-response-only mode for every seat. Preserve
    each runtime dispatch receipt in preflight. Every seat needs a unique
    `dispatch_id` and unique receipt ID; the receipt must bind that seat's
-   dispatch ID and the exact no-tool policy hash. A prompt instruction or a
+   dispatch ID and the exact controlled-search policy hash. A prompt instruction or a
    helper assertion is not enforcement proof.
 6. All three threads exist, are persistent, report an **actual model** of
    `gpt-5.6-sol`, and expose an auditable `thread_id`.
@@ -84,20 +84,17 @@ non-persistent thread.
    ```
 
 9. The current subscription CLIs do not expose independently verifiable
-   provider/runtime attestation. The manifest must therefore contain the
-   `provider_runtime_attestation` blocker, remain `provider_capabilities_ready=false`,
-   and not authorize or launch a real run. Local JSON, hashes or local
-   signatures prove integrity, not provider authenticity. Only a future trusted
-   attestation capability could make preauthorization eligible; run-scoped
-   `search`, `seven_seat_timeline` and `report_deadline` would still be proven
-   by the authorized run rather than circular pre-run claims.
+   provider/runtime attestation. Record `provider_runtime_attestation` as an
+   advisory; do not present local JSON or hashes as a provider signature. This
+   advisory does not block operational preauthorization. Run-scoped `search`,
+   `seven_seat_timeline` and `report_deadline` are proven by the authorized run.
 
 See `references/codex-bridge-contract.md` for the exact artifact shape and
 `references/preflight-checklist.md` for the fresh-task checklist.
 
 Use the Codex collaboration runtime to create three isolated subagents with an
-explicit `model: gpt-5.6-sol`, one fixed `seat_id` per persistent thread, and
-an enforced empty tool allowlist. The bootstrap message contains only the seat
+explicit `model: gpt-5.6-sol`, one fixed `seat_id` per persistent thread, the
+pinned `research` skill, and an enforced web-search-only tool allowlist. The bootstrap message contains only the seat
 identity and asks it to return a public readiness response; do not send the
 market question until live model, thread and tool-policy receipts pass
 preflight. Reuse the same thread with the runtime's follow-up operation for
@@ -105,10 +102,9 @@ research and public debate. If the runtime does not expose actual model,
 persistent thread identity, enforceable tool restrictions, or a dispatch
 receipt, record `NOT READY` and stop. Never synthesize the receipt in Python.
 
-The current Codex handoff proves no-tool dispatches but does not prove three
-independent GPT search executions. It can therefore support provider
-preflight diagnostics, but cannot authorize a real run. Even after a future
-trusted-attestation integration, every receipt attempt must match the adopted
+The Codex handoff proves that controlled `web_search` is available; each seat
+must still produce its own successful search receipt during the authorized
+run. Every receipt attempt must match the adopted
 evidence/debate/vote lineage and its parsed structured output must canonically
 equal the formal evidence records. Do not use a fixture, fake drill, prompt
 assertion, relaxed verifier, different model, or a Core-selected conclusion to

@@ -7,9 +7,10 @@ T+5 evidence seal、6/5/4 辯論與 T+13 報告；`preflight --provider system -
 則只接受真實訂閱與 fresh Codex Task 的可觀察證據。fake 演練永遠標記
 `competition_ready=false`，不得作為市場資料或真實 READY 證據。
 
-目前已知真實阻塞：既有 Ticket #8 Codex bridge 驗證的是三席「無工具」runtime receipt，
-無法同時證明三個 GPT 席各自完成搜尋。system preflight 因此會 fail closed 為
-`NOT_READY`，不會把 Claude/Gemini 的成功或 fake drill 冒充七席 READY。
+三個 Codex 研究席只允許 `web_search`，禁止 filesystem 與 secret access；七席都必須
+遵循 repo-local 固定版本的 `research` skill。真正的搜尋成功仍由每席 run-scoped receipt、
+原始輸出與正式 evidence lineage 驗證，不會把 Claude/Gemini 的成功或 fake drill 冒充
+七席 READY。
 
 Ticket #3 另外提供版本化 Question Package 與 Research Prompt Builder：可正規化單幣、
 兩幣比較、整體市場、事件影響四種題型，並把 repo-local 固定 research 規則、來源時間政策、
@@ -102,13 +103,12 @@ python3 -m hoya_market_agents preflight --provider system --seats 7 \
 缺少任何登入、actual model、七席搜尋 receipt、權限、T+4:45 contract、T+5 seal 或
 T+13 report 證據時都輸出機器可讀 `NOT_READY` manifest。
 目前 Codex、Claude、Antigravity 的訂閱 CLI 都不提供可由第三方獨立驗證的
-provider/runtime attestation，因此 real preflight 必須包含
-`provider_runtime_attestation` blocker，且不得簽發 competition authorization。
-本地 JSON、本地 SHA-256 或本地自簽只能證明檔案 integrity，不能證明 provider
-authenticity；它們不得解除此 blocker。目前禁止宣稱 real competition READY。
+provider/runtime attestation。manifest 會把 `provider_runtime_attestation` 列為
+`advisories`，但它不再阻止 operational READY 或 competition authorization。
+本地 SHA-256 保留用來檢查 artifact integrity；它不會被描述成 provider 官方簽章。
 預授權階段允許 `search`、`seven_seat_timeline`、`report_deadline` 三項 run-scoped
-blocker；但只有未來取得可信 provider attestation 後，才可能同時有
-`provider_capabilities_ready=true` 與 write-once authorization。最終是否可宣稱
+blocker；其他登入、actual model、權限、roster 與 Codex runtime receipt 通過時即可有
+`provider_capabilities_ready=true` 與 write-once authorization。最終 operational
 competition READY 仍只由該授權 run 的 `verify-run` 結果決定。
 real run 還必須逐席保存綁定預授權 run/challenge 的 dispatch、completion、search、
 public transcript 與 structured output receipts。receipt attempt 必須等於正式採納的
@@ -242,7 +242,7 @@ cat latest.json
 
 以下項目沒有可重現 live 證據，因此 system preflight 不會宣稱 READY：
 
-- 三個 GPT-5.6 Sol persistent threads 同時具備「可驗證搜尋」與 Ticket #8 最小權限 receipt。
+- 三個 GPT-5.6 Sol persistent threads 的 live `web_search`、actual model 與 runtime receipt。
 - 七個真實訂閱席在同一 run 於 T+4:45 前交付、T+5 seal，並於 T+13 前完成報告。
 - 在上述 blocker 關閉前，正式 `$hoya-market-research` 必須停止並交付 NOT READY。
 - 向量資料庫、RAG、FinGPT、crawler 與 web service（依 ADR 0002 不在 MVP 範圍）。

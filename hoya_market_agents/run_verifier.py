@@ -10,6 +10,7 @@ from .report_contract import ReportContractError, validate_market_report
 from .report_renderer import render_market_html, render_market_markdown
 from .seats import SEAT_IDS
 from .system_preflight import (
+    NON_BLOCKING_CHECK_IDS,
     REQUIRED_CHECK_IDS,
     RUN_SCOPED_CHECK_IDS,
     load_frozen_roster,
@@ -162,8 +163,10 @@ def verify_run(data_root, run_id):
     if timeline is not None:
         _verify_report_lineage(run_dir, evidence, debate, votes)
         _verify_competition_timeline(run_dir, manifest, votes, timeline)
+    operational_advisories = []
     if declares_real:
         authorization = _verify_real_provider_lineage(root, manifest)
+        operational_advisories = list(authorization.get("preflight_advisories", ()))
         receipt_payloads = _verify_real_run_receipts(
             run_dir,
             manifest,
@@ -191,6 +194,7 @@ def verify_run(data_root, run_id):
         "required_artifacts": digests,
         "provider_mode": provider_mode,
         "competition_ready": competition_ready,
+        "advisories": operational_advisories,
         "timeline": timeline,
     }
 
@@ -380,7 +384,6 @@ def _verify_real_provider_lineage(data_root, manifest):
     preflight = _read_json(path)
     if preflight.get("mode") != "real":
         raise RunVerificationError("provider preflight 未證明真實七席能力。")
-    _verify_trusted_provider_runtime_attestation(preflight)
     if preflight.get("provider_capabilities_ready") is not True:
         raise RunVerificationError("provider preflight 未證明真實七席能力。")
     checks = preflight.get("checks")
@@ -391,16 +394,28 @@ def _verify_real_provider_lineage(data_root, manifest):
     ):
         raise RunVerificationError("provider preflight checks 不完整或順序不符。")
     by_check = {item["check_id"]: item for item in checks}
-    failed = [check_id for check_id in REQUIRED_CHECK_IDS if by_check[check_id].get("ok") is not True]
-    if preflight.get("blockers") != failed:
+    failed = [
+        check_id
+        for check_id in REQUIRED_CHECK_IDS
+        if by_check[check_id].get("ok") is not True
+    ]
+    expected_advisories = [
+        check_id for check_id in failed if check_id in NON_BLOCKING_CHECK_IDS
+    ]
+    expected_blockers = [
+        check_id for check_id in failed if check_id not in NON_BLOCKING_CHECK_IDS
+    ]
+    if preflight.get("blockers") != expected_blockers:
         raise RunVerificationError("provider preflight blockers 與 checks 不一致。")
-    expected_ready = not failed
+    if preflight.get("advisories") != expected_advisories:
+        raise RunVerificationError("provider preflight advisories 與 checks 不一致。")
+    expected_ready = not expected_blockers
     if (
         preflight.get("ready") is not expected_ready
         or preflight.get("status") != ("READY" if expected_ready else "NOT_READY")
     ):
         raise RunVerificationError("provider preflight READY 狀態與 blockers 不一致。")
-    failed_provider_checks = set(failed) - RUN_SCOPED_CHECK_IDS
+    failed_provider_checks = set(expected_blockers) - RUN_SCOPED_CHECK_IDS
     if failed_provider_checks:
         raise RunVerificationError("provider preflight 仍有 capability blocker。")
     preflight_generated = _parse_utc(preflight.get("generated_at_utc"), "provider preflight time")
@@ -415,7 +430,7 @@ def _verify_real_provider_lineage(data_root, manifest):
                     seat["seat_id"]
                 )
             )
-    return _verify_competition_authorization(
+    authorization = _verify_competition_authorization(
         data_root,
         manifest,
         preflight_id,
@@ -423,6 +438,8 @@ def _verify_real_provider_lineage(data_root, manifest):
         preflight_generated,
         run_started,
     )
+    authorization["preflight_advisories"] = expected_advisories
+    return authorization
 
 
 def _verify_competition_authorization(
@@ -719,15 +736,6 @@ def _canonical_records(records):
         for record in records
     ]
     return tuple(sorted(normalized))
-
-
-def _verify_trusted_provider_runtime_attestation(_preflight):
-    raise RunVerificationError(
-        "provider_runtime_attestation_unavailable: current subscription CLIs "
-        "do not expose independently verifiable provider/runtime attestation; "
-        "local JSON, local hashes, and local signatures prove integrity, not "
-        "provider authenticity."
-    )
 
 
 def _verify_phase_receipt(value, unique_ids, started, expected_elapsed, label):

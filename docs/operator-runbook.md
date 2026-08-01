@@ -97,16 +97,14 @@ python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real 
   --competition-challenge "$COMPETITION_CHALLENGE"
 ```
 
-這會在 Codex handoff 有效後才消耗 Claude Max／Google Ultra smoke。現在 Ticket #8 的 Codex
-receipt 是 no-tool policy，不能證明三個 GPT 席各自搜尋；此外目前三種訂閱 CLI 都不提供
-可由第三方獨立驗證的 provider/runtime attestation。因此正確結果必須為 `NOT_READY`，
-並包含 `search` 與 `provider_runtime_attestation` blocker。禁止改用 fake、降低模型、
-移除 receipt，或用本地自述 JSON／本地自簽來湊 READY。
+這會在 Codex handoff 有效後才消耗 Claude Max／Google Ultra smoke。Codex 三席只允許
+`web_search`，每席仍須在正式 run 產生自己的 search receipt。三種訂閱 CLI 都不提供
+可由第三方獨立驗證的 provider/runtime attestation，因此 manifest 必須把它列在
+`advisories`；這不阻止 operational READY，但不得把本地 hash 說成廠商簽章。
 handoff 必須在 300 秒內驗證且只能綁定一次；過期、challenge 不符或 replay 都要重開
 fresh Task 並產生新 challenge。
-SHA-256 只能證明 artifact integrity，不能證明 provider authenticity。現有 CLI 能力下
-`provider_capabilities_ready=false`，不得簽發 competition authorization 或啟動 real run。
-若未來出現可獨立驗證的 attestation，仍只有 `provider_capabilities_ready=true` 才能以
+SHA-256 只用來證明 artifact integrity。登入、actual model、受控工具、roster、路徑與
+runtime receipt 等 capability checks 通過後，`provider_capabilities_ready=true` 才能以
 write-once artifact 簽發預先決定的 competition run ID/challenge。
 `search`、`seven_seat_timeline`、`report_deadline` 是 run-scoped 證據；預授權 manifest
 可誠實維持 `NOT_READY`，但只有這三項可作為 blocker。正式 run 必須使用已授權的
@@ -154,9 +152,9 @@ provider-preflight manifest；只改 manifest flag 或移除 timeline 必定拒�
 receipt attempt 還必須逐席等於正式 evidence 採納的 attempt，並存在於該席 debate
 messages 與 votes attempt_ids。structured output 必須可解析，canonical normalize 後
 精確等於正式 evidence 中該 seat/attempt 的 records。
-任何 shipped fake marker 會另外拒絕；但 receipt/hash 仍只是 integrity lineage，不是
-provider authenticity。缺少可信 provider/runtime attestation 時，real claim 一律以
-`provider_runtime_attestation_unavailable` fail closed。
+任何 shipped fake marker 會另外拒絕；receipt/hash 用於 integrity lineage，不會冒充
+provider 官方簽章。缺少可信 provider/runtime attestation 時，驗證結果保留
+`provider_runtime_attestation` advisory，但可依完整 operational evidence 通過。
 
 ## 7. 精確 Run ID 清理（只由 operator 執行）
 

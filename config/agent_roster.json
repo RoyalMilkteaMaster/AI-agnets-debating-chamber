@@ -1,6 +1,6 @@
 {
   "roster_version": "1.0.0",
-  "note": "Ticket #11 competition roster. Target and actual model are compared fail closed during live preflight.",
+  "note": "Competition roster. Target/actual model, controlled search tools and research skill are checked during live preflight.",
   "core": {
     "role": "core",
     "provider": "codex",
@@ -13,7 +13,8 @@
       "output_dir": "spot-technical",
       "provider": "codex",
       "target_model": "gpt-5.6-sol",
-      "allowed_tools": []
+      "allowed_tools": ["web_search"],
+      "required_skills": ["research"]
     },
     {
       "seat_id": "derivatives",
@@ -21,7 +22,8 @@
       "output_dir": "derivatives",
       "provider": "codex",
       "target_model": "gpt-5.6-sol",
-      "allowed_tools": []
+      "allowed_tools": ["web_search"],
+      "required_skills": ["research"]
     },
     {
       "seat_id": "onchain",
@@ -29,7 +31,8 @@
       "output_dir": "onchain",
       "provider": "codex",
       "target_model": "gpt-5.6-sol",
-      "allowed_tools": []
+      "allowed_tools": ["web_search"],
+      "required_skills": ["research"]
     },
     {
       "seat_id": "official-events",
@@ -37,7 +40,8 @@
       "output_dir": "official-events",
       "provider": "claude",
       "target_model": "opus",
-      "allowed_tools": ["WebSearch", "WebFetch"]
+      "allowed_tools": ["WebSearch", "WebFetch"],
+      "required_skills": ["research"]
     },
     {
       "seat_id": "news",
@@ -45,7 +49,8 @@
       "output_dir": "news",
       "provider": "claude",
       "target_model": "opus",
-      "allowed_tools": ["WebSearch", "WebFetch"]
+      "allowed_tools": ["WebSearch", "WebFetch"],
+      "required_skills": ["research"]
     },
     {
       "seat_id": "social-macro",
@@ -53,7 +58,8 @@
       "output_dir": "social-macro",
       "provider": "claude",
       "target_model": "opus",
-      "allowed_tools": ["WebSearch", "WebFetch"]
+      "allowed_tools": ["WebSearch", "WebFetch"],
+      "required_skills": ["research"]
     },
     {
       "seat_id": "counter-evidence",
@@ -61,7 +67,8 @@
       "output_dir": "counter-evidence",
       "provider": "antigravity",
       "target_model": "gemini-3.1-pro-high",
-      "allowed_tools": ["search_web"]
+      "allowed_tools": ["search_web"],
+      "required_skills": ["research"]
     }
   ]
 }

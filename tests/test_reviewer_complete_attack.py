@@ -1,4 +1,4 @@
-"""Reviewer reproduction: local hashes do not prove adopted provider output."""
+"""Operational receipts must still match the adopted public record."""
 
 import hashlib
 import json
@@ -36,7 +36,7 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
         self.addCleanup(self._temporary.cleanup)
         self.data_root = Path(self._temporary.name)
 
-    def test_local_receipts_with_unadopted_attempt_and_self_attestation_are_rejected(self):
+    def test_local_receipts_with_unadopted_attempt_are_rejected(self):
         result = run_fake_competition_drill(
             data_root=self.data_root,
             question="分析 BTC 過去 14 日市場狀態",
@@ -46,11 +46,29 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RunVerificationError,
-            "provider_runtime_attestation_unavailable",
+            "adopted evidence attempt",
         ):
             verify_run(self.data_root, result.run_id)
 
-    def _promote_with_complete_local_claim(self, result):
+    def test_operational_run_can_verify_with_attestation_advisory(self):
+        result = run_fake_competition_drill(
+            data_root=self.data_root,
+            question="分析 BTC 過去 14 日市場狀態",
+            token="operational",
+        )
+        self._promote_with_complete_local_claim(result, align_formal_attempts=True)
+
+        summary = verify_run(self.data_root, result.run_id)
+
+        self.assertEqual("VERIFIED", summary["status"])
+        self.assertTrue(summary["competition_ready"])
+        self.assertEqual(
+            ["provider_runtime_attestation"], summary["advisories"]
+        )
+
+    def _promote_with_complete_local_claim(
+        self, result, align_formal_attempts=False
+    ):
         run_dir = result.run_dir
         manifest_path = run_dir / "manifest.json"
         manifest = self._sanitize(self._read_json(manifest_path))
@@ -58,6 +76,19 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
         debate = self._sanitize(self._read_jsonl(run_dir / "debate.jsonl"))
         votes = self._sanitize(self._read_json(run_dir / "votes.json"))
         report = self._sanitize(self._read_json(run_dir / "report.json"))
+
+        if align_formal_attempts:
+            attempts = {
+                seat_id: "{}-receipt-attempt-99".format(seat_id)
+                for seat_id in SEAT_IDS
+            }
+            for record in evidence:
+                record["attempt_id"] = attempts[record["seat_id"]]
+            for record in debate:
+                if record.get("seat_id") in attempts and record.get("attempt_id"):
+                    record["attempt_id"] = attempts[record["seat_id"]]
+            for vote in votes["votes"]:
+                vote["attempt_ids"] = [attempts[vote["seat_id"]]]
 
         self._write_jsonl(run_dir / "evidence.jsonl", evidence)
         self._write_jsonl(run_dir / "snapshots/evidence.jsonl", evidence)
@@ -100,7 +131,12 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
             {
                 "check_id": check_id,
                 "ok": check_id
-                not in ("search", "seven_seat_timeline", "report_deadline"),
+                not in (
+                    "provider_runtime_attestation",
+                    "search",
+                    "seven_seat_timeline",
+                    "report_deadline",
+                ),
                 "target": "required",
                 "actual": "local self assertion",
                 "evidence": "hash-linked local JSON only",

@@ -27,15 +27,21 @@ REQUIRED_CHECK_IDS = (
     "report_deadline",
 )
 RUN_SCOPED_CHECK_IDS = frozenset(("search", "seven_seat_timeline", "report_deadline"))
+NON_BLOCKING_CHECK_IDS = frozenset(("provider_runtime_attestation",))
 PROVIDER_COUNTS = {"claude": 3, "codex": 3, "antigravity": 1}
 EXPECTED_SEATS = {
-    "spot-technical": ("codex", "gpt-5.6-sol", []),
-    "derivatives": ("codex", "gpt-5.6-sol", []),
-    "onchain": ("codex", "gpt-5.6-sol", []),
-    "official-events": ("claude", "opus", ["WebSearch", "WebFetch"]),
-    "news": ("claude", "opus", ["WebSearch", "WebFetch"]),
-    "social-macro": ("claude", "opus", ["WebSearch", "WebFetch"]),
-    "counter-evidence": ("antigravity", "gemini-3.1-pro-high", ["search_web"]),
+    "spot-technical": ("codex", "gpt-5.6-sol", ["web_search"], ["research"]),
+    "derivatives": ("codex", "gpt-5.6-sol", ["web_search"], ["research"]),
+    "onchain": ("codex", "gpt-5.6-sol", ["web_search"], ["research"]),
+    "official-events": ("claude", "opus", ["WebSearch", "WebFetch"], ["research"]),
+    "news": ("claude", "opus", ["WebSearch", "WebFetch"], ["research"]),
+    "social-macro": ("claude", "opus", ["WebSearch", "WebFetch"], ["research"]),
+    "counter-evidence": (
+        "antigravity",
+        "gemini-3.1-pro-high",
+        ["search_web"],
+        ["research"],
+    ),
 }
 COMPETITION_AUTHORIZATION_NAME = "competition-authorization.json"
 
@@ -66,13 +72,28 @@ def load_frozen_roster(path=None):
         raise PreflightError("frozen roster seat 順序或身分不符。")
 
     for seat in seats:
-        required = {"seat_id", "focus", "output_dir", "provider", "target_model", "allowed_tools"}
+        required = {
+            "seat_id",
+            "focus",
+            "output_dir",
+            "provider",
+            "target_model",
+            "allowed_tools",
+            "required_skills",
+        }
         if not required <= set(seat):
             raise PreflightError("席位 {} 缺少 provider/model/tool 欄位。".format(seat.get("seat_id")))
         if not isinstance(seat["allowed_tools"], list):
             raise PreflightError("席位 {} allowed_tools 必須為陣列。".format(seat["seat_id"]))
+        if not isinstance(seat["required_skills"], list):
+            raise PreflightError("席位 {} required_skills 必須為陣列。".format(seat["seat_id"]))
         expected = EXPECTED_SEATS[seat["seat_id"]]
-        actual = (seat["provider"], seat["target_model"], seat["allowed_tools"])
+        actual = (
+            seat["provider"],
+            seat["target_model"],
+            seat["allowed_tools"],
+            seat["required_skills"],
+        )
         if actual != expected:
             raise PreflightError("席位 {} provider/model/tool policy 漂移。".format(seat["seat_id"]))
 
@@ -119,6 +140,7 @@ def build_preflight_manifest(*, checks, mode, generated_at_utc, code_root, data_
 
     normalized = []
     blockers = []
+    advisories = []
     for check_id in REQUIRED_CHECK_IDS:
         check = by_id.get(check_id)
         if check is None:
@@ -142,7 +164,10 @@ def build_preflight_manifest(*, checks, mode, generated_at_utc, code_root, data_
         }
         normalized.append(item)
         if not item["ok"]:
-            blockers.append(check_id)
+            if check_id in NON_BLOCKING_CHECK_IDS:
+                advisories.append(check_id)
+            else:
+                blockers.append(check_id)
     blockers.extend(sorted(duplicates))
     unknown = sorted(set(by_id) - set(REQUIRED_CHECK_IDS))
     if unknown:
@@ -164,6 +189,7 @@ def build_preflight_manifest(*, checks, mode, generated_at_utc, code_root, data_
         "mode": mode,
         "simulation_status": simulation_status if mode == "fixture" else None,
         "provider_capabilities_ready": provider_capabilities_ready,
+        "advisories": advisories,
         "generated_at_utc": generated_at_utc,
         "code_root": str(Path(code_root)),
         "data_root": str(Path(data_root)),

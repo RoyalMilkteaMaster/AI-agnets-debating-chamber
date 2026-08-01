@@ -79,7 +79,8 @@ class SystemCliTest(unittest.TestCase):
         payload = json.loads(out)
         self.assertEqual("NOT_READY", payload["status"])
         self.assertIn("codex_runtime_receipts", payload["blockers"])
-        self.assertIn("provider_runtime_attestation", payload["blockers"])
+        self.assertNotIn("provider_runtime_attestation", payload["blockers"])
+        self.assertIn("provider_runtime_attestation", payload["advisories"])
         self.assertEqual(
             "provider_runtime_attestation_unavailable",
             next(
@@ -149,8 +150,8 @@ class SystemCliTest(unittest.TestCase):
 
         self.assertEqual(1, code)
         payload = json.loads(out)
-        self.assertIn("seven_seat_timeline", payload["blockers"])
-        self.assertIn("report_deadline", payload["blockers"])
+        for check_id in ("search", "seven_seat_timeline", "report_deadline"):
+            self.assertIn(check_id, payload["blockers"])
         self.assertIn("fake-competition-drill", next(
             item["evidence"] for item in payload["checks"]
             if item["check_id"] == "seven_seat_timeline"
@@ -222,6 +223,23 @@ class SystemCliTest(unittest.TestCase):
         for check_id in ("seven_seat_timeline", "report_deadline"):
             check = next(item for item in checks if item["check_id"] == check_id)
             self.assertFalse(check["ok"])
+
+    def test_verified_operational_run_satisfies_run_scoped_checks(self):
+        checks = _fixture_system_checks()
+        with patch(
+            "hoya_market_agents.cli.verify_run",
+            return_value={
+                "status": "VERIFIED",
+                "provider_mode": "real-subscription",
+                "competition_ready": True,
+                "timeline": {"report_completed_at_ms": 600_000},
+            },
+        ):
+            _apply_drill_observation(checks, self.data_root, "real-run")
+
+        for check_id in ("search", "seven_seat_timeline", "report_deadline"):
+            check = next(item for item in checks if item["check_id"] == check_id)
+            self.assertTrue(check["ok"])
 
 
 if __name__ == "__main__":

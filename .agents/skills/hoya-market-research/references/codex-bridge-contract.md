@@ -18,7 +18,7 @@ already bound to another system preflight. The binding artifact is write-once.
 - Seats, in order: `spot-technical`, `derivatives`, `onchain`.
 - Each seat: unique non-empty `thread_id`, `actual_model=gpt-5.6-sol`, and
   `model_confirmed`, `capability_confirmed`, `persistent` all `true`.
-- Each seat dispatch: unique `dispatch_id`, exact no-tool `tool_policy`,
+- Each seat dispatch: unique `dispatch_id`, exact web-search-only `tool_policy`,
   `tool_policy_confirmed=true`, and a runtime-provided policy receipt with
   unique `receipt_id`. The receipt's `dispatch_id` and `tool_policy_sha256`
   must bind it to that seat's dispatch and exact policy. Python records and
