@@ -125,6 +125,9 @@ class ProhibitedAdviceTests(unittest.TestCase):
         ("position_size", "請將倉位配置至資產的 30%"),
         ("direct_order", "現在請買進並於下週賣出"),
         ("english_long_order", "Open a BTC long position now"),
+        ("english_go_long", "Go long BTC now"),
+        ("english_go_short", "Go short ETH now"),
+        ("english_leveraged_order", "Open a leveraged position now"),
     )
 
     def test_prohibited_advice_fails_closed(self):
@@ -152,11 +155,18 @@ class ProhibitedAdviceTests(unittest.TestCase):
                 validate_market_report(fixture["report"], fixture["sources"])
 
     def test_ordinary_english_market_analysis_is_not_misclassified_as_an_order(self):
-        fixture = load_fixture("consensus-6-1")
-        fixture["report"]["limitations"].append(
-            "BTC long positioning increased while sell-side liquidity remained visible."
+        analysis_phrases = (
+            "BTC long positioning increased while sell-side liquidity remained visible.",
+            "We take a long-term view of BTC adoption.",
+            "Analysts take a long view when evaluating protocol adoption.",
         )
-        self.assertIsNotNone(validate_market_report(fixture["report"], fixture["sources"]))
+        for phrase in analysis_phrases:
+            with self.subTest(phrase=phrase):
+                fixture = load_fixture("consensus-6-1")
+                fixture["report"]["limitations"].append(phrase)
+                self.assertIsNotNone(
+                    validate_market_report(fixture["report"], fixture["sources"])
+                )
 
 
 class WorkflowTimingTests(unittest.TestCase):

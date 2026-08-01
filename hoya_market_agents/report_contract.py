@@ -34,8 +34,11 @@ _PROHIBITED = (
     re.compile(r"倉位|部位.{0,16}\d+\s*%|position\s*siz", re.IGNORECASE),
     re.compile(r"(?:請|建議|現在)?\s*(?:買進|買入|賣出|做多|做空)|\b(?:buy|sell)\s+(?:now|btc|eth|sol|bnb|xrp)\b", re.IGNORECASE),
     re.compile(
-        r"\b(?:open|enter|take)\s+(?:a\s+|the\s+)?(?:btc\s+|eth\s+|sol\s+|bnb\s+|xrp\s+)?"
-        r"(?:long|short)(?:\s+position)?(?:\s+now)?\b|\bgo\s+(?:long|short)\b",
+        r"\b(?:open|enter)\s+(?:a\s+|the\s+)?(?:btc\s+|eth\s+|sol\s+|bnb\s+|xrp\s+)?"
+        r"(?:long|short)(?:\s+(?:position|order))?(?:\s+now)?\b|"
+        r"\btake\s+(?:a\s+|the\s+)(?:btc\s+|eth\s+|sol\s+|bnb\s+|xrp\s+)?"
+        r"(?:long|short)\s+(?:position|order)(?:\s+now)?\b|"
+        r"\bgo\s+(?:long|short)(?:\s+(?:btc|eth|sol|bnb|xrp))?(?:\s+now)?\b",
         re.IGNORECASE,
     ),
 )
