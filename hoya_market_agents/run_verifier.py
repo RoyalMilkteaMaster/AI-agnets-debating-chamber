@@ -6,9 +6,11 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 
+from .debate_state_machine import FORCE_STOP_MS, THRESHOLD_FIVE_FROM_MS
 from .report_contract import ReportContractError, validate_market_report
 from .report_audit_renderer import render_debate_html
 from .report_renderer import render_market_html, render_market_markdown
+from .research_scheduler import research_deadlines
 from .seats import SEAT_IDS
 from .system_preflight import (
     NON_BLOCKING_CHECK_IDS,
@@ -233,23 +235,26 @@ def verify_run(data_root, run_id):
 def _verify_competition_timeline(run_dir, manifest, votes, timeline):
     if not isinstance(timeline, dict):
         raise RunVerificationError("competition_timeline 必須為 object。")
+    # 這一場的收件牆與封存時刻由題型決定；權威是 research_deadlines，
+    # 不是 manifest 自己宣告的數字。
+    deadlines = research_deadlines(_question_type(run_dir, manifest))
     if timeline.get("all_seats_dispatched_at_ms") != 0:
         raise RunVerificationError("七席必須在 T+0 同時 dispatch。")
     completions = timeline.get("seat_completion_ms")
     if not isinstance(completions, dict) or set(completions) != set(SEAT_IDS):
         raise RunVerificationError("competition timeline 必須包含七席 completion。")
     if any(
-        type(value) is not int or value < 0 or value > 285_000
+        type(value) is not int or value < 0 or value > deadlines.accept_until_ms
         for value in completions.values()
     ):
-        raise RunVerificationError("研究席未在 T+4:45 前完成有效 contract。")
-    if timeline.get("evidence_snapshot_sealed_at_ms") != 300_000:
-        raise RunVerificationError("Evidence snapshot 必須在 T+5 seal。")
+        raise RunVerificationError("研究席未在收件牆前完成有效 contract。")
+    if timeline.get("evidence_snapshot_sealed_at_ms") != deadlines.seal_ms:
+        raise RunVerificationError("Evidence snapshot 未在該題型的封存時刻 seal。")
     snapshot = run_dir / "snapshots" / "evidence.jsonl"
     _require_regular_file(snapshot, run_dir)
     snapshot_sha = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     if timeline.get("evidence_snapshot_sha256") != snapshot_sha:
-        raise RunVerificationError("T+5 snapshot hash 不一致。")
+        raise RunVerificationError("T+4 snapshot hash 不一致。")
     if snapshot.read_bytes() != (run_dir / "evidence.jsonl").read_bytes():
         raise RunVerificationError("正式 evidence.jsonl 與 sealed snapshot 不一致。")
 
@@ -263,8 +268,8 @@ def _verify_competition_timeline(run_dir, manifest, votes, timeline):
     }:
         raise RunVerificationError("未知辯論停止原因。")
     stop_ms = timeline.get("debate_stop_at_ms")
-    if type(stop_ms) is not int or not 300_000 <= stop_ms <= 600_000:
-        raise RunVerificationError("辯論停止時間超出 T+5 至 T+10。")
+    if type(stop_ms) is not int or not deadlines.seal_ms <= stop_ms <= FORCE_STOP_MS:
+        raise RunVerificationError("辯論停止時間超出封存至 T+10。")
     if votes.get("stop_reason") != stop_reason or votes.get("stop_elapsed_ms") != stop_ms:
         raise RunVerificationError("timeline 與 votes 停止紀錄不一致。")
     if manifest.get("tally") != votes.get("tally"):
@@ -280,6 +285,25 @@ def _verify_competition_timeline(run_dir, manifest, votes, timeline):
         raise RunVerificationError("report hard deadline 不是 T+13。")
     if manifest.get("elapsed_ms") != report_ms:
         raise RunVerificationError("manifest elapsed_ms 與 report timeline 不一致。")
+
+
+def _question_type(run_dir, manifest):
+    """Return the run's own question type, refusing two disagreeing copies.
+
+    改 manifest 的題型就能換到晚 30 秒的封存，所以只要 ``question.json``
+    也記了題型，兩份必須一致；缺漏時退回預設（較嚴）的時刻表。
+    """
+    declared = manifest.get("question_type")
+    recorded = _optional_json(run_dir / "question.json").get("question_type")
+    if declared is not None and recorded is not None and declared != recorded:
+        raise RunVerificationError("manifest 與 question.json 的題型不一致。")
+    return declared if declared is not None else recorded
+
+
+def _optional_json(path):
+    if not path.is_file():
+        return {}
+    return _read_json(path)
 
 
 def _verify_vote_table(votes, vote_records):
@@ -317,14 +341,18 @@ def _verify_stop_semantics(votes, stop_reason, stop_ms):
     challenge_completed = votes.get("challenge_completed") is True
 
     if stop_reason == "consensus_6_votes":
-        valid = stop_ms < 420_000 and threshold == 6 and adopted_count >= 6
+        valid = stop_ms < THRESHOLD_FIVE_FROM_MS and threshold == 6 and adopted_count >= 6
     elif stop_reason == "consensus_5_votes":
-        valid = 420_000 <= stop_ms < 600_000 and threshold == 5 and adopted_count >= 5
+        valid = (
+            THRESHOLD_FIVE_FROM_MS <= stop_ms < FORCE_STOP_MS
+            and threshold == 5
+            and adopted_count >= 5
+        )
     elif stop_reason == "forced_stop_4_votes":
-        valid = stop_ms == 600_000 and threshold == 4 and adopted_count >= 4
+        valid = stop_ms == FORCE_STOP_MS and threshold == 4 and adopted_count >= 4
     elif stop_reason == "forced_stop_no_consensus":
         valid = (
-            stop_ms == 600_000
+            stop_ms == FORCE_STOP_MS
             and threshold == 4
             and valid_count >= 4
             and leader_count < 4
@@ -336,7 +364,7 @@ def _verify_stop_semantics(votes, stop_reason, stop_ms):
         return
     else:
         valid = (
-            stop_ms == 600_000
+            stop_ms == FORCE_STOP_MS
             and threshold == 4
             and valid_count < 4
             and adopted is None
@@ -575,6 +603,8 @@ def _verify_provider_matrix(matrix, roster):
         or core.get("provider") != "codex"
         or core.get("target_model") != "gpt-5.6-sol"
         or core.get("actual_model") != "gpt-5.6-sol"
+        or core.get("model_confirmation_source", "runtime")
+        not in ("runtime", "operator_ui")
     ):
         raise RunVerificationError("provider matrix Core model 不符。")
     expected_seats = {seat["seat_id"]: seat for seat in roster["seats"]}

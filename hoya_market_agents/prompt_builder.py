@@ -120,6 +120,19 @@ def build_provider_prompt(scope, seat, phase, provider, **kwargs):
     return build_seat_prompt(scope, seat, phase, **kwargs)
 
 
+def _search_hard_stop_label(scope):
+    """本席研究搜尋硬截止的 T+ 標籤，唯一權威是 research_deadlines。"""
+    from .research_scheduler import research_deadlines
+
+    seal_ms = research_deadlines(getattr(scope, "question_type", None)).seal_ms
+    return elapsed_label(seal_ms)
+
+
+def elapsed_label(elapsed_ms):
+    minutes, seconds = divmod(int(elapsed_ms) // 1000, 60)
+    return "T+{}:{:02d}".format(minutes, seconds)
+
+
 def _shared_section(scope, phase, evidence_snapshot, debate_snapshot, research_snapshot):
     question_json = json.dumps(_question_payload(scope), ensure_ascii=False, sort_keys=True)
     lines = [
@@ -142,12 +155,15 @@ def _shared_section(scope, phase, evidence_snapshot, debate_snapshot, research_s
         research_snapshot.text.rstrip("\n"),
         "```",
         "- 上游的單一 Markdown 交付格式在本產品中由下列 EvidenceCard contract 取代。",
-        "- 你本身就是該 research background agent；不得再建立第八個研究或投票席。",
+        "- 你本身就是本席唯一的 research agent 本體；禁止建立任何背景 agent、子任務或第八席。",
+        "- 禁止寫入任何檔案或共享 Markdown；唯一交付是符合 EvidenceCard contract 的單一結構化回覆。",
         "",
         "## 共同來源與時間政策",
         "- T+0:00 至 T+1:30 優先一手來源；所需一手資料找不到時，"
         "T+1:30 後才可使用可信二手來源。",
-        "- T+5:00 硬停止新增搜尋；逾時資料不得加入正式研究結果。",
+        "- {} 硬停止新增搜尋；逾時資料不得加入正式研究結果。".format(
+            _search_hard_stop_label(scope)
+        ),
         "- 每席目標提交 3 至 8 張有效證據卡，最多 8 張；"
         "不足時誠實標示資料不足。",
         "- 至少主動尋找一項反駁自己初步立場的證據。",

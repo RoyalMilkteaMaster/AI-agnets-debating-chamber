@@ -8,6 +8,7 @@ the Core Agent that invoked the repo-local skill.
 import hashlib
 import hmac
 import json
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -18,10 +19,16 @@ from .question_package import (
     COMPARISON_STANCES,
     EVENT_STANCES,
     MARKET_STANCES,
+    OPEN_STANCES,
     QuestionPackage,
     build_question_package,
 )
-from .run_store import ArtifactAlreadyExistsError, RunStoreError
+from .run_store import (
+    ArtifactAlreadyExistsError,
+    RunStoreError,
+    default_token,
+    new_run_id,
+)
 from .seats import CODE_ROOT, load_roster
 
 CODEX_SEAT_IDS = ("spot-technical", "derivatives", "onchain")
@@ -32,12 +39,16 @@ STATUS_READY = "READY"
 STATUS_NOT_READY = "NOT READY"
 HANDOFF_PATH = "preflight/codex-handoff.json"
 HANDOFF_BINDING_PATH = "preflight/codex-handoff-binding.json"
+LAUNCH_RESERVATION_DIRECTORY = "preflight/launch-reservations"
 DEFAULT_HANDOFF_MAX_AGE_SECONDS = 300
 MAX_FUTURE_SKEW_SECONDS = 30
+_IDENTIFIER_GENERATION_ATTEMPTS = 100
 
-_CORE_FIELDS = frozenset(
+_LEGACY_CORE_FIELDS = frozenset(
     {"role", "model", "model_confirmed", "created_threads_by"}
 )
+_CORE_FIELDS = _LEGACY_CORE_FIELDS | {"model_confirmation_source"}
+_CORE_MODEL_CONFIRMATION_SOURCES = frozenset({"runtime", "operator_ui"})
 _THREAD_FIELDS = frozenset(
     {
         "thread_id",
@@ -108,7 +119,9 @@ _PUBLIC_CONTINUATION_FIELDS = frozenset(
 _REQUIRED_CONTINUATION_FIELDS = _PUBLIC_CONTINUATION_FIELDS - {
     "stance_change_reason"
 }
-_PUBLIC_STANCES = frozenset(MARKET_STANCES + COMPARISON_STANCES + EVENT_STANCES)
+_PUBLIC_STANCES = frozenset(
+    MARKET_STANCES + COMPARISON_STANCES + EVENT_STANCES + OPEN_STANCES
+)
 _PUBLIC_CHECKPOINT_FIELDS = frozenset(
     {
         "checkpoint_id",
@@ -129,12 +142,25 @@ CONTRACT_TEXT = """Codex public handoff v1
 - hidden chain-of-thought, scratchpads, and private reasoning are forbidden
 """
 
-SOURCE_TIME_POLICY = """Research policy v1
+_SOURCE_TIME_POLICY_TEMPLATE = """Research policy v1
 - T+0:00..T+1:30: primary sources first
 - after T+1:30: trusted secondary sources allowed when primary data is unavailable
-- T+5:00: stop all new research
+- {hard_stop}: stop all new research
 - every seat receives the same question, research snapshot, schema, and clock rules
 """
+
+
+def source_time_policy(question_type=None):
+    """該題型的來源與時間政策文字；硬截止時刻唯一權威是 research_deadlines。"""
+    from .prompt_builder import elapsed_label
+    from .research_scheduler import research_deadlines
+
+    seal_ms = research_deadlines(question_type).seal_ms
+    return _SOURCE_TIME_POLICY_TEMPLATE.format(hard_stop=elapsed_label(seal_ms))
+
+
+# 單幣預設文字：既有測試與 legacy 呼叫端的相容別名。
+SOURCE_TIME_POLICY = source_time_policy()
 
 
 class CodexBridgeError(ValueError):
@@ -151,6 +177,59 @@ def codex_seats():
     """Return the three fixed GPT seats in their approved order."""
     by_id = {seat.seat_id: seat for seat in load_roster()}
     return tuple(by_id[seat_id] for seat_id in CODEX_SEAT_IDS)
+
+
+def prepare_launch_inputs(
+    question,
+    data_root,
+    *,
+    now_utc=None,
+    token_source=None,
+    nonce_source=None,
+):
+    """Generate Core-only audit inputs after validating the user's question."""
+    package = build_question_package(question)
+    root = _validated_data_root(data_root)
+    observed_at = _coerce_now(now_utc)
+    token_source = default_token if token_source is None else token_source
+    nonce_source = (
+        (lambda: secrets.token_urlsafe(32))
+        if nonce_source is None
+        else nonce_source
+    )
+
+    preflight_challenge = nonce_source()
+    _require_challenge(preflight_challenge)
+    competition_challenge = _different_nonce(nonce_source, preflight_challenge)
+
+    for _ in range(_IDENTIFIER_GENERATION_ATTEMPTS):
+        competition_run_id = new_run_id(
+            observed_at,
+            package.asset_slug,
+            token_source(),
+        )
+        _require_safe_segment(competition_run_id, "competition run_id")
+        if (root / "runs" / competition_run_id).exists():
+            continue
+        reservation = _reserve_competition_run_id(
+            root,
+            competition_run_id,
+            package,
+            preflight_challenge,
+            competition_challenge,
+            observed_at,
+        )
+        if reservation is not None and not (root / "runs" / competition_run_id).exists():
+            return {
+                "schema_version": "1.0.0",
+                "status": "PREPARED",
+                "question_package": package.to_dict(),
+                "preflight_challenge": preflight_challenge,
+                "competition_run_id": competition_run_id,
+                "competition_challenge": competition_challenge,
+                "reservation": reservation,
+            }
+    raise PreflightNotReadyError("無法產生未使用的 competition run_id。")
 
 
 def build_codex_handoff(
@@ -174,14 +253,15 @@ def build_codex_handoff(
     package_value = package.to_dict()
     package_hash = _sha256_json(package_value)
     contract_hash = _sha256_text(CONTRACT_TEXT)
-    policy_hash = _sha256_text(SOURCE_TIME_POLICY)
+    time_policy = source_time_policy(package.question_type)
+    policy_hash = _sha256_text(time_policy)
     dispatch_policy_hash = _sha256_json(dict(SEAT_TOOL_POLICY))
     seats = []
     shared_prompt = None
 
     for seat in codex_seats():
         prompt = build_seat_prompt(package, seat, "research")
-        seat_shared_prompt = _bridge_shared_prompt(prompt.shared_section)
+        seat_shared_prompt = _bridge_shared_prompt(prompt.shared_section, time_policy)
         if shared_prompt is None:
             shared_prompt = seat_shared_prompt
         elif seat_shared_prompt != shared_prompt:
@@ -241,7 +321,7 @@ def build_codex_handoff(
         "shared_prompt_sha256": shared_hash,
         "contract_text": CONTRACT_TEXT,
         "contract_text_sha256": contract_hash,
-        "source_time_policy": SOURCE_TIME_POLICY,
+        "source_time_policy": time_policy,
         "source_time_policy_sha256": policy_hash,
         "dispatch_tool_policy": dict(SEAT_TOOL_POLICY),
         "dispatch_tool_policy_sha256": dispatch_policy_hash,
@@ -460,12 +540,15 @@ def seal_seat_handoff(run, seat_id, attempt_id, raw_text):
 def _validate_core(core):
     if not isinstance(core, dict):
         raise PreflightNotReadyError("無法確認 Core metadata。")
-    if set(core) != _CORE_FIELDS:
-        raise PreflightNotReadyError("Core metadata 必須恰好包含四個固定欄位。")
+    if set(core) not in (_LEGACY_CORE_FIELDS, _CORE_FIELDS):
+        raise PreflightNotReadyError("Core metadata 欄位不符。")
     if core.get("role") != CORE_ROLE:
         raise PreflightNotReadyError("Core role 未確認。")
     if core.get("model") != TARGET_MODEL or core.get("model_confirmed") is not True:
-        raise PreflightNotReadyError("Core GPT-5.6 Sol runtime model 未確認。")
+        raise PreflightNotReadyError("Core GPT-5.6 Sol model 未確認。")
+    confirmation_source = core.get("model_confirmation_source", "runtime")
+    if confirmation_source not in _CORE_MODEL_CONFIRMATION_SOURCES:
+        raise PreflightNotReadyError("Core model confirmation source 無效。")
     if core.get("created_threads_by") != "core":
         raise PreflightNotReadyError("三個 Codex threads 必須由 Core 建立。")
 
@@ -577,13 +660,13 @@ def _object_without_duplicate_keys(pairs):
     return value
 
 
-def _bridge_shared_prompt(prompt_shared_section):
+def _bridge_shared_prompt(prompt_shared_section, time_policy=SOURCE_TIME_POLICY):
     return (
         prompt_shared_section
         + "\n## Codex bridge public contract\n"
         + CONTRACT_TEXT
         + "\n## Codex source/time policy\n"
-        + SOURCE_TIME_POLICY
+        + time_policy
     )
 
 
@@ -600,6 +683,54 @@ def _require_safe_segment(value, label):
     _require_non_empty(value, label)
     if Path(value).name != value or value in (".", "..") or "/" in value or "\\" in value:
         raise CodexBridgeError("{} 不得包含路徑。".format(label))
+
+
+def _different_nonce(nonce_source, first_nonce):
+    for _ in range(_IDENTIFIER_GENERATION_ATTEMPTS):
+        nonce = nonce_source()
+        _require_challenge(nonce)
+        if not hmac.compare_digest(nonce, first_nonce):
+            return nonce
+    raise PreflightNotReadyError("無法產生不同的 competition challenge。")
+
+
+def _reserve_competition_run_id(
+    data_root,
+    run_id,
+    package,
+    preflight_challenge,
+    competition_challenge,
+    reserved_at,
+):
+    reservation_root = data_root / LAUNCH_RESERVATION_DIRECTORY
+    reservation_root.mkdir(parents=True, exist_ok=True)
+    resolved_root = reservation_root.resolve()
+    if not resolved_root.is_relative_to(data_root):
+        raise PreflightNotReadyError("launch reservation 必須位於 Data Root 內。")
+    target = reservation_root / "{}.json".format(run_id)
+    if target.resolve().parent != resolved_root:
+        raise PreflightNotReadyError("launch reservation 路徑無效。")
+    payload = {
+        "schema_version": "1.0.0",
+        "status": "RESERVED",
+        "competition_run_id": run_id,
+        "reserved_at_utc": reserved_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "question_package_sha256": _sha256_json(package.to_dict()),
+        "preflight_challenge_sha256": _sha256_text(preflight_challenge),
+        "competition_challenge_sha256": _sha256_text(competition_challenge),
+    }
+    content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    try:
+        with target.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+    except FileExistsError:
+        return None
+    except OSError as exc:
+        raise PreflightNotReadyError("無法建立 write-once launch reservation。") from exc
+    return {
+        "path": target.relative_to(data_root).as_posix(),
+        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+    }
 
 
 def _require_challenge(value):

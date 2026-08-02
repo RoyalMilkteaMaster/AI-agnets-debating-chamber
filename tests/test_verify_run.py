@@ -14,6 +14,7 @@ from hoya_market_agents.run_verifier import (
     RunVerificationError,
     _require_attempt_artifact_path,
     _reject_shipped_fake_markers,
+    _verify_provider_matrix,
     _verify_real_run_receipts,
     verify_run,
 )
@@ -58,6 +59,36 @@ class VerifyRunTest(unittest.TestCase):
     def test_path_traversal_run_id_is_rejected(self):
         with self.assertRaises(RunVerificationError):
             verify_run(self.data_root, "../outside")
+
+
+class ProviderMatrixVerificationTest(unittest.TestCase):
+    def setUp(self):
+        config_path = Path(__file__).parents[1] / "config" / "agent_roster.json"
+        self.roster = json.loads(config_path.read_text(encoding="utf-8"))
+        self.matrix = [{
+            "seat_id": "core",
+            "provider": "codex",
+            "target_model": "gpt-5.6-sol",
+            "actual_model": "gpt-5.6-sol",
+            "model_confirmation_source": "operator_ui",
+        }] + [
+            {
+                "seat_id": seat["seat_id"],
+                "provider": seat["provider"],
+                "target_model": seat["target_model"],
+                "actual_model": seat["target_model"],
+            }
+            for seat in self.roster["seats"]
+        ]
+
+    def test_operator_ui_core_model_confirmation_is_valid(self):
+        self.assertEqual(7, len(_verify_provider_matrix(self.matrix, self.roster)))
+
+    def test_unknown_core_model_confirmation_source_is_rejected(self):
+        self.matrix[0]["model_confirmation_source"] = "prompt"
+
+        with self.assertRaises(RunVerificationError):
+            _verify_provider_matrix(self.matrix, self.roster)
 
 
 class RealReceiptVerificationTest(unittest.TestCase):

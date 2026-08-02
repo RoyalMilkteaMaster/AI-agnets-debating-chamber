@@ -1,4 +1,4 @@
-"""Five-minute research deadline state machine.
+"""Four-minute research deadline state machine.
 
 The class is deliberately not a general task scheduler. Provider adapters call
 ``submit_result`` or ``report_failure`` as their processes change, while
@@ -8,6 +8,7 @@ normal process loop.
 """
 
 import hashlib
+from dataclasses import dataclass
 from datetime import timedelta
 
 from .clock import iso_utc
@@ -18,21 +19,62 @@ from .seats import SEAT_IDS
 
 PRIMARY_ONLY_END_MS = 90_000
 START_RETRY_MS = 30_000
-CHECKPOINT_MS = 150_000
-REPLACEMENT_MS = 210_000
-ACCEPT_RESULTS_UNTIL_MS = 285_000
-SEAL_MS = 300_000
-MILESTONES_MS = (
+# 2026-08-02 使用者核准的修訂時間表：研究從 5 分鐘縮到 4 分鐘，讓出來的一分鐘
+# 全部給辯論。實測七席最慢 217 秒交卷，230_000 的收件牆仍留得下它。
+CHECKPOINT_MS = 120_000
+REPLACEMENT_MS = 155_000
+ACCEPT_RESULTS_UNTIL_MS = 230_000
+SEAL_MS = 240_000
+
+# 前五個里程碑四種題型共用；只有收件牆與封存隨題型移動。
+FIXED_MILESTONES_MS = (
     0,
     START_RETRY_MS,
     PRIMARY_ONLY_END_MS,
     CHECKPOINT_MS,
     REPLACEMENT_MS,
-    ACCEPT_RESULTS_UNTIL_MS,
-    SEAL_MS,
 )
 
+
+@dataclass(frozen=True)
+class ResearchDeadlines:
+    """The two instants one run's research phase is measured against.
+
+    這是全系統唯一的時刻權威：scheduler、provider timeout、辯論起點、
+    verifier 與看板一律查 :func:`research_deadlines`，不得自己抄字面值。
+    """
+
+    accept_until_ms: int
+    seal_ms: int
+
+    @property
+    def milestones_ms(self):
+        return FIXED_MILESTONES_MS + (self.accept_until_ms, self.seal_ms)
+
+
+DEFAULT_DEADLINES = ResearchDeadlines(
+    accept_until_ms=ACCEPT_RESULTS_UNTIL_MS, seal_ms=SEAL_MS
+)
+# 2026-08-02 使用者核准：兩幣比較題的研究負擔是單幣題的兩倍。實測 run
+# 20260802T040230Z-btc-eth-4448e8 在 4:00 封存下只有 3/7 席交卷，收件牆與
+# 封存各後移 30 秒；辯論的絕對牆一律不動（比較題第一輪仍有 180 秒）。
+COMPARISON_DEADLINES = ResearchDeadlines(accept_until_ms=260_000, seal_ms=270_000)
+COMPARISON_QUESTION_TYPES = frozenset({"two_asset_comparison", "comparison"})
+
+MILESTONES_MS = DEFAULT_DEADLINES.milestones_ms
+
 FAILURE_KINDS = ("startup_error", "provider_error", "process_error", "timeout")
+
+
+def research_deadlines(question_type=None):
+    """Return the accept-until and seal instants this question type runs on.
+
+    未知或缺漏的題型退回最緊的預設時刻表：晚封存要有明確理由，
+    而一份沒宣告題型的 run 不該因此多拿 30 秒。
+    """
+    if question_type in COMPARISON_QUESTION_TYPES:
+        return COMPARISON_DEADLINES
+    return DEFAULT_DEADLINES
 
 
 class ResearchSchedulerError(RuntimeError):
@@ -40,7 +82,7 @@ class ResearchSchedulerError(RuntimeError):
 
 
 class ResearchScheduler:
-    """Coordinate seven logical seats until the immutable T+5 snapshot."""
+    """Coordinate seven logical seats until the immutable T+4 snapshot."""
 
     def __init__(
         self,
@@ -52,9 +94,11 @@ class ResearchScheduler:
         primary_models,
         replacement_models,
         seat_ids=SEAT_IDS,
+        deadlines=None,
     ):
         self.run = run
         self.clock = clock
+        self.deadlines = deadlines or research_deadlines()
         self.gateway = gateway
         self.process_runner = process_runner
         self.format_repairer = format_repairer
@@ -76,7 +120,7 @@ class ResearchScheduler:
     @property
     def source_policy(self):
         elapsed = self.elapsed_ms
-        if elapsed >= SEAL_MS:
+        if elapsed >= self.deadlines.seal_ms:
             return "search_closed"
         if elapsed >= PRIMARY_ONLY_END_MS:
             return "trusted_secondary_allowed"
@@ -105,9 +149,9 @@ class ResearchScheduler:
 
     def _sync_deadlines(self):
         now = self.elapsed_ms
-        if now >= ACCEPT_RESULTS_UNTIL_MS:
+        if now >= self.deadlines.accept_until_ms:
             self.accepting_results = False
-        for milestone in MILESTONES_MS:
+        for milestone in self.deadlines.milestones_ms:
             if milestone <= now and milestone not in self.completed_milestones:
                 self._milestone(milestone)
         return self.events
@@ -118,7 +162,11 @@ class ResearchScheduler:
         self._sync_deadlines()
         attempt = self._attempt(attempt_id)
         elapsed = self.elapsed_ms
-        if self.seal is not None or not self.accepting_results or elapsed >= ACCEPT_RESULTS_UNTIL_MS:
+        if (
+            self.seal is not None
+            or not self.accepting_results
+            or elapsed >= self.deadlines.accept_until_ms
+        ):
             return self._record_late(attempt, raw_output, elapsed)
 
         validated = self._validate_with_repair(attempt, raw_output, elapsed)
@@ -181,11 +229,11 @@ class ResearchScheduler:
             self._checkpoint_all(elapsed)
         elif elapsed == REPLACEMENT_MS:
             self._replace_missing(elapsed)
-        elif elapsed == ACCEPT_RESULTS_UNTIL_MS:
+        elif elapsed == self.deadlines.accept_until_ms:
             self.accepting_results = False
             self._event("research_result_window_closed", elapsed)
             self._cancel_running(elapsed)
-        elif elapsed == SEAL_MS:
+        elif elapsed == self.deadlines.seal_ms:
             self.accepting_results = False
             self._event("search_hard_stopped", elapsed)
             records = [
@@ -211,7 +259,7 @@ class ResearchScheduler:
                 continue
             previous = state.attempts[-1]
             next_attempt = state.recover(
-                previous.attempt_id, "not_started_at_30000ms"
+                previous.attempt_id, "not_started_at_{}ms".format(START_RETRY_MS)
             )
             if next_attempt:
                 self._launch(next_attempt, elapsed)
@@ -242,9 +290,9 @@ class ResearchScheduler:
                 "checkpoint": checkpoint,
             }
             self.run.write_json(
-                "agents/{}/checkpoint-150000.json".format(state.seat_id),
+                "agents/{}/checkpoint-{}.json".format(state.seat_id, CHECKPOINT_MS),
                 payload,
-                source="T+2:30 public research checkpoint",
+                source="T+2:00 public research checkpoint",
             )
             self._event(
                 "checkpoint_saved",
@@ -262,7 +310,7 @@ class ResearchScheduler:
                 continue
             previous = state.attempts[-1]
             next_attempt = state.recover(
-                previous.attempt_id, "no_valid_result_at_210000ms"
+                previous.attempt_id, "no_valid_result_at_{}ms".format(REPLACEMENT_MS)
             )
             if next_attempt:
                 self._launch(next_attempt, elapsed)

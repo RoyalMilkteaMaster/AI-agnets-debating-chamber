@@ -3,6 +3,12 @@
 Claude performs research; this module only owns process identity, isolation,
 timeouts and the structured-output boundary.  It never interprets a market
 stance.
+
+It also owns the two process seams every provider adapter shares.
+``SubprocessRunner`` hands the child to ``subprocess.run``, so nothing can reach
+it once it is away; ``TerminatingRunner`` keeps the ``Popen`` in a
+``ProcessRegistry`` instead, which is what lets the T+3:50 sweep stop a provider
+process that would otherwise keep burning a subscription after the deadline.
 """
 
 import hashlib
@@ -10,6 +16,7 @@ import json
 import os
 import secrets
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -23,6 +30,16 @@ CLAUDE_SEAT_SESSIONS = {
     "news": "3b3522b1-2d02-45d2-8195-3162f485e06c",
     "social-macro": "2cfc5b87-ba9d-4788-9657-d8d79c87dcd3",
 }
+
+RESEARCH_TOOLS = "WebSearch,WebFetch"
+# ``--tools ""`` 是 CLI 記載的「關閉全部內建工具」語法（claude 2.1.220 --help），
+# 已用 /tmp 真實冒煙確認結構化輸出照樣回得來。--disallowedTools 再點名兩個搜尋
+# 工具，未來預設值改了也搶不回來。
+NO_TOOLS = ""
+
+TERMINATED_AT_DEADLINE = "terminated_at_deadline"
+TERMINATE_GRACE_SECONDS = 3
+KILL_POLL_SECONDS = 0.05
 
 SMOKE_SCHEMA = {
     "type": "object",
@@ -64,14 +81,14 @@ class SubprocessRunner:
                 returncode=result.returncode,
                 stdout=result.stdout,
                 stderr=result.stderr,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
+                elapsed_ms=_elapsed_ms(started),
             )
         except subprocess.TimeoutExpired as exc:
             return ProcessOutput(
                 returncode=None,
                 stdout=_text(exc.stdout),
                 stderr=_text(exc.stderr),
-                elapsed_ms=int((time.monotonic() - started) * 1000),
+                elapsed_ms=_elapsed_ms(started),
                 timed_out=True,
             )
         except OSError as exc:
@@ -79,8 +96,121 @@ class SubprocessRunner:
                 returncode=127,
                 stdout="",
                 stderr=str(exc),
-                elapsed_ms=int((time.monotonic() - started) * 1000),
+                elapsed_ms=_elapsed_ms(started),
             )
+
+
+class ProcessRegistry:
+    """Thread-safe map from a worker key to the child process it is running.
+
+    The worker thread tracks and releases; the deadline sweep runs on another
+    thread and only calls :meth:`terminate`. Stopping a process is always best
+    effort: a provider that already died must never break the T+3:50 sweep.
+
+    A key is *poisoned* the moment it is terminated, and stays poisoned for the
+    rest of the run: a terminate landing in the gap between one process ending
+    and its retry starting would otherwise signal nothing, and the retry would
+    burn the whole timeout after the deadline. A poisoned key therefore stops
+    every process tracked afterwards, at once, inside the registry lock. Keys
+    must be attempt-scoped for that to be safe — a thread-scoped key would
+    poison whichever seat inherits that pooled thread next.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._processes = {}
+        self._terminated = set()
+        self._poisoned = set()
+
+    def track(self, key, process):
+        """Adopt ``process``; a key already terminated stops it on arrival."""
+        with self._lock:
+            self._processes[key] = process
+            if key not in self._poisoned:
+                self._terminated.discard(key)
+                return process
+            self._terminated.add(key)
+            _stop(process, TERMINATE_GRACE_SECONDS)
+        return process
+
+    def release(self, key, process):
+        """Forget ``process`` and report whether this registry terminated it."""
+        with self._lock:
+            if self._processes.get(key) is process:
+                del self._processes[key]
+            terminated = key in self._terminated
+            self._terminated.discard(key)
+        return terminated
+
+    def terminate(self, key, grace_seconds=TERMINATE_GRACE_SECONDS):
+        """Poison the key, then report whether a signal reached a live process."""
+        with self._lock:
+            self._poisoned.add(key)
+            process = self._processes.get(key)
+            if process is None:
+                return False
+            self._terminated.add(key)
+        return _stop(process, grace_seconds)
+
+
+class TerminatingRunner:
+    """Process seam whose child can be stopped from another thread.
+
+    ``run`` is the ``SubprocessRunner`` interface used by the Claude and Codex
+    adapters; ``run_process`` is the ``CompletedProcess`` callable shape the
+    Antigravity adapter expects. Both key the registry by the calling worker, so
+    one runner serves every seat in the pool.
+    """
+
+    def __init__(self, registry=None, key_source=None):
+        self.registry = registry or ProcessRegistry()
+        self.key_source = key_source or threading.get_ident
+
+    def run(self, args, *, input_text, cwd, timeout_seconds):
+        started = time.monotonic()
+        try:
+            process = self._spawn(args, cwd)
+        except OSError as exc:
+            return ProcessOutput(
+                returncode=127,
+                stdout="",
+                stderr=str(exc),
+                elapsed_ms=_elapsed_ms(started),
+            )
+        key = self.key_source()
+        self.registry.track(key, process)
+        try:
+            stdout, stderr, timed_out = _communicate(
+                process, input_text, timeout_seconds
+            )
+        finally:
+            terminated = self.registry.release(key, process)
+        return ProcessOutput(
+            returncode=None if timed_out else process.returncode,
+            stdout=stdout,
+            stderr=_with_deadline_note(stderr, terminated),
+            elapsed_ms=_elapsed_ms(started),
+            timed_out=timed_out,
+        )
+
+    def run_process(self, argv, cwd, timeout):
+        """Antigravity's runner callable: a ``CompletedProcess`` or a timeout."""
+        output = self.run(argv, input_text="", cwd=cwd, timeout_seconds=timeout)
+        if output.timed_out:
+            raise subprocess.TimeoutExpired(list(argv), timeout)
+        return subprocess.CompletedProcess(
+            list(argv), output.returncode, output.stdout, output.stderr
+        )
+
+    def _spawn(self, args, cwd):
+        return subprocess.Popen(
+            list(args),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(cwd),
+            text=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -93,6 +223,8 @@ class ClaudeAttemptRequest:
     timeout_seconds: float = 90
     json_schema: dict = field(default_factory=lambda: dict(SMOKE_SCHEMA))
     validator: object = None
+    # 研究階段要搜尋；T+4:00 封存之後的呼叫必須明確關掉這個能力。
+    allow_search: bool = True
 
 
 @dataclass(frozen=True)
@@ -162,6 +294,7 @@ class ClaudeAdapter:
             timeout_seconds=request.timeout_seconds,
             json_schema=request.json_schema,
             validator=request.validator,
+            allow_search=request.allow_search,
         )
 
     def _command(self, request, session_id):
@@ -172,10 +305,9 @@ class ClaudeAdapter:
             CLAUDE_MODEL_ALIAS,
             "--permission-mode",
             "dontAsk",
-            "--tools",
-            "WebSearch,WebFetch",
-            "--allowedTools",
-            "WebSearch,WebFetch",
+        ]
+        command += _tool_flags(request.allow_search)
+        command += [
             "--output-format",
             "json",
             "--json-schema",
@@ -476,6 +608,18 @@ def run_claude_preflight(
     )
 
 
+def _tool_flags(allow_search):
+    """Hand the seat its tools, or none at all.
+
+    Search is a capability, not a request: after the T+4:00 seal the debate and
+    the report may only read sealed evidence, so the sealed call is given no
+    tools instead of being asked nicely in the prompt to stay offline.
+    """
+    if allow_search:
+        return ["--tools", RESEARCH_TOOLS, "--allowedTools", RESEARCH_TOOLS]
+    return ["--tools", NO_TOOLS, "--disallowedTools", RESEARCH_TOOLS]
+
+
 def mask_session_id(session_id):
     return "{}-…-{}".format(session_id[:8], session_id[-4:])
 
@@ -560,11 +704,77 @@ def _preflight_report(
         "resume_checkpoint_sha256": resume_checkpoint_sha256,
         "isolation": {
             "working_directory": "stable Data Root seat directory",
-            "tools": ["WebSearch", "WebFetch"],
+            "tools": RESEARCH_TOOLS.split(","),
             "code_root_write_tools": False,
         },
         "reasons": reasons,
     }
+
+
+def _communicate(process, input_text, timeout_seconds):
+    """Drain the child, killing it on timeout so no process outlives the seat."""
+    try:
+        stdout, stderr = process.communicate(input=input_text, timeout=timeout_seconds)
+        return _text(stdout), _text(stderr), False
+    except subprocess.TimeoutExpired:
+        _signal(process, "kill")
+        stdout, stderr = process.communicate()
+        return _text(stdout), _text(stderr), True
+
+
+def _with_deadline_note(stderr, terminated):
+    """截止時被終止的呼叫要在現場留下記號，事後不必重跑就知道原因。"""
+    if not terminated:
+        return stderr
+    if not stderr.strip():
+        return TERMINATED_AT_DEADLINE
+    return "{}：{}".format(TERMINATED_AT_DEADLINE, stderr)
+
+
+def _stop(process, grace_seconds):
+    """Signal one process; report whether the signal was actually delivered."""
+    if not _signal(process, "terminate"):
+        return False
+    _escalate_to_kill(process, grace_seconds)
+    return True
+
+
+def _escalate_to_kill(process, grace_seconds):
+    """寬限期在背景等待：截止收尾這條執行緒不能被卡住。"""
+    threading.Thread(
+        target=_kill_after_grace,
+        args=(process, grace_seconds),
+        name="hoya-terminate",
+        daemon=True,
+    ).start()
+
+
+def _kill_after_grace(process, grace_seconds):
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        if _poll(process) is not None:
+            return
+        time.sleep(KILL_POLL_SECONDS)
+    _signal(process, "kill")
+
+
+def _signal(process, name):
+    try:
+        getattr(process, name)()
+    except Exception:  # 停止外部進程永遠是 best effort
+        return False
+    return True
+
+
+def _poll(process):
+    try:
+        return process.poll()
+    except Exception:  # 查不到狀態就當它已結束，不再升級
+        return 0
+
+
+def _elapsed_ms(started):
+    return int((time.monotonic() - started) * 1000)
 
 
 def _text(value):

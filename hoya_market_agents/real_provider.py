@@ -1,0 +1,946 @@
+"""Real, subscription-backed process runner for the seven research seats.
+
+The runner owns process dispatch only. It never interprets a market stance, and
+it never touches the scheduler or the run store from a worker thread: the only
+cross-thread channel is ``results_queue``.
+
+Seat routing
+------------
+* Claude 3 seats (``official-events`` / ``news`` / ``social-macro``) and the
+  Antigravity seat (``counter-evidence``) run locally in one shared thread pool
+  and answer through ``results_queue``.
+* Codex 3 seats (``spot-technical`` / ``derivatives`` / ``onchain``) take one of
+  two channels, chosen by ``codex_mode``:
+
+  ``"cli"`` (default)
+      Dispatched locally through ``codex exec`` in the same thread pool, so one
+      ``launch`` fills all seven seats without a human opening Codex threads.
+  ``"inbox"``
+      Fallback only: the request is left in the inbox and an external Codex
+      bridge answers by writing an inbox result, which the launcher relays.
+
+  The write-once inbox request is written in *both* modes: in ``"cli"`` mode it
+  is the audit record of what was dispatched, never a second dispatch.
+
+Wiring contract used by the launcher::
+
+    RealSeatRunner(
+        run,                        # RunDirectory for this run
+        data_root,                  # Data Root path
+        code_root,                  # Code Root path
+        results_queue,              # queue.Queue for worker messages
+        question_scope_or_package,  # QuestionPackage or question scope
+        inbox_requests_dir,         # <data_root>/inbox/<run_id>/requests
+        claude_adapter=None,        # ClaudeAdapter seam (default: real CLI)
+        antigravity_adapter=None,   # AntigravityAdapter seam (default: real CLI)
+        codex_adapter=None,         # CodexExecAdapter seam (default: real CLI)
+        codex_mode="cli",           # "cli" dispatches locally, "inbox" waits
+        executor=None,              # ThreadPoolExecutor seam (default: owned)
+    )
+
+``shutdown(wait=True)`` releases the owned worker pool. It is a lifecycle
+helper for the launcher and tests, not part of the five-method runner protocol
+(``start`` / ``checkpoint`` / ``correct`` / ``cancel`` / ``terminate``).
+
+``build_attempt_prompt`` is the single prompt assembly for all seven seats. The
+launcher calls it to write the three Codex inbox prompts, so an inbox seat and a
+locally dispatched seat read byte-identical shared rules.
+
+Queue messages follow the frozen runner protocol::
+
+    ("result", attempt_id, raw_text)
+    ("failure", attempt_id, failure_kind, message)
+
+Debate turns (Ticket T6) reuse this pool, this registry and this queue with a
+second, non-overlapping message vocabulary. ``dispatch_id`` is the debate key
+(``"<seat_id>-<turn>"``); it never collides with a research ``attempt_id``
+(``"<seat_id>-a<n>"``), so one drain loop can tell the two phases apart::
+
+    ("debate_result",  dispatch_id, raw_text)
+    ("debate_failure", dispatch_id, failure_kind, message)
+    ("provider_lineage", seat_id, {provider, actual_model, elapsed_ms, ...})
+
+``provider_lineage`` is published by debate workers only, before the result or
+failure, and is never suppressed by cancellation: which model actually answered
+stays true even for a turn whose deadline passed.
+
+Deadline termination
+--------------------
+A running ``Future`` cannot be cancelled, so cancelling one would leave the real
+provider process burning a subscription after T+3:50 and holding up the launch.
+Every locally dispatched seat therefore runs through ``TerminatingRunner`` with
+one shared ``ProcessRegistry``, keyed by the attempt (or debate dispatch) the
+worker is running — never by the pooled thread, which other seats reuse.
+``cancel``/``terminate`` cancel the future *and* terminate that child (kill
+after a short grace), and never raise. The registry keeps the key poisoned
+afterwards, so a retry spawned just after the cancel — the Claude same-session
+resume is the one that can — is stopped the moment it registers instead of
+running its full timeout unattended.
+
+Live research proof
+-------------------
+A seat only counts when its provider proves it researched live in this run:
+Claude must report a ``claude-opus`` model and at least one web_search/web_fetch
+server tool call, Antigravity must show a completed ``search_web`` step
+(``require_search=True``), and Codex must print at least one ``web search:``
+line in its transcript. Anything else is published as ``provider_error`` instead
+of being adopted as evidence.
+
+Search after the seal
+---------------------
+The mirror image holds once the T+4:00 snapshot is sealed: every debate turn and
+Core's report call is dispatched with ``allow_search=False``, which switches the
+capability off for Claude (no tools at all) and Codex
+(``tools.web_search=false``). ``agy`` exposes no flag that removes a tool, so
+that seat is held to the same rule one layer later — a completed ``search_web``
+step makes the reply unusable. All three are also checked again on the result:
+Claude's reported ``web_search_requests``, Codex's search invocations and
+``agy``'s completed step each have to be zero. A sealed call that searched anyway
+is published as ``provider_error`` with ``post_seal_search_detected``; it is
+never adopted.
+
+Model lanes
+-----------
+``PRIMARY_MODELS`` comes from the frozen roster. ``REPLACEMENT_MODELS`` names a
+different model per seat, because ``SeatRecoveryState.recover`` raises when the
+cross-model replacement equals the primary model. No provider CLI in this
+system can honestly serve a second model — the Claude seam is pinned to
+``claude_adapter.CLAUDE_MODEL_ALIAS``, the Antigravity seam to
+``antigravity_adapter.MODEL`` and the Codex seam to
+``codex_exec_adapter.CODEX_MODEL`` — so ``start`` raises for a replacement attempt.
+The scheduler turns that into ``startup_error`` and then ``recovery_exhausted``,
+which is the honest trace: the seat was lost, not silently re-run as primary.
+"""
+
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .antigravity_adapter import (
+    AntigravityAdapter,
+    AntigravityError,
+    AntigravityPostSealSearch,
+    AntigravityTimeout,
+)
+from .claude_adapter import (
+    ClaudeAdapter,
+    ClaudeAttemptRequest,
+    ProcessRegistry,
+    TerminatingRunner,
+)
+from .clock import iso_utc
+from .codex_exec_adapter import CodexExecAdapter, CodexExecError
+from .contract_validator import (
+    CONTRACT_VERSION,
+    DIRECTIONS,
+    MAX_EVIDENCE_CARDS_PER_SEAT,
+    SOURCE_TIERS,
+    validate_evidence_card,
+)
+from .prompt_builder import build_seat_prompt
+from .question import SUPPORTED_ASSETS
+from .research_scheduler import research_deadlines
+from .run_store import _remove_trailing_commas
+from .seats import load_roster
+from .system_preflight import load_frozen_roster
+
+CODEX_SEAT_IDS = ("spot-technical", "derivatives", "onchain")
+CLAUDE_SEAT_IDS = ("official-events", "news", "social-macro")
+ANTIGRAVITY_SEAT_IDS = ("counter-evidence",)
+
+# 研究收件牆在 T+3:50（230 秒），所以 Claude 的研究呼叫必須在那之前分出勝負，
+# 否則得到的只是一份沒人收得下的答案。實測最慢一席 217 秒交卷，225 秒收得住。
+# 收件牆本身依題型移動（比較題 T+4:20），所以 timeout 一律由 research_deadlines
+# 推導，這裡只決定要留多少 relay 餘裕。
+CLAUDE_TIMEOUT_MARGIN_MS = 5_000
+CLAUDE_TIMEOUT_SECONDS = (
+    research_deadlines().accept_until_ms - CLAUDE_TIMEOUT_MARGIN_MS
+) // 1_000
+# 假研究的兩道門：模型身分與線上檢索紀錄，任一不成立就不是本次比賽的證據。
+NO_RESEARCH_PROOF = "no_live_research_proof"
+# 封存之後的呼叫已經關掉搜尋能力；還是搜到，就代表這份回覆不是只依快照產生。
+POST_SEAL_SEARCH = "post_seal_search_detected"
+# All seven seats now run locally in one pool; the spare slot covers the
+# same-session Claude resume that shares its worker with the first attempt.
+LOCAL_WORKER_COUNT = 8
+RESUME_ATTEMPT_SUFFIX = "-resume"
+
+CODEX_MODE_CLI = "cli"
+CODEX_MODE_INBOX = "inbox"
+CODEX_MODES = (CODEX_MODE_CLI, CODEX_MODE_INBOX)
+
+DEBATE_RESULT_MESSAGE = "debate_result"
+DEBATE_FAILURE_MESSAGE = "debate_failure"
+PROVIDER_LINEAGE_MESSAGE = "provider_lineage"
+
+REPLACEMENT_MODELS = {
+    "spot-technical": "replacement-unavailable:codex-second-model",
+    "derivatives": "replacement-unavailable:codex-second-model",
+    "onchain": "replacement-unavailable:codex-second-model",
+    "official-events": "sonnet",
+    "news": "sonnet",
+    "social-macro": "sonnet",
+    "counter-evidence": "replacement-unavailable:antigravity-second-model",
+}
+
+EVIDENCE_CARD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "schema_version": {"type": "string", "enum": [CONTRACT_VERSION]},
+        "evidence_id": {"type": "string"},
+        "run_id": {"type": "string"},
+        "seat_id": {"type": "string"},
+        "attempt_id": {"type": "string"},
+        "phase": {"type": "string", "enum": ["research"]},
+        "created_at_utc": {
+            "type": "string",
+            "description": "UTC ISO-8601，格式 YYYY-MM-DDTHH:MM:SSZ",
+        },
+        "elapsed_ms": {"type": "integer", "minimum": 0},
+        "asset": {"type": "string", "enum": list(SUPPORTED_ASSETS)},
+        "category": {"type": "string"},
+        "statement": {"type": "string", "description": "繁體中文的公開陳述"},
+        "direction": {"type": "string", "enum": list(DIRECTIONS)},
+        "source_url": {"type": "string"},
+        "source_origin": {"type": "string", "description": "來源機構或原始發布者"},
+        "source_tier": {
+            "type": "integer",
+            "minimum": min(SOURCE_TIERS),
+            "maximum": max(SOURCE_TIERS),
+            "description": "1=一手官方，2=可信媒體或數據商，3=其他公開來源",
+        },
+        "published_at_utc": {
+            "type": "string",
+            "description": "UTC ISO-8601，格式 YYYY-MM-DDTHH:MM:SSZ",
+        },
+        "retrieved_at_utc": {
+            "type": "string",
+            "description": "UTC ISO-8601，格式 YYYY-MM-DDTHH:MM:SSZ",
+        },
+        "excerpt": {"type": "string", "description": "來源原文或原始數值，不得改寫"},
+        "credibility_note": {"type": "string", "description": "繁體中文的可信度與限制說明"},
+    },
+    "required": [
+        "schema_version",
+        "evidence_id",
+        "run_id",
+        "seat_id",
+        "attempt_id",
+        "phase",
+        "created_at_utc",
+        "elapsed_ms",
+        "asset",
+        "category",
+        "statement",
+        "direction",
+        "source_url",
+        "source_origin",
+        "source_tier",
+        "published_at_utc",
+        "retrieved_at_utc",
+        "excerpt",
+        "credibility_note",
+    ],
+    "additionalProperties": False,
+}
+
+RESEARCH_ENVELOPE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "seat_id": {
+            "type": "string",
+            "description": "必填，且必須精確等於本次指定的席位 ID",
+        },
+        "evidence_cards": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_EVIDENCE_CARDS_PER_SEAT,
+            "items": EVIDENCE_CARD_SCHEMA,
+        },
+    },
+    "required": ["seat_id", "evidence_cards"],
+    "additionalProperties": False,
+}
+
+
+class RealProviderError(RuntimeError):
+    """Raised when an attempt cannot be dispatched honestly."""
+
+
+@dataclass(frozen=True)
+class DebateDispatch:
+    """One seat's one debate turn: a fresh, schema-constrained invocation.
+
+    ``validator`` is mandatory because the Claude boundary refuses any
+    structured output it was not told how to check.
+    """
+
+    dispatch_id: str
+    seat_id: str
+    prompt: str
+    schema: dict
+    validator: object
+    timeout_seconds: float
+
+
+def build_attempt_prompt(question_scope_or_package, seat, run_id, attempt, checkpoint=None):
+    """Assemble the one prompt text a seat receives for a research attempt.
+
+    Every seat — local Claude/Antigravity and the three inbox-dispatched Codex
+    seats — must be assembled here, so the shared rules stay byte-identical no
+    matter which channel carries the prompt.
+    """
+    prompt = build_seat_prompt(question_scope_or_package, seat, "research")
+    return prompt.text + _output_instructions(run_id, attempt, checkpoint)
+
+
+def claude_research_timeout_seconds(question_type=None):
+    """Return the research timeout that stops just short of this run's wall."""
+    deadlines = research_deadlines(question_type)
+    return (deadlines.accept_until_ms - CLAUDE_TIMEOUT_MARGIN_MS) // 1_000
+
+
+def load_primary_models(roster=None):
+    """Return the frozen ``seat_id -> target_model`` mapping."""
+    roster = roster or load_frozen_roster()
+    return {seat["seat_id"]: seat["target_model"] for seat in roster["seats"]}
+
+
+PRIMARY_MODELS = load_primary_models()
+
+
+def validate_research_envelope_shape(value):
+    """Shallow envelope check for the Claude structured-output boundary.
+
+    The deep per-card contract is enforced later by ``RealEvidenceGateway``;
+    this only refuses shapes that could never become evidence.
+    """
+    if not isinstance(value, dict):
+        raise TypeError("research envelope 必須為 JSON 物件")
+    cards = value.get("evidence_cards")
+    if not isinstance(cards, list) or not cards:
+        raise ValueError("evidence_cards 必須為至少一張證據卡的陣列")
+    if any(not isinstance(card, dict) for card in cards):
+        raise ValueError("每張證據卡必須為 JSON 物件")
+    return value
+
+
+class RealEvidenceGateway:
+    """Validate one seat submission coming back from a real provider.
+
+    The gateway is bound to one run and one question's assets: a card carrying
+    another ``run_id`` or an asset this question never asked about is research
+    from somewhere else, and must never enter this competition's snapshot.
+    """
+
+    def __init__(self, run_id, allowed_assets):
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise RealProviderError("evidence gateway 必須綁定本次 run_id")
+        if not allowed_assets:
+            raise RealProviderError("evidence gateway 必須綁定至少一個允許資產")
+        self.run_id = run_id
+        self.allowed_assets = tuple(allowed_assets)
+
+    def validate(self, attempt, raw_output):
+        cards = _unwrap_envelope(json.loads(raw_output), attempt)
+        _require_card_count(cards)
+        for card in cards:
+            if not isinstance(card, dict):
+                raise ValueError("每張證據卡必須為 JSON 物件")
+            validate_evidence_card(card)
+            _require_lineage(card, attempt)
+            self._require_binding(card)
+        return cards
+
+    def _require_binding(self, card):
+        if card["run_id"] != self.run_id:
+            raise ValueError(
+                "證據卡 run_id 與本次 run 不一致：預期 {}，實際 {!r}".format(
+                    self.run_id, card["run_id"]
+                )
+            )
+        if card["asset"] in self.allowed_assets:
+            return
+        raise ValueError(
+            "證據卡 asset 不在本題資產範圍：允許 {}，實際 {!r}".format(
+                "/".join(self.allowed_assets), card["asset"]
+            )
+        )
+
+
+class TrailingCommaRepairer:
+    """Non-voting repair that drops only commas sitting before ``}`` or ``]``."""
+
+    name = "trailing-comma-repair"
+
+    def repair(self, attempt, raw_output, exact_error):
+        if not isinstance(raw_output, str):
+            return None
+        repaired = _remove_trailing_commas(raw_output)
+        if repaired == raw_output:
+            return None
+        return repaired
+
+
+class RealSeatRunner:
+    """Dispatch one research attempt per seat against the real providers."""
+
+    def __init__(
+        self,
+        run,
+        data_root,
+        code_root,
+        results_queue,
+        question_scope_or_package,
+        inbox_requests_dir,
+        claude_adapter=None,
+        antigravity_adapter=None,
+        codex_adapter=None,
+        codex_mode=CODEX_MODE_CLI,
+        executor=None,
+    ):
+        if codex_mode not in CODEX_MODES:
+            raise RealProviderError(
+                "codex_mode 必須是 {}：{!r}".format(" 或 ".join(CODEX_MODES), codex_mode)
+            )
+        self.run = run
+        self.data_root = Path(data_root)
+        self.code_root = Path(code_root)
+        self.results_queue = results_queue
+        self.question_scope_or_package = question_scope_or_package
+        self.inbox_requests_dir = Path(inbox_requests_dir)
+        # 三個 provider 共用一個 registry，T+3:50 才停得掉還在跑的真實進程。
+        self.process_registry = ProcessRegistry()
+        self._worker_attempt = threading.local()
+        process_runner = TerminatingRunner(
+            self.process_registry, key_source=self.worker_key
+        )
+        self.claude_adapter = claude_adapter or ClaudeAdapter(
+            runner=process_runner,
+            code_root=self.code_root,
+            data_root=self.data_root,
+        )
+        self.antigravity_adapter = antigravity_adapter or AntigravityAdapter(
+            code_root=self.code_root,
+            data_root=self.data_root,
+            runner=process_runner.run_process,
+        )
+        self.codex_adapter = codex_adapter or CodexExecAdapter(runner=process_runner)
+        self.codex_mode = codex_mode
+        self.executor = executor or ThreadPoolExecutor(
+            max_workers=LOCAL_WORKER_COUNT, thread_name_prefix="hoya-seat"
+        )
+        self._owns_executor = executor is None
+        self._seats = {seat.seat_id: seat for seat in load_roster()}
+        self._futures = {}
+        self._cancelled = set()
+        self._lock = threading.Lock()
+
+    def worker_key(self):
+        """Return the process-registry key for the work this thread is running.
+
+        The key is the attempt (or debate dispatch), never the pool thread:
+        ``ProcessRegistry.terminate`` poisons the key for the rest of the run,
+        and pooled threads are reused by other seats.
+        """
+        return getattr(self._worker_attempt, "key", None) or threading.get_ident()
+
+    def start(self, attempt, checkpoint):
+        """Dispatch one attempt, returning literal ``True`` once it is away."""
+        seat = self._seat(attempt.seat_id)
+        self._require_primary_model(attempt)
+        if attempt.seat_id in CODEX_SEAT_IDS:
+            self._write_dispatch_request(attempt)
+        worker = self._worker_for(attempt.seat_id)
+        if worker is None:
+            return True  # inbox 模式：外部 Codex bridge 擁有這一席
+        prompt = self._prompt(seat, attempt, checkpoint)
+        work_dir = self._new_work_dir(attempt.seat_id, attempt.attempt_id)
+        self._submit(attempt, worker, prompt, work_dir)
+        return True
+
+    def _worker_for(self, seat_id):
+        """Pick the provider worker, or ``None`` when an external channel owns it."""
+        if seat_id in CODEX_SEAT_IDS:
+            return None if self.codex_mode == CODEX_MODE_INBOX else self._run_codex
+        if seat_id in ANTIGRAVITY_SEAT_IDS:
+            return self._run_antigravity
+        return self._run_claude
+
+    def start_debate(self, dispatch):
+        """Dispatch one debate turn; ``False`` means this seat has no local channel."""
+        worker = self._debate_worker_for(dispatch.seat_id)
+        if worker is None:
+            return False  # inbox 模式沒有辯論回填通道，該席誠實缺席
+        work_dir = self._new_work_dir(dispatch.seat_id, dispatch.dispatch_id)
+        future = self.executor.submit(self._debate_worker, dispatch, worker, work_dir)
+        with self._lock:
+            self._futures[dispatch.dispatch_id] = future
+        return True
+
+    def core_report_adapter(self, timeout_seconds):
+        """Codex adapter for Core's report, terminable through the same registry."""
+        return CodexExecAdapter(
+            runner=TerminatingRunner(
+                self.process_registry, key_source=self.worker_key
+            ),
+            timeout_seconds=timeout_seconds,
+        )
+
+    def checkpoint(self, attempt_id):
+        """No provider here exposes a public mid-run checkpoint channel."""
+        return None
+
+    def correct(self, attempt, raw_output, exact_error):
+        """No original-format correction channel exists; the repairer decides."""
+        return None
+
+    def cancel(self, attempt_id):
+        return self._best_effort_stop(attempt_id)
+
+    def terminate(self, attempt_id):
+        return self._best_effort_stop(attempt_id)
+
+    def shutdown(self, wait=True):
+        """Release the owned worker pool; injected executors stay caller-owned."""
+        if not self._owns_executor:
+            return None
+        self.executor.shutdown(wait=wait)
+        return None
+
+    def _submit(self, attempt, work, prompt, work_dir):
+        future = self.executor.submit(self._worker, attempt, work, prompt, work_dir)
+        with self._lock:
+            self._futures[attempt.attempt_id] = future
+
+    def _worker(self, attempt, work, prompt, work_dir):
+        self._bind_worker_key(attempt.attempt_id)
+        try:
+            work(attempt, prompt, work_dir)
+        except Exception as exc:  # a worker must never lose a seat silently
+            self._publish(("failure", attempt.attempt_id, "provider_error", str(exc)))
+        finally:
+            self._release_worker_key()
+
+    def _research_timeout_seconds(self):
+        """本場題型的研究 timeout；舊式 scope 沒有題型時退回預設時刻表。"""
+        return claude_research_timeout_seconds(
+            getattr(self.question_scope_or_package, "question_type", None)
+        )
+
+    def _run_claude(self, attempt, prompt, work_dir):
+        # 每個 attempt 都在自己的 work dir（獨立 Claude project scope）用固定席位
+        # UUID 建立新 session；跨目錄 --resume 找不到 session，會立即 exit 1。
+        request = ClaudeAttemptRequest(
+            seat_id=attempt.seat_id,
+            attempt_id=attempt.attempt_id,
+            prompt=prompt,
+            attempt_dir=work_dir,
+            resume=False,
+            timeout_seconds=self._research_timeout_seconds(),
+            json_schema=RESEARCH_ENVELOPE_SCHEMA,
+            validator=validate_research_envelope_shape,
+        )
+        result = self.claude_adapter.run(request)
+        # cancel 之後不准 resume：新進程沒有人會再 terminate 一次，會在截止後
+        # 繼續燒訂閱並拖住 launch 收尾（scheduler 的 _cancel_running 只掃一輪）。
+        if result.scheduler_failure_kind == "process_error" and not self._is_cancelled(
+            attempt.attempt_id
+        ):
+            result = self._resume_claude(request, attempt)
+        failure_kind = result.scheduler_failure_kind
+        if failure_kind is not None:
+            message = _failure_message(result)
+            self._publish(("failure", attempt.attempt_id, failure_kind, message))
+            return
+        unproven = _claude_research_proof_problem(result)
+        if unproven is not None:
+            self._publish(("failure", attempt.attempt_id, "provider_error", unproven))
+            return
+        self._publish(("result", attempt.attempt_id, _dumps(result.structured_output)))
+
+    def _resume_claude(self, request, attempt):
+        """Retry once in the same fixed session, as the preflight fallback does.
+
+        Resume 必須沿用同一個 work dir：Claude session 依專案目錄隔離，
+        換目錄 resume 會直接 No conversation found。
+        """
+        retry_attempt_id = attempt.attempt_id + RESUME_ATTEMPT_SUFFIX
+        return self.claude_adapter.run(
+            self.claude_adapter.resumed_request(
+                request,
+                attempt_id=retry_attempt_id,
+                prompt=request.prompt,
+                attempt_dir=request.attempt_dir,
+            )
+        )
+
+    def _run_codex(self, attempt, prompt, work_dir):
+        # 每個 Codex 失敗類別自己帶著 scheduler 的 failure_kind，
+        # 所以這裡只要一個 except，不必依症狀分支。
+        try:
+            result = self.codex_adapter.invoke(
+                prompt, RESEARCH_ENVELOPE_SCHEMA, work_dir
+            )
+        except CodexExecError as exc:
+            self._publish(("failure", attempt.attempt_id, exc.failure_kind, str(exc)))
+            return
+        if result.search_invocations < 1:
+            self._publish(
+                ("failure", attempt.attempt_id, "provider_error", NO_RESEARCH_PROOF)
+            )
+            return
+        self._publish(("result", attempt.attempt_id, _dumps(result.structured_output)))
+
+    def _run_antigravity(self, attempt, prompt, work_dir):
+        try:
+            # require_search：沒有成功的 search_web 就不是真研究，直接 fail closed。
+            result = self.antigravity_adapter.invoke(
+                prompt, RESEARCH_ENVELOPE_SCHEMA, work_dir, require_search=True
+            )
+        except AntigravityTimeout as exc:
+            self._publish(("failure", attempt.attempt_id, "timeout", str(exc)))
+            return
+        except AntigravityError as exc:
+            self._publish(("failure", attempt.attempt_id, "provider_error", str(exc)))
+            return
+        self._publish(("result", attempt.attempt_id, _dumps(result.structured_output)))
+
+    def _debate_worker_for(self, seat_id):
+        """Pick the debate worker, or ``None`` when no local channel owns the seat."""
+        if seat_id in CODEX_SEAT_IDS:
+            return None if self.codex_mode == CODEX_MODE_INBOX else self._debate_codex
+        if seat_id in ANTIGRAVITY_SEAT_IDS:
+            return self._debate_antigravity
+        return self._debate_claude
+
+    def _debate_worker(self, dispatch, work, work_dir):
+        self._bind_worker_key(dispatch.dispatch_id)
+        try:
+            work(dispatch, work_dir)
+        except Exception as exc:  # a worker must never lose a seat silently
+            self._publish_debate_failure(dispatch, "provider_error", str(exc))
+        finally:
+            self._release_worker_key()
+
+    def _debate_claude(self, dispatch, work_dir):
+        # 辯論一律 fresh invocation：cancel 過的 turn 不得 resume，也不需要 resume。
+        result = self.claude_adapter.run(
+            ClaudeAttemptRequest(
+                seat_id=dispatch.seat_id,
+                attempt_id=dispatch.dispatch_id,
+                prompt=dispatch.prompt,
+                attempt_dir=work_dir,
+                resume=False,
+                timeout_seconds=dispatch.timeout_seconds,
+                json_schema=dispatch.schema,
+                validator=dispatch.validator,
+                allow_search=False,
+            )
+        )
+        self._publish_lineage(dispatch, "claude", result.actual_model, result.elapsed_ms)
+        failure_kind = result.scheduler_failure_kind
+        if failure_kind is not None:
+            self._publish_debate_failure(dispatch, failure_kind, _failure_message(result))
+            return
+        if _non_negative_int(result.web_search_requests) > 0:
+            # 能力層關了還是檢索到，代表這份回覆不是只依快照產生：拒收，不當辯論
+            # 內容。codex 與 agy 都有這道結果層防線，claude 不能只靠 --tools 就算數。
+            self._publish_debate_failure(dispatch, "provider_error", POST_SEAL_SEARCH)
+            return
+        self._publish_debate_result(dispatch, result.structured_output)
+
+    def _debate_codex(self, dispatch, work_dir):
+        try:
+            # 辯論階段不得再上網：搜尋能力直接關閉，只讀已 sealed 的快照。
+            result = self.codex_adapter.invoke(
+                dispatch.prompt, dispatch.schema, work_dir, allow_search=False
+            )
+        except CodexExecError as exc:
+            self._publish_debate_failure(dispatch, exc.failure_kind, str(exc))
+            return
+        self._publish_lineage(
+            dispatch, "codex", getattr(self.codex_adapter, "model", None), result.elapsed_ms
+        )
+        if result.search_invocations > 0:
+            # 能力關了還搜到，代表這份回覆不是只依快照產生：拒收，不當證據。
+            self._publish_debate_failure(dispatch, "provider_error", POST_SEAL_SEARCH)
+            return
+        self._publish_debate_result(dispatch, result.structured_output)
+
+    def _debate_antigravity(self, dispatch, work_dir):
+        try:
+            # agy 沒有關閉工具的旗標，能力層關不掉；改在結果層攔：
+            # 封存後只要真的執行過 search_web，這份回覆一律不收。
+            result = self.antigravity_adapter.invoke(
+                dispatch.prompt, dispatch.schema, work_dir, allow_search=False
+            )
+        except AntigravityTimeout as exc:
+            self._publish_debate_failure(dispatch, "timeout", str(exc))
+            return
+        except AntigravityPostSealSearch:
+            self._publish_debate_failure(dispatch, "provider_error", POST_SEAL_SEARCH)
+            return
+        except AntigravityError as exc:
+            self._publish_debate_failure(dispatch, "provider_error", str(exc))
+            return
+        self._publish_lineage(
+            dispatch,
+            "antigravity",
+            result.actual_model,
+            _seconds_to_ms(result.duration_seconds),
+        )
+        self._publish_debate_result(dispatch, result.structured_output)
+
+    def _publish_debate_result(self, dispatch, structured_output):
+        self._publish(
+            (DEBATE_RESULT_MESSAGE, dispatch.dispatch_id, _dumps(structured_output))
+        )
+
+    def _publish_debate_failure(self, dispatch, failure_kind, message):
+        self._publish(
+            (DEBATE_FAILURE_MESSAGE, dispatch.dispatch_id, failure_kind, message)
+        )
+
+    def _publish_lineage(self, dispatch, provider, actual_model, elapsed_ms):
+        """Model provenance is true even for a cancelled turn, so it bypasses cancel."""
+        self.results_queue.put(
+            (
+                PROVIDER_LINEAGE_MESSAGE,
+                dispatch.seat_id,
+                {
+                    "seat_id": dispatch.seat_id,
+                    "dispatch_id": dispatch.dispatch_id,
+                    "provider": provider,
+                    "actual_model": actual_model,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+        )
+
+    def _write_dispatch_request(self, attempt):
+        attempt_id = _safe_segment(attempt.attempt_id)
+        self.inbox_requests_dir.mkdir(parents=True, exist_ok=True)
+        target = self.inbox_requests_dir / "{}.json".format(attempt_id)
+        payload = {
+            "schema_version": CONTRACT_VERSION,
+            "run_id": self.run.run_id,
+            "seat_id": attempt.seat_id,
+            "attempt_id": attempt_id,
+            "kind": attempt.kind,
+            "reason": attempt.reason,
+            "model": attempt.model,
+            "parent_attempt_id": attempt.parent_attempt_id,
+            "requested_at_utc": iso_utc(datetime.now(timezone.utc)),
+        }
+        content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        try:
+            with target.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+        except FileExistsError as exc:
+            raise RealProviderError(
+                "dispatch request 不得覆寫：{}".format(target)
+            ) from exc
+        return target
+
+    def _new_work_dir(self, seat_id, name):
+        """Work directories never live under ``attempts/``; that path is sealed."""
+        path = self.run.path / "agents" / _safe_segment(seat_id) / "work"
+        path = path / _safe_segment(name)
+        try:
+            path.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise RealProviderError("attempt 工作目錄不得重用：{}".format(path)) from exc
+        return path
+
+    def _prompt(self, seat, attempt, checkpoint):
+        return build_attempt_prompt(
+            self.question_scope_or_package, seat, self.run.run_id, attempt, checkpoint
+        )
+
+    def _publish(self, message):
+        attempt_id = message[1]
+        if self._is_cancelled(attempt_id):
+            return
+        self.results_queue.put(message)
+
+    def _is_cancelled(self, attempt_id):
+        with self._lock:
+            return attempt_id in self._cancelled
+
+    def _bind_worker_key(self, attempt_id):
+        """Key this worker thread's provider processes by the attempt it runs."""
+        self._worker_attempt.key = attempt_id
+
+    def _release_worker_key(self):
+        self._worker_attempt.key = None
+
+    def _best_effort_stop(self, attempt_id):
+        """Silence a late worker and stop its process; never raise.
+
+        Future.cancel() 只擋得住還沒開始的工作；已經在跑的 provider 進程要靠
+        registry 才停得下來，否則它會在截止後繼續燒訂閱並拖住 launch 收尾。
+        terminate 同時把這個 attempt 的 key 毒起來，所以連「取消時剛好沒有進程、
+        下一秒才生出來」的 retry 也會一註冊就被停掉。
+        """
+        try:
+            with self._lock:
+                self._cancelled.add(attempt_id)
+                future = self._futures.get(attempt_id)
+            if future is not None:
+                future.cancel()
+            self.process_registry.terminate(attempt_id)
+        except Exception:  # cancellation must not break the T+3:50 sweep
+            return None
+        return None
+
+    def _require_primary_model(self, attempt):
+        primary = PRIMARY_MODELS[attempt.seat_id]
+        if attempt.model == primary:
+            return
+        raise RealProviderError(
+            "席位 {} 的替補模型 {} 沒有可派發的真實 provider 通道（primary 為 {}）；"
+            "fail closed，不以 primary 模型冒名執行。".format(
+                attempt.seat_id, attempt.model, primary
+            )
+        )
+
+    def _seat(self, seat_id):
+        try:
+            return self._seats[seat_id]
+        except KeyError as exc:
+            raise RealProviderError("未知席位：{}".format(seat_id)) from exc
+
+
+def _output_instructions(run_id, attempt, checkpoint):
+    lines = [
+        "",
+        "## 本次 attempt 的唯一交付格式",
+        "- run_id：{}".format(run_id),
+        "- seat_id：{}".format(attempt.seat_id),
+        "- attempt_id：{}".format(attempt.attempt_id),
+        "- 唯一交付是單一 JSON envelope 物件："
+        '{"seat_id": "<本席 seat_id>", "evidence_cards": [ ... ]}。',
+        "- envelope 的 seat_id 為必填，且必須精確等於 {}；"
+        "不得改用裸陣列，也不得加入其他欄位。".format(attempt.seat_id),
+        "- evidence_cards 最多 {} 張；每張必須包含 schema_version=\"{}\"、run_id、"
+        "seat_id、attempt_id、phase=\"research\"、created_at_utc、elapsed_ms "
+        "與全部內容欄位。".format(MAX_EVIDENCE_CARDS_PER_SEAT, CONTRACT_VERSION),
+        "- 每張卡的 run_id、seat_id、attempt_id 必須與上列值完全一致。",
+        "- statement 與 credibility_note 必須使用繁體中文；"
+        "excerpt 必須保留來源原文或原始數值。",
+        "- 你本身就是 research background agent；不得建立任何額外 agent、"
+        "不得寫任何檔案，唯一交付就是這個 JSON envelope。",
+        "- 除該 JSON envelope 外，不要輸出任何其他文字。",
+    ]
+    if checkpoint is not None:
+        lines.append("- 續作用的公開 checkpoint：")
+        lines.append(json.dumps(checkpoint, ensure_ascii=False))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _unwrap_envelope(payload, attempt):
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        raise ValueError("研究輸出必須是 envelope 物件或證據卡陣列")
+    if payload.get("seat_id") != attempt.seat_id:
+        raise ValueError(
+            "envelope seat_id 與席位不一致：預期 {}，實際 {!r}".format(
+                attempt.seat_id, payload.get("seat_id")
+            )
+        )
+    cards = payload.get("evidence_cards")
+    if not isinstance(cards, list):
+        raise ValueError("envelope 的 evidence_cards 必須為陣列")
+    return cards
+
+
+def _require_card_count(cards):
+    """零證據不是研究結果：空 envelope 會讓一個沉默席位被標成 adopted，
+    壓掉本來該啟動的替補流程。"""
+    if not cards:
+        raise ValueError("研究輸出必須至少包含一張證據卡")
+    if len(cards) <= MAX_EVIDENCE_CARDS_PER_SEAT:
+        return
+    raise ValueError(
+        "證據卡數量 {} 超過單席上限 {}".format(len(cards), MAX_EVIDENCE_CARDS_PER_SEAT)
+    )
+
+
+def _require_lineage(card, attempt):
+    if card["seat_id"] == attempt.seat_id and card["attempt_id"] == attempt.attempt_id:
+        return
+    raise ValueError(
+        "證據卡 lineage 與 attempt 不一致：{}/{} 應為 {}/{}".format(
+            card["seat_id"], card["attempt_id"], attempt.seat_id, attempt.attempt_id
+        )
+    )
+
+
+def _safe_segment(value):
+    if not isinstance(value, str) or not value or value in (".", ".."):
+        raise RealProviderError("路徑片段必須為安全的非空字串：{!r}".format(value))
+    if Path(value).name != value or "/" in value or "\\" in value:
+        raise RealProviderError("路徑片段不得包含路徑：{!r}".format(value))
+    return value
+
+
+def _dumps(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _seconds_to_ms(seconds):
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return None
+    return int(seconds * 1000)
+
+
+def _claude_research_proof_problem(result):
+    """真研究的兩個硬證明：模型真的是 opus，且真的動用了線上檢索。
+
+    兩條判準都必須與賽前 READY 閘門（claude_adapter.run_claude_preflight）同一套
+    定義，否則會出現「賽前發 READY、正式 run 卻整排誤殺」的分歧：模型判準是
+    "opus" in actual_model；檢索次數以 result.web_search_requests（usage 與
+    modelUsage 的對帳最大值）為下限，再加計 usage 的 web_fetch。
+    """
+    actual_model = result.actual_model or ""
+    if "opus" not in actual_model:
+        return "actual_model_mismatch:{}".format(actual_model or "未回報")
+    proven_calls = max(
+        _non_negative_int(result.web_search_requests),
+        _live_research_calls(result.usage),
+    )
+    if proven_calls < 1:
+        return NO_RESEARCH_PROOF
+    return None
+
+
+def _live_research_calls(usage):
+    server = usage.get("server_tool_use") if isinstance(usage, dict) else None
+    if not isinstance(server, dict):
+        return 0
+    return sum(
+        _non_negative_int(server.get(field))
+        for field in ("web_search_requests", "web_fetch_requests")
+    )
+
+
+def _non_negative_int(value):
+    """缺欄位、null 或非整數一律當成 0：不能靠格式漂移換到通過。"""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _failure_message(result):
+    """事件流訊息帶上 stderr 摘要，失敗現場不必重跑就能診斷。"""
+    message = result.error or result.status
+    stderr = (result.stderr or "").strip()
+    if stderr:
+        message = "{}：{}".format(message, stderr[:200])
+    return message

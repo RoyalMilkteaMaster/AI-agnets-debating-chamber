@@ -1,72 +1,51 @@
-# Fresh-task preflight checklist (live Codex smoke)
+# 賽前一次性系統預檢（pre-game only）
 
-Run this in a **fresh Codex Task**, from the Code Root. It is a live check; no
-unit test can substitute for it, and no unit test in this repo has performed it.
+**本清單屬賽前作業。比賽冷啟動時一步都不執行**——比賽日 Core 只跑
+`launch` 單一命令，唯一前置是本清單成功後產出的
+`<DATA_ROOT>/preflight/latest-ready.json` 憑證。
 
-1. **Discovery** — confirm the fresh task lists the skill `hoya-market-research`
-   from `.agents/skills/hoya-market-research/SKILL.md`. If it is not listed,
-   stop: the bridge is NOT_READY.
-2. **Fresh challenge** — require the operator-provided 24-128 character
-   URL-safe nonce. Pass it unchanged as `preflight_challenge` when building the
-   handoff. A missing, altered, older-than-300-second or already-bound handoff
-   is `NOT_READY`.
-   Also require one preselected, unused competition run ID and a distinct
-   competition challenge before provider smoke begins.
-3. **Core identity** — confirm your role is `core` and your runtime model is
-   confirmed as `gpt-5.6-sol`. Record what you actually observed, not what was
-   requested. Unconfirmed → NOT_READY, no fallback.
-4. **Question** — build the Question Package for the approved question; an
-   unsupported question type stops the run before any thread is opened.
-5. **Data Root** — confirm the Data Root is a directory separate from the Code
-   Root, and that the run directory exists.
-6. **Dispatch policy** — use runtime-enforced `allowed_tools=["web_search"]`, no filesystem
-   or secret access, and public-structured-response-only mode. Record the
-   runtime dispatch ID and receipt. Require unique dispatch and receipt IDs per
-   seat, and require every receipt to bind its dispatch ID and exact policy
-   hash. If the runtime cannot enforce or expose this, stop: prompt text and
-   Python helper claims do not prove isolation.
-7. **Threads** — create exactly three persistent Codex subagent threads, one
-   per fixed seat. For each, record `seat_id`, `thread_id` and the **actual**
-   model reported by the thread. Any thread that cannot confirm `gpt-5.6-sol` or
-   persistence → NOT_READY; do not proceed with two seats.
-8. **Handoff** — write `preflight/codex-handoff.json` (shape in
-   `codex-bridge-contract.md`) once into the run directory.
-9. **Verify** —
+在賽前（非比賽計時內）從 Code Root 依序完成：
+
+1. **登入檢查** — Codex、Claude CLI 與 Antigravity CLI 均已登入，且訂閱權限
+   有效。Claude 三席能回傳結構化測試結果；`agy models` 顯示
+   `gemini-3.1-pro-high`，且能完成非互動測試呼叫。
+2. **模型檢查** — Core 與三個 Codex 席的實際模型均為 `gpt-5.6-sol`
+   （**GPT-5.6 Sol**）。Core 無法讀取自身 runtime 模型時，可接受操作者明確
+   確認 UI 顯示目標模型，並記錄
+   `model_confirmation_source="operator_ui"`；不得稱之為 runtime attestation。
+3. **Roster 檢查** — `config/agent_roster.json` 的七席 provider／模型映射與
+   凍結 roster 一致：Codex 三席 `spot-technical`／`derivatives`／`onchain`、
+   Claude 三席 `official-events`／`news`／`social-macro`、Antigravity 一席
+   `counter-evidence`。不得替換模型、席位或席數。
+4. **環境檢查** — Data Root 與 Code Root 是不同目錄；Data Root 可建立執行
+   目錄並寫入檔案；Windows／WSL 路徑轉換與命令參數傳遞正常。
+5. **Codex bridge（legacy 儀式，賽前僅此一次）** — real 預檢仍要求已驗證的
+   Codex handoff，否則 `codex_runtime_receipts` 失敗且不會消耗
+   Claude／Antigravity smoke。在 fresh Codex Task（從 Code Root 開啟）內：
+
+   1. `python3 -m hoya_market_agents prepare-launch --question '<任一核准題目>' --data-root DATA_ROOT`
+      取得 `CODEX_RUN_ID` 與 `CODEX_CHALLENGE`。
+   2. 開 3 個 persistent Codex threads（`gpt-5.6-sol`），依
+      `codex-bridge-contract.md` 寫入 handoff artifact。
+   3. `verify-preflight --provider codex --run-id ... --challenge ...` 須 READY。
+
+   handoff 建立後 **300 秒內**執行第 6 步；過期或已綁定 → 重開 fresh Task 重做。
+
+6. **系統預檢** — 執行唯一的聚合就緒閘門：
 
    ```bash
-   python3 -m hoya_market_agents verify-preflight --provider codex --run-id RUN_ID --challenge CODEX_CHALLENGE --data-root DATA_ROOT
+   # WSL
+   python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real \
+     --codex-run-id '<CODEX_RUN_ID>' --codex-challenge '<CODEX_CHALLENGE>' \
+     --data-root DATA_ROOT
    ```
 
-   Exit `0` and `狀態：READY` on stdout means the artifact is consistent.
-   Exit `1` prints the NOT_READY reason on stderr.
-10. **Provider bridge checkpoint** — do not send the market question yet. A
-   Codex bridge READY result is only one input to system readiness.
-11. **Provider authorization** — before dispatching the competition run, run:
+   `--mode fixture` 只驗 schema 與失敗處理，永遠 `NOT_READY`，不能授權
+   真實比賽；只有 `--mode real` 消耗真實 provider 能力證據並產出憑證。
+   成功判準是 **exit 0**（provider 能力全過；`search` 等三項 run-scoped 證據
+   由正式 run 產生，不阻擋憑證）。任一主要席位失敗即 `NOT_READY`，
+   不得用備援模型偽裝通過。
 
-    ```bash
-    python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --competition-run-id COMPETITION_RUN_ID --competition-challenge COMPETITION_CHALLENGE --data-root DATA_ROOT
-    ```
-
-    Current subscription CLIs lack independently verifiable provider/runtime
-    attestation. Require the exact `provider_runtime_attestation` advisory and
-    disclose that local hashes prove integrity, not provider authenticity. The
-    advisory does not block operational authorization when all capability
-    checks pass.
-12. **Search receipt gate** — require live receipts for three independent GPT
-    search executions in the authorized run. The Codex preflight only proves
-    that `web_search` is allowed; it does not prove a completed search. Do not substitute a prompt claim, fixture, fake
-    receipt, different model or fewer seats.
-13. **Live drill and launch** — require a verifier-passing drill marked
-    `provider_mode=real-subscription` and `competition_ready=true`. A fake drill
-    tests orchestration only. Dispatch only the exact preauthorized run ID and
-    challenge. Final competition readiness comes from `verify-run`, not a
-    second preflight that would create circular lineage.
-    Every real seat must also return its run-scoped dispatch/completion receipt,
-    provider search receipt, public transcript hash and structured output hash;
-    all receipt paths/hashes must be present in the run artifact index. Receipt
-    attempts must match adopted evidence/debate/vote lineage and parsed
-    structured outputs must canonically equal the formal evidence records.
-
-Known limitation: steps 1, 3, 6 and 7 depend on live Codex runtime capability and
-are the parts unit tests cannot prove. Record the observed `thread_id` and
-actual model values in the handoff so the result is auditable afterwards.
+成功後產出 `<DATA_ROOT>/preflight/latest-ready.json`
+（`status:"READY"`、`provider_capabilities_ready:true`）。比賽日直接貼題目，
+Core 依 SKILL.md 快速路徑執行 `launch`，不再重跑本清單任何一步。

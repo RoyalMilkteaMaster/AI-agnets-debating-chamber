@@ -161,12 +161,12 @@ class RunDirectory:
             return False
 
     def seal_evidence_snapshot(self, records, sealed_at_utc, elapsed_ms):
-        """Write and seal the T+5 evidence snapshot exactly once."""
+        """Write and seal the T+4 evidence snapshot exactly once."""
         snapshot_name = "snapshots/evidence.jsonl"
         text = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         try:
-            self.write_text(snapshot_name, text, source="validated evidence merge at T+5")
+            self.write_text(snapshot_name, text, source="validated evidence merge at T+4")
             metadata = {
                 "run_id": self.run_id,
                 "path": snapshot_name,

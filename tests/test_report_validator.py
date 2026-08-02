@@ -117,7 +117,13 @@ class ConfidenceCapTests(unittest.TestCase):
         self.assertIsNotNone(validate_market_report(fixture["report"], fixture["sources"]))
 
 
-class ProhibitedAdviceTests(unittest.TestCase):
+class ReportContentIsNotFilteredTests(unittest.TestCase):
+    """2026-08-02 使用者決策：報告內容不做審查，品管交給七席同儕辯論。
+
+    驗證器只攔可客觀比對的事實（evidence ID、票數、方向、信心上限）；
+    任何市場語言——描述或建議——都不再是驗證失敗理由。
+    """
+
     CASES = (
         ("price_target", "目標價 120000 美元"),
         ("guaranteed", "此區間保證上漲，不會回檔"),
@@ -125,48 +131,30 @@ class ProhibitedAdviceTests(unittest.TestCase):
         ("position_size", "請將倉位配置至資產的 30%"),
         ("direct_order", "現在請買進並於下週賣出"),
         ("english_long_order", "Open a BTC long position now"),
-        ("english_go_long", "Go long BTC now"),
-        ("english_go_short", "Go short ETH now"),
-        ("english_leveraged_order", "Open a leveraged position now"),
+        ("descriptive_pressure", "賣壓沉重、做空情緒升溫、全網槓桿率下降"),
     )
 
-    def test_prohibited_advice_fails_closed(self):
+    def test_market_language_never_fails_validation(self):
         for label, phrase in self.CASES:
             with self.subTest(case=label):
                 fixture = load_fixture("consensus-6-1")
                 fixture["report"]["judgement"] = phrase
-                with self.assertRaises(ReportContractError) as ctx:
+                self.assertIsNotNone(
                     validate_market_report(fixture["report"], fixture["sources"])
-                self.assertTrue(
-                    any("禁止" in problem for problem in ctx.exception.problems),
-                    ctx.exception.problems,
                 )
 
-    def test_prohibited_advice_is_detected_in_nested_fields(self):
+    def test_nested_fields_are_not_content_filtered(self):
         fixture = load_fixture("consensus-6-1")
         fixture["report"]["limitations"].append("保證上漲")
-        with self.assertRaises(ReportContractError):
+        self.assertIsNotNone(
             validate_market_report(fixture["report"], fixture["sources"])
+        )
 
-    def test_shipped_fixtures_contain_no_prohibited_advice(self):
+    def test_shipped_fixtures_still_validate(self):
         for case in ("consensus-6-1", "no-consensus-3-3-1", "insufficient-data"):
             with self.subTest(case=case):
                 fixture = load_fixture(case)
                 validate_market_report(fixture["report"], fixture["sources"])
-
-    def test_ordinary_english_market_analysis_is_not_misclassified_as_an_order(self):
-        analysis_phrases = (
-            "BTC long positioning increased while sell-side liquidity remained visible.",
-            "We take a long-term view of BTC adoption.",
-            "Analysts take a long view when evaluating protocol adoption.",
-        )
-        for phrase in analysis_phrases:
-            with self.subTest(phrase=phrase):
-                fixture = load_fixture("consensus-6-1")
-                fixture["report"]["limitations"].append(phrase)
-                self.assertIsNotNone(
-                    validate_market_report(fixture["report"], fixture["sources"])
-                )
 
 
 class WorkflowTimingTests(unittest.TestCase):

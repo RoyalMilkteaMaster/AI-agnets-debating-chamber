@@ -13,6 +13,7 @@ from hoya_market_agents.antigravity_adapter import (
     AntigravityEnvelopeError,
     AntigravityLateResult,
     AntigravityNotReady,
+    AntigravityPostSealSearch,
     AntigravitySchemaError,
     AntigravityTimeout,
     parse_envelope,
@@ -243,6 +244,24 @@ class AntigravityAdapterTest(unittest.TestCase):
         runner = FakeRunner(stream=stream_success(search_done=False))
         with self.assertRaises(AntigravityNotReady):
             self._adapter(runner).preflight(self.attempt_dir("no-search-event"))
+
+    def test_a_no_search_call_refuses_a_reply_that_searched_anyway(self):
+        # agy CLI 沒有關閉工具的旗標，search_web 永遠在 session 裡。能力層關不掉，
+        # 就在結果層攔：封存後只要真的跑過 search_web，這份回覆一律不收。
+        with self.assertRaises(AntigravityPostSealSearch):
+            self._adapter(FakeRunner(stream=stream_success())).invoke(
+                "prompt", SCHEMA, self.attempt_dir("post-seal-search"), allow_search=False
+            )
+
+    def test_a_no_search_call_accepts_a_reply_that_never_searched(self):
+        runner = FakeRunner(stream=stream_success(search_done=False))
+
+        result = self._adapter(runner).invoke(
+            "prompt", SCHEMA, self.attempt_dir("post-seal-quiet"), allow_search=False
+        )
+
+        self.assertEqual({"answer": "ready"}, result.structured_output)
+        self.assertFalse(result.search_succeeded)
 
     def test_raw_cli_log_is_sanitized_and_temp_removed(self):
         sensitive = (

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +45,7 @@ EXPECTED_SEATS = {
     ),
 }
 COMPETITION_AUTHORIZATION_NAME = "competition-authorization.json"
+READY_CERTIFICATE_NAME = "latest-ready.json"
 
 
 class PreflightError(ValueError):
@@ -273,6 +275,52 @@ def write_preflight_manifest(data_root, preflight_id, manifest):
     with target.open("x", encoding="utf-8", newline="\n") as handle:
         handle.write(content)
     return target
+
+
+def write_ready_certificate(data_root, preflight_id, manifest, manifest_path):
+    """Publish the single pointer a live run consults; capabilities gate the write."""
+    if manifest.get("provider_capabilities_ready") is not True:
+        return None
+    _require_safe_segment(preflight_id, "preflight_id")
+    generated_at_utc = manifest.get("generated_at_utc")
+    _require_utc(generated_at_utc, "manifest generated_at_utc")
+
+    certificate = {
+        "schema_version": "1.0.0",
+        "status": "READY",
+        "system_preflight_id": preflight_id,
+        "manifest_path": "preflight/{}/manifest.json".format(preflight_id),
+        "manifest_sha256": hashlib.sha256(Path(manifest_path).read_bytes()).hexdigest(),
+        "generated_at_utc": generated_at_utc,
+        "provider_capabilities_ready": True,
+        "provider_matrix_summary": _summarize_provider_matrix(
+            manifest.get("provider_matrix")
+        ),
+    }
+    target = Path(data_root) / "preflight" / READY_CERTIFICATE_NAME
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(certificate, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(tmp, target)
+    return target
+
+
+def _summarize_provider_matrix(matrix):
+    rows = matrix if isinstance(matrix, list) else []
+    rows_by_provider = {}
+    research_seat_ids = []
+    for row in rows:
+        provider = str(row.get("provider", "unknown"))
+        rows_by_provider[provider] = rows_by_provider.get(provider, 0) + 1
+        if row.get("role") == "research-seat":
+            research_seat_ids.append(str(row.get("seat_id", "")))
+    return {
+        "row_count": len(rows),
+        "rows_by_provider": dict(sorted(rows_by_provider.items())),
+        "research_seat_ids": sorted(research_seat_ids),
+    }
 
 
 def _require_safe_segment(value, label):

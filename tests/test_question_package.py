@@ -1,9 +1,18 @@
-"""Question Package is the fail-closed boundary for the four approved question types."""
+"""Question Package normalizes the four approved types and opens everything else.
+
+A live competition question is drawn on the spot, so the package may not match any
+of the three demonstrated shapes. Anything naming an approved asset becomes an
+open proposition instead of a refusal; only a question with no approved asset at
+all still fails closed.
+"""
 
 import unittest
 
 from hoya_market_agents.question import UnsupportedQuestionError
-from hoya_market_agents.question_package import build_question_package
+from hoya_market_agents.question_package import (
+    OPEN_STANCES,
+    build_question_package,
+)
 
 
 class QuestionPackageTest(unittest.TestCase):
@@ -52,12 +61,11 @@ class QuestionPackageTest(unittest.TestCase):
         self.assertEqual("event_impact", package.question_type)
         self.assertEqual((), package.assets)
 
-    def test_unsupported_asset_and_question_type_fail_closed(self):
+    def test_question_without_any_approved_asset_fails_closed(self):
         invalid_questions = (
             "分析 DOGE 過去 14 日市場狀態",
-            "比較 BTC 與 doge 過去 14 日市場位置",
-            "請告訴我 BTC 是什麼",
-            "分析 BTC 與 ETH 市場狀態",
+            "幫我預測下週樂透號碼",
+            "若美國通過股市新法案，標普會如何反應？",
         )
 
         for question in invalid_questions:
@@ -102,6 +110,117 @@ class QuestionPackageTest(unittest.TestCase):
     def test_unparseable_explicit_period_hint_fails_closed(self):
         with self.assertRaises(UnsupportedQuestionError):
             build_question_package("分析 BTC 過去幾週市場狀態")
+
+
+class StanceLabelTest(unittest.TestCase):
+    """Every question type carries the Traditional Chinese ballot wording."""
+
+    def test_market_labels_cover_the_three_market_stances(self):
+        package = build_question_package("分析 BTC 市場狀態")
+
+        self.assertEqual(
+            {"bullish": "偏多", "bearish": "偏空", "neutral": "方向不明"},
+            package.stance_labels,
+        )
+
+    def test_comparison_labels_name_the_actual_assets_in_order(self):
+        package = build_question_package("比較 XRP 與 BTC 過去 7 日的市場位置與風險")
+
+        self.assertEqual(
+            {
+                "asset_a_stronger": "XRP較優",
+                "asset_b_stronger": "BTC較優",
+                "no_clear_difference": "無明顯差異",
+            },
+            package.stance_labels,
+        )
+
+    def test_event_labels_cover_the_three_event_stances(self):
+        package = build_question_package("評估網路升級事件對 SOL 的影響")
+
+        self.assertEqual(
+            {
+                "positive": "利多",
+                "negative": "利空",
+                "unclear_or_conditional": "不明或有條件",
+            },
+            package.stance_labels,
+        )
+
+    def test_open_labels_cover_the_three_proposition_stances(self):
+        package = build_question_package(OpenPropositionTest.QUESTION)
+
+        self.assertEqual(
+            {
+                "affirmative": "正方",
+                "negative_side": "反方",
+                "undecided": "無法決定",
+            },
+            package.stance_labels,
+        )
+
+    def test_open_negative_key_never_collides_with_the_event_vocabulary(self):
+        self.assertNotIn("negative", OPEN_STANCES)
+
+    def test_labels_survive_the_serialised_package(self):
+        package = build_question_package("分析 BTC 市場狀態")
+
+        self.assertEqual(package.stance_labels, package.to_dict()["stance_labels"])
+        self.assertIsNone(package.to_dict()["proposition"])
+
+
+class OpenPropositionTest(unittest.TestCase):
+    """A drawn question that matches no approved shape still becomes votable."""
+
+    QUESTION = "若美國通過比特幣戰略儲備法案，BTC 與市場情緒會如何反應？"
+
+    def test_free_form_question_naming_an_approved_asset_opens_a_proposition(self):
+        package = build_question_package(self.QUESTION)
+
+        self.assertEqual("open_proposition", package.question_type)
+        self.assertEqual(("BTC",), package.assets)
+        self.assertEqual(OPEN_STANCES, package.stance_options)
+        self.assertEqual(
+            ("affirmative", "negative_side", "undecided"), package.stance_options
+        )
+        self.assertIsNone(package.proposition)
+
+    def test_unknown_upper_case_token_rides_along_into_open_mode(self):
+        package = build_question_package("SEC 對 BTC 現貨 ETF 的態度會怎麼走？")
+
+        self.assertEqual("open_proposition", package.question_type)
+        self.assertEqual(("BTC",), package.assets)
+
+    def test_bracketed_asset_counts_as_an_approved_asset(self):
+        package = build_question_package("【BTC】接下來會發生什麼？")
+
+        self.assertEqual("open_proposition", package.question_type)
+        self.assertEqual(("BTC",), package.assets)
+
+    def test_shapes_that_used_to_be_refused_now_open_instead(self):
+        for question, assets in (
+            ("比較 BTC 與 doge 過去 14 日市場位置", ("BTC",)),
+            ("請告訴我 BTC 是什麼", ("BTC",)),
+            ("分析 BTC 與 ETH 市場狀態", ("BTC", "ETH")),
+        ):
+            with self.subTest(question=question):
+                package = build_question_package(question)
+
+                self.assertEqual("open_proposition", package.question_type)
+                self.assertEqual(assets, package.assets)
+
+    def test_written_proposition_replaces_only_the_proposition_field(self):
+        package = build_question_package(self.QUESTION).with_proposition(
+            "美國比特幣戰略儲備法案將推升 BTC 價格。"
+        )
+
+        self.assertEqual("美國比特幣戰略儲備法案將推升 BTC 價格。", package.proposition)
+        self.assertEqual(self.QUESTION, package.question)
+        self.assertEqual("open_proposition", package.question_type)
+        self.assertEqual(
+            "美國比特幣戰略儲備法案將推升 BTC 價格。",
+            package.to_dict()["proposition"],
+        )
 
 
 if __name__ == "__main__":

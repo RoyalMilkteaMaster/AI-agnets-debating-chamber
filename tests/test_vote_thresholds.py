@@ -4,12 +4,45 @@ import json
 import unittest
 
 from hoya_market_agents.debate_state_machine import (
+    CHALLENGE_DEADLINE_MS,
+    DEBATE_START_MS,
+    FINAL_ROUND_END_MS,
+    FINAL_ROUND_START_MS,
+    FORCE_STOP_MS,
+    THRESHOLD_FIVE_FROM_MS,
     LateMessageError,
     phase_at,
     required_votes_at,
 )
 from hoya_market_agents.seats import SEAT_IDS
 from tests.test_debate_state_machine import DebateHarness
+
+
+class DebateScheduleTest(unittest.TestCase):
+    """Ticket R8 修訂二：第二輪提前到 T+6:00，門檻降五仍在 T+8:00。"""
+
+    def test_every_debate_wall_matches_the_approved_schedule(self):
+        self.assertEqual(240_000, DEBATE_START_MS)
+        self.assertEqual(360_000, CHALLENGE_DEADLINE_MS)
+        self.assertEqual(480_000, THRESHOLD_FIVE_FROM_MS)
+        self.assertEqual(525_000, FINAL_ROUND_START_MS)
+        self.assertEqual(585_000, FINAL_ROUND_END_MS)
+        self.assertEqual(600_000, FORCE_STOP_MS)
+
+    def test_the_second_round_opens_at_six_minutes_and_still_needs_six_votes(self):
+        # 第二輪提前開始不等於門檻提前放寬：T+8:00 之前仍然要六票。
+        self.assertEqual("first_round", phase_at(CHALLENGE_DEADLINE_MS - 1))
+        self.assertEqual("first_round_closed", phase_at(CHALLENGE_DEADLINE_MS))
+        self.assertEqual(6, required_votes_at(CHALLENGE_DEADLINE_MS))
+        self.assertEqual(6, required_votes_at(THRESHOLD_FIVE_FROM_MS - 1))
+        self.assertEqual(5, required_votes_at(THRESHOLD_FIVE_FROM_MS))
+
+    def test_the_second_round_owns_the_gap_between_the_first_and_final_walls(self):
+        # r2 迄與 r3 起是同一時刻：第二輪關門的那一秒最後一輪才開門。
+        self.assertEqual("first_round", phase_at(CHALLENGE_DEADLINE_MS - 1))
+        self.assertEqual("first_round_closed", phase_at(CHALLENGE_DEADLINE_MS))
+        self.assertEqual("five_vote_threshold", phase_at(FINAL_ROUND_START_MS - 1))
+        self.assertEqual("final_round", phase_at(FINAL_ROUND_START_MS))
 
 
 class VoteThresholdTest(unittest.TestCase):
@@ -32,10 +65,10 @@ class VoteThresholdTest(unittest.TestCase):
         harness.complete_round(stances, count=5)
         self.assertFalse(harness.machine.stopped)
 
-        harness.clock.advance_ms(120_000)
+        harness.advance_to(THRESHOLD_FIVE_FROM_MS)
         harness.machine.tick()
 
-        self.assertEqual(420_000, harness.machine.stop_elapsed_ms)
+        self.assertEqual(THRESHOLD_FIVE_FROM_MS, harness.machine.stop_elapsed_ms)
         self.assertEqual("consensus_5_votes", harness.machine.stop_reason)
         self.assertEqual("bullish", harness.machine.summary()["adopted_stance"])
 
@@ -43,7 +76,7 @@ class VoteThresholdTest(unittest.TestCase):
         harness = DebateHarness(self)
         stances = ["bullish"] * 4 + ["bearish"] * 3
         harness.complete_round(stances)
-        harness.clock.advance_ms(300_000)
+        harness.advance_to(FORCE_STOP_MS)
 
         harness.machine.tick()
 
@@ -51,13 +84,13 @@ class VoteThresholdTest(unittest.TestCase):
         self.assertEqual("consensus", summary["consensus_status"])
         self.assertEqual("bullish", summary["adopted_stance"])
         self.assertEqual("forced_stop_4_votes", summary["stop_reason"])
-        self.assertEqual(600_000, summary["stop_elapsed_ms"])
+        self.assertEqual(FORCE_STOP_MS, summary["stop_elapsed_ms"])
 
     def test_three_two_two_is_no_consensus_and_preserves_every_position_as_dissent(self):
         harness = DebateHarness(self)
         stances = ["bullish"] * 3 + ["bearish"] * 2 + ["neutral"] * 2
         harness.complete_round(stances)
-        harness.clock.advance_ms(300_000)
+        harness.advance_to(FORCE_STOP_MS)
 
         harness.machine.tick()
 
@@ -72,7 +105,7 @@ class VoteThresholdTest(unittest.TestCase):
         harness = DebateHarness(self)
         stances = ["bullish"] * 3 + ["bearish"] * 2 + ["neutral"] * 2
         harness.complete_round(stances, count=3)
-        harness.clock.advance_ms(300_000)
+        harness.advance_to(FORCE_STOP_MS)
 
         harness.machine.tick()
 
@@ -85,17 +118,17 @@ class VoteThresholdTest(unittest.TestCase):
         self.assertEqual(3, summary["valid_vote_count"])
 
     def test_thresholds_are_absolute_not_a_fraction_of_available_seats(self):
-        self.assertEqual(6, required_votes_at(389_999))
-        self.assertEqual(5, required_votes_at(420_000))
-        self.assertEqual(4, required_votes_at(600_000))
-        self.assertEqual("final_round", phase_at(510_000))
-        self.assertEqual("after_final_round", phase_at(585_001))
+        self.assertEqual(6, required_votes_at(THRESHOLD_FIVE_FROM_MS - 1))
+        self.assertEqual(5, required_votes_at(THRESHOLD_FIVE_FROM_MS))
+        self.assertEqual(4, required_votes_at(FORCE_STOP_MS))
+        self.assertEqual("final_round", phase_at(FINAL_ROUND_START_MS))
+        self.assertEqual("after_final_round", phase_at(FINAL_ROUND_END_MS + 1))
 
     def test_exact_t7_settles_existing_five_before_rejecting_incoming_vote_change(self):
         harness = DebateHarness(self)
         stances = ["bullish"] * 5 + ["bearish"] * 2
         harness.complete_round(stances, count=5)
-        harness.clock.advance_ms(120_000)
+        harness.advance_to(THRESHOLD_FIVE_FROM_MS)
         incoming = harness.message(
             SEAT_IDS[0],
             "final_vote",
@@ -120,7 +153,7 @@ class VoteThresholdTest(unittest.TestCase):
         harness = DebateHarness(self)
         stances = ["bullish"] * 4 + ["bearish"] * 3
         harness.complete_round(stances)
-        harness.clock.advance_ms(300_000)
+        harness.advance_to(FORCE_STOP_MS)
         incoming = harness.message(
             SEAT_IDS[0],
             "final_vote",

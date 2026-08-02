@@ -1,4 +1,16 @@
-"""Fail-closed Antigravity CLI boundary for the stateless Gemini seat."""
+"""Fail-closed Antigravity CLI boundary for the stateless Gemini seat.
+
+Search capability, honestly
+---------------------------
+The other two providers can switch live search off for one call. ``agy`` cannot:
+version 1.1.9 has no flag that removes a tool, and every session's ``init``
+event lists ``search_web`` (verified against the real CLI). So the seal is
+enforced one layer later instead of being claimed at the capability layer:
+``invoke(..., allow_search=False)`` accepts a reply only if the transcript shows
+no completed ``search_web`` step, and raises :class:`AntigravityPostSealSearch`
+if the seat searched anyway. Any report of this system must say exactly that —
+capability could not be closed, the result was refused instead.
+"""
 
 import hashlib
 import json
@@ -57,6 +69,10 @@ class AntigravityTimeout(AntigravityError):
 
 class AntigravityLateResult(AntigravityError):
     pass
+
+
+class AntigravityPostSealSearch(AntigravityError):
+    """The seat ran a live search on a call that had to stay inside the seal."""
 
 
 @dataclass(frozen=True)
@@ -159,6 +175,7 @@ class AntigravityAdapter:
         attempt_dir,
         late_check=None,
         require_search=False,
+        allow_search=True,
     ):
         self._require_cli()
         attempt_dir = self._attempt_dir(attempt_dir)
@@ -214,10 +231,7 @@ class AntigravityAdapter:
                     self.model, parsed.actual_model or "未回報"
                 )
             )
-        if not parsed.search_available:
-            raise AntigravityNotReady("Antigravity session 未提供 search_web")
-        if require_search and not parsed.search_succeeded:
-            raise AntigravityNotReady("Antigravity search_web smoke 未成功")
+        _require_search_policy(parsed, allow_search, require_search)
         if late_check is not None and late_check():
             raise AntigravityLateResult("Antigravity result 到達時接收窗口已關閉")
         return AdapterResult(
@@ -260,6 +274,20 @@ class AntigravityAdapter:
             )
         attempt.mkdir(parents=True, exist_ok=True)
         return attempt
+
+
+def _require_search_policy(parsed, allow_search, require_search):
+    """Hold this call to its phase's search rule, in the only place it is known."""
+    if not allow_search:
+        if parsed.search_succeeded:
+            raise AntigravityPostSealSearch(
+                "封存後的呼叫仍執行了 search_web，這份回覆不採用"
+            )
+        return
+    if not parsed.search_available:
+        raise AntigravityNotReady("Antigravity session 未提供 search_web")
+    if require_search and not parsed.search_succeeded:
+        raise AntigravityNotReady("Antigravity search_web smoke 未成功")
 
 
 def parse_envelope(raw):

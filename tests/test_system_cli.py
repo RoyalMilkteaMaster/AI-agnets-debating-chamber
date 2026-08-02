@@ -1,5 +1,6 @@
 """Public CLI seams for Ticket #11 preflight and run verification."""
 
+import hashlib
 import io
 import json
 import tempfile
@@ -10,6 +11,7 @@ from unittest.mock import patch
 from hoya_market_agents.cli import (
     _apply_drill_observation,
     _claude_matrix,
+    _codex_matrix,
     _fixture_system_checks,
     main,
 )
@@ -157,6 +159,92 @@ class SystemCliTest(unittest.TestCase):
             if item["check_id"] == "seven_seat_timeline"
         ))
 
+    def _capability_ready_checks(self, *, broken_check_id=None):
+        """Every capability check observed; only run-scoped evidence is pending."""
+        checks = _fixture_system_checks()
+        pending = ("search", "seven_seat_timeline", "report_deadline")
+        for check in checks:
+            if check["check_id"] in pending:
+                check.update(ok=False, actual="run_scoped_not_observed")
+            if check["check_id"] == broken_check_id:
+                check.update(ok=False, actual="not_observed")
+        return checks
+
+    def _preflight_matrix(self):
+        return [{
+            "role": "research-seat",
+            "provider": "claude",
+            "seat_id": "official-events",
+            "target_model": "opus",
+            "actual_model": "claude-opus-5",
+            "identity": "[REDACTED]",
+        }]
+
+    def _run_real_preflight(self, preflight_id, checks):
+        with patch(
+            "hoya_market_agents.cli._real_system_checks",
+            return_value=(checks, self._preflight_matrix()),
+        ):
+            return self.run_cli(
+                "preflight",
+                "--provider", "system",
+                "--seats", "7",
+                "--mode", "real",
+                "--preflight-id", preflight_id,
+                "--data-root", str(self.data_root),
+            )
+
+    def test_capability_ready_real_preflight_exits_zero_and_writes_certificate(self):
+        code, out, err = self._run_real_preflight(
+            "real-capabilities-ready", self._capability_ready_checks()
+        )
+
+        self.assertEqual(0, code, err)
+        payload = json.loads(out)
+        self.assertTrue(payload["provider_capabilities_ready"])
+        self.assertFalse(payload["ready"])
+        self.assertEqual("NOT_READY", payload["status"])
+
+        certificate_path = self.data_root / "preflight" / "latest-ready.json"
+        certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
+        manifest_bytes = (
+            self.data_root / "preflight" / "real-capabilities-ready" / "manifest.json"
+        ).read_bytes()
+        self.assertEqual(
+            {
+                "schema_version": "1.0.0",
+                "status": "READY",
+                "system_preflight_id": "real-capabilities-ready",
+                "manifest_path": "preflight/real-capabilities-ready/manifest.json",
+                "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                "generated_at_utc": payload["generated_at_utc"],
+                "provider_capabilities_ready": True,
+            },
+            {
+                key: value for key, value in certificate.items()
+                if key != "provider_matrix_summary"
+            },
+        )
+        self.assertEqual(
+            {"claude": 1}, certificate["provider_matrix_summary"]["rows_by_provider"]
+        )
+        self.assertFalse(
+            (self.data_root / "preflight" / "latest-ready.json.tmp").exists()
+        )
+
+    def test_capability_blocker_keeps_exit_one_and_writes_no_certificate(self):
+        code, out, err = self._run_real_preflight(
+            "real-login-blocked",
+            self._capability_ready_checks(broken_check_id="provider_login"),
+        )
+
+        self.assertEqual(1, code)
+        self.assertEqual("", err)
+        payload = json.loads(out)
+        self.assertFalse(payload["provider_capabilities_ready"])
+        self.assertIn("provider_login", payload["blockers"])
+        self.assertFalse((self.data_root / "preflight" / "latest-ready.json").exists())
+
     def test_verify_run_command_prints_json_and_tamper_returns_nonzero(self):
         result = RunController(
             store=RunStore(self.data_root),
@@ -206,6 +294,17 @@ class SystemCliTest(unittest.TestCase):
 
         self.assertNotIn("0eed52ad-0c61-462d-a61c-f4b45c9e545f", str(rows))
         self.assertIn("…", rows[0]["identity"])
+
+    def test_codex_matrix_preserves_operator_ui_confirmation_source(self):
+        rows = _codex_matrix({
+            "core": {
+                "model": "gpt-5.6-sol",
+                "model_confirmation_source": "operator_ui",
+            },
+            "seats": [],
+        })
+
+        self.assertEqual("operator_ui", rows[0]["model_confirmation_source"])
 
     def test_real_drill_observation_rejects_missing_timeline(self):
         checks = _fixture_system_checks()

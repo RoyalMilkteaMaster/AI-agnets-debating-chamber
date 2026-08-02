@@ -6,17 +6,31 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fakes import FixedClock, ScriptedTokenSource
+from tests.fakes import FixedClock, ScriptedTokenSource
+from hoya_market_agents.debate_state_machine import stances_for
 from hoya_market_agents.fake_provider import FakeProvider
+from hoya_market_agents.question_package import build_question_package
+from hoya_market_agents.report_fixtures import load_fixture
 from hoya_market_agents.report_renderer import (
     REPORT_SCHEMA_VERSION,
     build_report,
     render_html,
+    render_market_html,
+    render_market_markdown,
     render_markdown,
+    resolve_stance_labels,
+    stance_labels_for,
 )
 from hoya_market_agents.run_controller import RunController
 from hoya_market_agents.run_store import RunStore
 from hoya_market_agents.seats import SEAT_IDS
+
+QUESTION_BY_TYPE = {
+    "single_asset_market_state": "分析 BTC 過去 14 日市場狀態",
+    "two_asset_comparison": "比較 BTC 與 ETH 過去 14 日的相對強弱",
+    "event_impact": "分析監管事件對 BTC 的影響",
+    "open_proposition": "分析 BTC 是否值得長期持有",
+}
 
 QUESTION = "分析 BTC 過去 14 日市場狀態"
 
@@ -136,6 +150,90 @@ class ReportRendererTest(unittest.TestCase):
         for seat in self.report["seats"]:
             for evidence_id in seat["evidence_ids"]:
                 self.assertIn(evidence_id, known)
+
+
+class StanceVocabularyTest(unittest.TestCase):
+    """Ticket T12a: report wording follows the drawn question type, not bullish/bearish."""
+
+    def test_every_question_type_keeps_its_own_ballot_wording(self):
+        expected = {
+            "single_asset_market_state": ["偏多", "偏空", "方向不明"],
+            "two_asset_comparison": ["BTC較優", "ETH較優", "無明顯差異"],
+            "event_impact": ["利多", "利空", "不明或有條件"],
+            "open_proposition": ["正方", "反方", "無法決定"],
+        }
+        for question_type, question in QUESTION_BY_TYPE.items():
+            package = build_question_package(question)
+            with self.subTest(question_type=question_type):
+                self.assertEqual(question_type, package.question_type)
+                labels = stance_labels_for(stances_for(question_type), package.assets)
+                self.assertEqual(expected[question_type], list(labels.values()))
+                # The renderer must agree with the package the seats were given.
+                self.assertEqual(package.stance_labels, labels)
+
+    def test_comparison_report_names_both_assets_in_the_tally_and_seats(self):
+        report = _comparison_report()
+
+        markdown = render_market_markdown(report)
+        html = render_market_html(report)
+
+        for text in (markdown, html):
+            self.assertIn("BTC較優：6", text)
+            self.assertIn("ETH較優：1", text)
+            self.assertIn("無明顯差異：0", text)
+            # 只有 Core 撰寫的散文可以保留原句；票數與各席立場不得再出現市場詞彙。
+            self.assertNotIn("偏多：", text)
+            self.assertNotIn("最終立場：偏多", text)
+            self.assertNotIn("asset_a_stronger", text)
+        self.assertIn("最終立場：BTC較優", markdown)
+        self.assertIn("最終 BTC較優", html)
+
+    def test_comparison_labels_degrade_without_asset_names(self):
+        labels = stance_labels_for(stances_for("two_asset_comparison"), ())
+
+        self.assertEqual(["前者較優", "後者較優", "無明顯差異"], list(labels.values()))
+
+    def test_unknown_stance_renders_verbatim_instead_of_failing(self):
+        report = _comparison_report()
+        report["tally"] = {"asset_a_stronger": 6, "surprise_stance": 1}
+
+        self.assertIn("surprise_stance：1", render_market_markdown(report))
+
+    def test_resolved_labels_prefer_the_ballot_the_run_recorded(self):
+        stances = stances_for("two_asset_comparison")
+        provided = {
+            "asset_a_stronger": "BTC較優",
+            "asset_b_stronger": "ETH較優",
+            "no_clear_difference": "無明顯差異",
+        }
+
+        self.assertEqual(provided, resolve_stance_labels(stances, (), provided))
+        self.assertEqual(
+            stance_labels_for(stances, ("BTC", "ETH")),
+            resolve_stance_labels(stances, ("BTC", "ETH"), {"asset_a_stronger": "BTC較優"}),
+        )
+        self.assertEqual(
+            stance_labels_for(stances, ("BTC", "ETH")),
+            resolve_stance_labels(stances, ("BTC", "ETH"), None),
+        )
+
+
+def _comparison_report():
+    """The consensus fixture re-cast onto the two-asset comparison ballot."""
+    fixture = load_fixture("consensus-6-1")
+    report = json.loads(json.dumps(fixture["report"]))
+    mapping = {"bullish": "asset_a_stronger", "bearish": "asset_b_stronger"}
+    report["assets"] = ["BTC", "ETH"]
+    report["tally"] = {
+        "asset_a_stronger": report["tally"]["bullish"],
+        "asset_b_stronger": report["tally"]["bearish"],
+        "no_clear_difference": report["tally"]["neutral"],
+    }
+    report["adopted_stance"] = mapping[report["adopted_stance"]]
+    for seat in report["seats"]:
+        for field in ("initial_stance", "final_stance"):
+            seat[field] = mapping.get(seat[field], seat[field])
+    return report
 
 
 class ReportContractTest(unittest.TestCase):

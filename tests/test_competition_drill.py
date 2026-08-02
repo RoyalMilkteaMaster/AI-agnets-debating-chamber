@@ -1,14 +1,45 @@
-"""A deterministic seven-seat BTC drill proves the integrated time gates."""
+"""A deterministic seven-seat drill proves the integrated time gates.
+
+The drill runs on every approved question type, so a zero-subscription run can
+exercise research, debate, votes, report and verify-run for any of them.
+"""
 
 import hashlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from hoya_market_agents import question_package as question_package_module
+from hoya_market_agents.cli import main
 from hoya_market_agents.competition_drill import run_fake_competition_drill
+from hoya_market_agents.debate_state_machine import STANCES_BY_QUESTION_TYPE
+from hoya_market_agents.question import UnsupportedQuestionError
+from hoya_market_agents.question_package import build_question_package
+from hoya_market_agents.research_scheduler import (
+    ACCEPT_RESULTS_UNTIL_MS,
+    SEAL_MS,
+    research_deadlines,
+)
 from hoya_market_agents.run_verifier import RunVerificationError, verify_run
 from hoya_market_agents.system_preflight import REQUIRED_CHECK_IDS, build_preflight_manifest
+
+OPEN_QUESTION = "若 SEC 通過 BTC 現貨 ETF，市場會如何反應？"
+COMPARISON_QUESTION = "比較 XRP 與 BTC 過去 7 日的市場位置與風險"
+
+
+def open_proposition_package():
+    """Return the open-proposition package, or None while that type is absent."""
+    if not getattr(question_package_module, "OPEN_STANCES", None):
+        return None
+    try:
+        package = build_question_package(OPEN_QUESTION)
+    except UnsupportedQuestionError:
+        return None
+    if package.question_type not in STANCES_BY_QUESTION_TYPE:
+        return None
+    return package
 
 
 class CompetitionDrillTest(unittest.TestCase):
@@ -28,8 +59,10 @@ class CompetitionDrillTest(unittest.TestCase):
 
         self.assertEqual(0, timeline["all_seats_dispatched_at_ms"])
         self.assertEqual(7, len(timeline["seat_completion_ms"]))
-        self.assertLessEqual(max(timeline["seat_completion_ms"].values()), 285_000)
-        self.assertEqual(300_000, timeline["evidence_snapshot_sealed_at_ms"])
+        self.assertLessEqual(
+            max(timeline["seat_completion_ms"].values()), ACCEPT_RESULTS_UNTIL_MS
+        )
+        self.assertEqual(SEAL_MS, timeline["evidence_snapshot_sealed_at_ms"])
         self.assertRegex(timeline["evidence_snapshot_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual("consensus_6_votes", timeline["debate_stop_reason"])
         self.assertLessEqual(timeline["report_completed_at_ms"], 780_000)
@@ -252,6 +285,176 @@ class CompetitionDrillTest(unittest.TestCase):
 
                 with self.assertRaises(RunVerificationError):
                     verify_run(root, result.run_id)
+
+
+class ComparisonDrillSealsThirtySecondsLaterTest(unittest.TestCase):
+    """Ticket R7: 比較題的 drill 走自己的 T+4:30 時刻表。"""
+
+    def setUp(self):
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.data_root = Path(self._temporary.name)
+
+    def drill(self, token):
+        return run_fake_competition_drill(
+            data_root=self.data_root, question=COMPARISON_QUESTION, token=token
+        )
+
+    def test_the_comparison_drill_seals_at_four_thirty_and_verifies(self):
+        result = self.drill("d77771")
+        manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        timeline = manifest["competition_timeline"]
+        deadlines = research_deadlines("two_asset_comparison")
+
+        self.assertEqual("two_asset_comparison", manifest["question_type"])
+        self.assertEqual(deadlines.seal_ms, timeline["evidence_snapshot_sealed_at_ms"])
+        self.assertEqual(
+            deadlines.accept_until_ms, timeline["research_accept_until_ms"]
+        )
+        self.assertGreaterEqual(timeline["debate_stop_at_ms"], deadlines.seal_ms)
+        self.assertEqual("VERIFIED", verify_run(self.data_root, result.run_id)["status"])
+
+    def test_verify_run_rejects_a_comparison_run_sealed_at_four_minutes(self):
+        result = self.drill("d77772")
+        manifest_path = result.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["competition_timeline"]["evidence_snapshot_sealed_at_ms"] = SEAL_MS
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+        with self.assertRaises(RunVerificationError):
+            verify_run(self.data_root, result.run_id)
+
+    def test_verify_run_rejects_a_single_asset_run_sealed_at_four_thirty(self):
+        result = run_fake_competition_drill(
+            data_root=self.data_root,
+            question="分析 BTC 過去 14 日市場狀態",
+            token="d77773",
+        )
+        manifest_path = result.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["competition_timeline"]["evidence_snapshot_sealed_at_ms"] = 270_000
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+        with self.assertRaises(RunVerificationError):
+            verify_run(self.data_root, result.run_id)
+
+    def test_a_forged_question_type_cannot_buy_the_later_seal(self):
+        """改 manifest 的題型不能換到晚 30 秒：question.json 仍在旁邊對帳。"""
+        result = self.drill("d77774")
+        manifest_path = result.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["question_type"] = "single_asset_market_state"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+        with self.assertRaises(RunVerificationError):
+            verify_run(self.data_root, result.run_id)
+
+
+class DrillCoversEveryApprovedQuestionTypeTest(unittest.TestCase):
+    """One end-to-end drill per approved question type, all at zero cost."""
+
+    def setUp(self):
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.data_root = Path(self._temporary.name)
+
+    def drill_cli(self, question):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        code = main(
+            [
+                "drill",
+                "--provider-mode", "fake",
+                "--question", question,
+                "--data-root", str(self.data_root),
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def assert_drill(self, question, question_type, stances, assets):
+        code, out, err = self.drill_cli(question)
+
+        self.assertEqual(0, code, err)
+        payload = json.loads(out)
+        self.assertEqual("VERIFIED", payload["verification"]["status"])
+        run_dir = Path(payload["run_dir"])
+
+        recorded = json.loads((run_dir / "question.json").read_text(encoding="utf-8"))
+        self.assertEqual(question_type, recorded["question_type"])
+        self.assertEqual(list(assets), recorded["assets"])
+
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(stances), set(votes["tally"]))
+        self.assertEqual(6, votes["tally"][stances[0]])
+        self.assertEqual(1, votes["tally"][stances[1]])
+        self.assertEqual(0, votes["tally"][stances[2]])
+        self.assertEqual(stances[0], votes["adopted_stance"])
+        self.assertEqual("consensus", votes["consensus_status"])
+
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(votes["tally"], manifest["tally"])
+        self.assertEqual(list(assets), manifest["assets"])
+
+        evidence = [
+            json.loads(line)
+            for line in (run_dir / "evidence.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(7, len(evidence))
+        self.assertEqual(set(assets), {card["asset"] for card in evidence})
+        return run_dir, recorded
+
+    def test_single_asset_market_state_drill_uses_market_stances(self):
+        self.assert_drill(
+            "分析 ETH 過去 14 日市場狀態",
+            "single_asset_market_state",
+            ("bullish", "bearish", "neutral"),
+            ("ETH",),
+        )
+
+    def test_two_asset_comparison_drill_uses_comparison_stances_and_both_assets(self):
+        self.assert_drill(
+            "比較 XRP 與 BTC 過去 7 日的市場位置與風險",
+            "two_asset_comparison",
+            ("asset_a_stronger", "asset_b_stronger", "no_clear_difference"),
+            ("XRP", "BTC"),
+        )
+
+    def test_event_impact_drill_uses_event_stances(self):
+        self.assert_drill(
+            "評估網路升級事件對 SOL 的影響",
+            "event_impact",
+            ("positive", "negative", "unclear_or_conditional"),
+            ("SOL",),
+        )
+
+    def test_open_proposition_drill_uses_open_stances_and_a_degraded_proposition(self):
+        package = open_proposition_package()
+        if package is None:
+            self.skipTest("open_proposition 題型尚未落地")
+
+        stances = tuple(package.stance_options)
+        _, recorded = self.assert_drill(
+            OPEN_QUESTION,
+            package.question_type,
+            stances,
+            package.assets,
+        )
+
+        self.assertEqual(OPEN_QUESTION, recorded["proposition"])
+
+    def test_question_outside_every_approved_type_still_fails_closed(self):
+        code, _, err = self.drill_cli("幫我預測下週樂透號碼")
+
+        self.assertEqual(1, code)
+        self.assertIn("DRILL FAILED", err)
 
 
 if __name__ == "__main__":

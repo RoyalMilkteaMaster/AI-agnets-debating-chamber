@@ -9,7 +9,7 @@
 - **Format Repair Agent**：不投票的輔助 Agent；只能整理既有內容格式，不能補造資料或立場。
 - **Evidence card／證據卡**：具有來源、時間、方向、原始數值或短摘錄及可信度說明的最小可追溯證據單位。
 - **Evidence Store**：單次 run 的 `evidence.jsonl`；不是向量資料庫或 RAG。
-- **Evidence snapshot／證據快照**：`T+5:00` 產生、之後不得覆寫的正式證據集合。
+- **Evidence snapshot／證據快照**：`T+4:00` 產生、之後不得覆寫的正式證據集合。
 - **Claim／論點**：Agent 以 evidence ID 支持或反駁的公開主張。
 - **Shared debate room／共享原文辯論室**：七席讀取相同、未經 Core 改寫的論點、回應與投票快照。
 - **Provisional vote／暫定票**：研究完成後、尚未完成第一輪反方挑戰的投票。

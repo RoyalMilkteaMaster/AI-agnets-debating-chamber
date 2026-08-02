@@ -3,6 +3,13 @@
 Only the five approved assets may start a run. Anything the gate cannot
 positively recognise as an approved asset is rejected, so an out-of-scope
 question can never reach the research seats.
+
+A live question is drawn on the spot and may name something the gate has never
+heard of. ``inspect_question(..., allow_unknown_assets=True)`` is the open
+proposition path: an unknown token stops being fatal as long as the question
+still names an approved asset, and the unknown token never becomes a scope
+asset. Every other refusal — empty text, unparseable period, no approved asset
+at all — still fails closed on both paths.
 """
 
 import re
@@ -59,6 +66,14 @@ class UnsupportedQuestionError(ValueError):
     """Raised when a question falls outside the approved analysis scope."""
 
 
+class UnknownAssetError(UnsupportedQuestionError):
+    """Raised when a question carries a token no approved asset can explain.
+
+    Its own class, because this is the single refusal the open-proposition path
+    is allowed to retry; every other refusal stays fatal on both paths.
+    """
+
+
 @dataclass(frozen=True)
 class QuestionScope:
     """The approved reading of a user question."""
@@ -85,26 +100,22 @@ def analyze_question(question):
     return scope
 
 
-def inspect_question(question):
+def inspect_question(question, allow_unknown_assets=False):
     """Normalize text, approved assets and period without requiring an asset.
 
     Overall-market questions intentionally have no named asset. Unsupported
-    symbols still fail closed before the question-type classifier runs.
+    symbols fail closed before the question-type classifier runs, unless the
+    caller is on the open-proposition path and passes ``allow_unknown_assets``;
+    even then the unknown token is only tolerated, never adopted as an asset.
     """
     text = (question or "").strip()
     if not text:
         raise UnsupportedQuestionError("題目為空；無法判定分析資產，fail closed。")
 
     asset_tokens = [token.upper() for token in _ASSET_TOKEN_PATTERN.findall(text)]
-    unsupported = {
-        token
-        for token in _UPPERCASE_TICKER_PATTERN.findall(text)
-        if token not in SUPPORTED_ASSETS
-    }
-    unsupported.update(_unsupported_comparison_assets(text))
-    unsupported.update(_unsupported_contextual_assets(text))
-    if unsupported:
-        raise UnsupportedQuestionError(
+    unsupported = _unsupported_assets(text)
+    if unsupported and not allow_unknown_assets:
+        raise UnknownAssetError(
             "題目包含未核准資產或無法辨識的代號 {}；僅支援 {}，fail closed。".format(
                 ", ".join(sorted(unsupported)), ", ".join(SUPPORTED_ASSETS)
             )
@@ -119,6 +130,18 @@ def inspect_question(question):
         period_days=period_days,
         period_stated=period_stated,
     )
+
+
+def _unsupported_assets(text):
+    """Every token this gate reads as an asset but cannot approve."""
+    unsupported = {
+        token
+        for token in _UPPERCASE_TICKER_PATTERN.findall(text)
+        if token not in SUPPORTED_ASSETS
+    }
+    unsupported.update(_unsupported_comparison_assets(text))
+    unsupported.update(_unsupported_contextual_assets(text))
+    return unsupported
 
 
 def _unsupported_comparison_assets(text):

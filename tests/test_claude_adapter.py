@@ -15,6 +15,7 @@ from hoya_market_agents.claude_adapter import (
     ClaudeAdapter,
     ClaudeAttemptRequest,
     ProcessOutput,
+    ProcessRegistry,
     mask_session_id,
     run_claude_preflight,
     validate_smoke_output,
@@ -186,6 +187,40 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertIn(("--allowedTools", "WebSearch,WebFetch"), tuple(zip(first, first[1:])))
         self.assertNotIn("Bash", first)
         self.assertNotIn("Edit", first)
+
+    def test_a_no_search_request_hands_the_seat_no_tools_at_all(self):
+        # 封存後的辯論與報告只能依快照：搜尋在能力層關閉，不靠 prompt 叮嚀。
+        runner = ScriptedRunner([completed(envelope("official-events"))] * 2)
+        adapter = self.adapter(runner)
+        request = self.request()
+        sealed = ClaudeAttemptRequest(
+            seat_id=request.seat_id,
+            attempt_id=request.attempt_id,
+            prompt=request.prompt,
+            attempt_dir=request.attempt_dir,
+            timeout_seconds=request.timeout_seconds,
+            validator=request.validator,
+            allow_search=False,
+        )
+
+        adapter.run(sealed)
+        resumed = adapter.resumed_request(
+            sealed,
+            attempt_id="official-events-a2",
+            prompt=sealed.prompt,
+            attempt_dir=sealed.attempt_dir,
+        )
+        adapter.run(resumed)
+
+        for call in runner.calls:
+            args = call["args"]
+            pairs = tuple(zip(args, args[1:]))
+            with self.subTest(resume="--resume" in args):
+                self.assertIn(("--tools", ""), pairs)
+                self.assertIn(("--disallowedTools", "WebSearch,WebFetch"), pairs)
+                self.assertNotIn("--allowedTools", args)
+                self.assertNotIn(("--tools", "WebSearch,WebFetch"), pairs)
+        self.assertFalse(resumed.allow_search)
 
     def test_only_an_attempt_directory_under_data_root_is_allowed(self):
         runner = ScriptedRunner([])
@@ -528,6 +563,77 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertIn('"status": "READY"', stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
+
+
+class RecordingProcess:
+    """``Popen`` duck type recording which signal the registry delivered."""
+
+    def __init__(self):
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+    def poll(self):
+        return 0 if self.terminated or self.killed else None
+
+
+class DeafProcess(RecordingProcess):
+    """A process that cannot be signalled; stopping is always best effort."""
+
+    def terminate(self):
+        raise OSError("no such process")
+
+    def kill(self):
+        raise OSError("no such process")
+
+
+class ProcessRegistryTest(unittest.TestCase):
+    """終止與註冊會在兩條執行緒上競速：terminate 先到也必須停得掉後到的進程。"""
+
+    def setUp(self):
+        self.registry = ProcessRegistry()
+
+    def test_a_process_tracked_after_terminate_is_stopped_immediately(self):
+        late = RecordingProcess()
+
+        self.assertFalse(self.registry.terminate("official-events-a1"))
+        self.assertIs(late, self.registry.track("official-events-a1", late))
+
+        self.assertTrue(late.terminated)
+        # 這個進程確實是被截止收尾停掉的，release 必須照實回報。
+        self.assertTrue(self.registry.release("official-events-a1", late))
+
+    def test_a_retry_after_a_delivered_terminate_is_stopped_too(self):
+        first = RecordingProcess()
+        self.registry.track("news-a1", first)
+
+        self.assertTrue(self.registry.terminate("news-a1"))
+        self.registry.release("news-a1", first)
+        resumed = RecordingProcess()
+        self.registry.track("news-a1", resumed)
+
+        self.assertTrue(first.terminated)
+        self.assertTrue(resumed.terminated)
+
+    def test_terminating_one_key_never_poisons_another_seat(self):
+        self.registry.terminate("news-a1")
+        untouched = RecordingProcess()
+
+        self.registry.track("social-macro-a1", untouched)
+
+        self.assertFalse(untouched.terminated)
+        self.assertFalse(self.registry.release("social-macro-a1", untouched))
+
+    def test_a_late_process_that_cannot_be_signalled_never_raises(self):
+        self.registry.terminate("derivatives-a1")
+        deaf = DeafProcess()
+
+        self.assertIs(deaf, self.registry.track("derivatives-a1", deaf))
 
 
 if __name__ == "__main__":

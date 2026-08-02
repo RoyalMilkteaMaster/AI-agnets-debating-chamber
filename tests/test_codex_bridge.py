@@ -23,6 +23,7 @@ from hoya_market_agents.codex_bridge import (
     PreflightNotReadyError,
     build_codex_handoff,
     codex_seats,
+    prepare_launch_inputs,
     seal_seat_handoff,
     seal_public_checkpoint,
     seat_output_dir,
@@ -45,6 +46,7 @@ def core_identity(**overrides):
         "role": CORE_ROLE,
         "model": TARGET_MODEL,
         "model_confirmed": True,
+        "model_confirmation_source": "operator_ui",
         "created_threads_by": "core",
     }
     identity.update(overrides)
@@ -162,6 +164,101 @@ class CodexHandoffTest(unittest.TestCase):
         kwargs.update(overrides)
         return build_codex_handoff(**kwargs)
 
+    def test_core_prepares_all_launch_inputs_from_the_question(self):
+        nonces = iter(("A" * 32, "B" * 32))
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory)
+            payload = prepare_launch_inputs(
+                QUESTION,
+                data_root,
+                now_utc=datetime(2026, 8, 2, 3, 4, 5, tzinfo=timezone.utc),
+                token_source=lambda: "abc123",
+                nonce_source=lambda: next(nonces),
+            )
+            reservation_path = data_root / payload["reservation"]["path"]
+            self.assertTrue(reservation_path.is_file())
+            self.assertRegex(payload["reservation"]["sha256"], r"^[0-9a-f]{64}$")
+
+        self.assertEqual("PREPARED", payload["status"])
+        self.assertEqual("single_asset_market_state", payload["question_package"]["question_type"])
+        self.assertEqual("A" * 32, payload["preflight_challenge"])
+        self.assertEqual("B" * 32, payload["competition_challenge"])
+        self.assertNotEqual(
+            payload["preflight_challenge"], payload["competition_challenge"]
+        )
+        self.assertEqual(
+            "20260802T030405Z-btc-abc123", payload["competition_run_id"]
+        )
+
+    def test_prepare_launch_retries_an_existing_competition_run_id(self):
+        tokens = iter(("abc123", "def456"))
+        nonces = iter(("A" * 32, "B" * 32))
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory)
+            existing = data_root / "runs" / "20260802T030405Z-btc-abc123"
+            existing.mkdir(parents=True)
+
+            payload = prepare_launch_inputs(
+                QUESTION,
+                data_root,
+                now_utc=datetime(2026, 8, 2, 3, 4, 5, tzinfo=timezone.utc),
+                token_source=lambda: next(tokens),
+                nonce_source=lambda: next(nonces),
+            )
+
+        self.assertEqual(
+            "20260802T030405Z-btc-def456", payload["competition_run_id"]
+        )
+
+    def test_prepare_launch_reservation_prevents_concurrent_id_reuse(self):
+        now = datetime(2026, 8, 2, 3, 4, 5, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            data_root = Path(temporary_directory)
+            first_nonces = iter(("A" * 32, "B" * 32))
+            first = prepare_launch_inputs(
+                QUESTION,
+                data_root,
+                now_utc=now,
+                token_source=lambda: "abc123",
+                nonce_source=lambda: next(first_nonces),
+            )
+            tokens = iter(("abc123", "def456"))
+            second_nonces = iter(("C" * 32, "D" * 32))
+            second = prepare_launch_inputs(
+                QUESTION,
+                data_root,
+                now_utc=now,
+                token_source=lambda: next(tokens),
+                nonce_source=lambda: next(second_nonces),
+            )
+            exhausted_nonces = iter(("E" * 32, "F" * 32))
+            with self.assertRaises(PreflightNotReadyError):
+                prepare_launch_inputs(
+                    QUESTION,
+                    data_root,
+                    now_utc=now,
+                    token_source=lambda: "abc123",
+                    nonce_source=lambda: next(exhausted_nonces),
+                )
+
+        self.assertEqual("20260802T030405Z-btc-abc123", first["competition_run_id"])
+        self.assertEqual("20260802T030405Z-btc-def456", second["competition_run_id"])
+
+    def test_prepare_launch_rejects_invalid_or_repeated_nonces(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with self.assertRaises(CodexBridgeError):
+                prepare_launch_inputs(
+                    QUESTION,
+                    Path(temporary_directory),
+                    nonce_source=lambda: "too-short",
+                )
+            with self.assertRaises(PreflightNotReadyError):
+                prepare_launch_inputs(
+                    QUESTION,
+                    Path(temporary_directory),
+                    nonce_source=lambda: "A" * 32,
+                )
+
     def test_exactly_three_fixed_gpt_seats_are_mapped(self):
         payload = self.build()
 
@@ -231,7 +328,24 @@ class CodexHandoffTest(unittest.TestCase):
                 with self.assertRaises(PreflightNotReadyError):
                     self.build(core=core_identity(**override))
 
-    def test_core_metadata_is_an_exact_four_field_allowlist(self):
+    def test_operator_ui_may_confirm_the_core_model(self):
+        payload = self.build(core=core_identity())
+
+        self.assertEqual("operator_ui", payload["core"]["model_confirmation_source"])
+
+    def test_legacy_runtime_core_metadata_remains_valid(self):
+        legacy = core_identity()
+        del legacy["model_confirmation_source"]
+
+        payload = self.build(core=legacy)
+
+        self.assertNotIn("model_confirmation_source", payload["core"])
+
+    def test_unknown_core_model_confirmation_source_is_not_ready(self):
+        with self.assertRaises(PreflightNotReadyError):
+            self.build(core=core_identity(model_confirmation_source="prompt"))
+
+    def test_core_metadata_is_an_exact_allowlist(self):
         with self.assertRaises(PreflightNotReadyError):
             self.build(core=core_identity(debug=True))
 

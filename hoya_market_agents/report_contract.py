@@ -27,21 +27,9 @@ _DIRECTIONLESS_STATUSES = {
     "insufficient_data",
     "validation_failed",
 }
-_PROHIBITED = (
-    re.compile(r"目標價|價格目標|price\s*target", re.IGNORECASE),
-    re.compile(r"保證(?:上漲|下跌|漲|跌)|一定(?:上漲|下跌|漲|跌)|不會回檔|guaranteed", re.IGNORECASE),
-    re.compile(r"槓桿|leverage", re.IGNORECASE),
-    re.compile(r"倉位|部位.{0,16}\d+\s*%|position\s*siz", re.IGNORECASE),
-    re.compile(r"(?:請|建議|現在)?\s*(?:買進|買入|賣出|做多|做空)|\b(?:buy|sell)\s+(?:now|btc|eth|sol|bnb|xrp)\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:open|enter)\s+(?:a\s+|the\s+)?(?:btc\s+|eth\s+|sol\s+|bnb\s+|xrp\s+)?"
-        r"(?:long|short)(?:\s+(?:position|order))?(?:\s+now)?\b|"
-        r"\btake\s+(?:a\s+|the\s+)(?:btc\s+|eth\s+|sol\s+|bnb\s+|xrp\s+)?"
-        r"(?:long|short)\s+(?:position|order)(?:\s+now)?\b|"
-        r"\bgo\s+(?:long|short)(?:\s+(?:btc|eth|sol|bnb|xrp))?(?:\s+now)?\b",
-        re.IGNORECASE,
-    ),
-)
+# 2026-08-02 使用者決策：報告不做內容審查（原禁詞正則會把「賣壓」「槓桿率」等
+# 描述性語言誤殺成投資建議）。品管由七席同儕辯論與客觀交叉驗證承擔；本模組
+# 只驗可客觀比對的事實（evidence ID、票數、方向、信心上限、時間格式）。
 _UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 
 
@@ -105,7 +93,6 @@ def validate_market_report(report, sources):
     _validate_debate_cross_references(sources, votes, evidence_by_id, problems)
     _validate_direction(report, problems)
     _validate_confidence(report, sources, problems)
-    _validate_prohibited_content(report, problems)
 
     if problems:
         raise ReportContractError(problems)
@@ -399,23 +386,6 @@ def _validate_confidence(report, sources, problems):
     cap = confidence_cap(report, sources)
     if CONFIDENCE_LEVELS.index(level) > CONFIDENCE_LEVELS.index(cap):
         problems.append("信心 {} 高於資料上限 {}".format(level, cap))
-
-
-def _validate_prohibited_content(report, problems):
-    text = "\n".join(_all_strings(report))
-    if any(pattern.search(text) for pattern in _PROHIBITED):
-        problems.append("禁止價格目標、保證、槓桿、倉位或直接交易指令")
-
-
-def _all_strings(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _all_strings(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _all_strings(item)
 
 
 def _string_problems(record, field, prefix=""):

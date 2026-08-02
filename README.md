@@ -3,7 +3,7 @@
 七席多模型加密市場研究流程的 WSL Python 控制程式。
 
 本版本提供兩條明確分離的路徑：`drill --provider-mode fake` 以假時鐘打通七席並行、
-T+5 evidence seal、6/5/4 辯論與 T+13 報告；`preflight --provider system --mode real`
+T+4:00 evidence seal、6/5/4 辯論與 T+13 報告；`preflight --provider system --mode real`
 則只接受真實訂閱與 fresh Codex Task 的可觀察證據。fake 演練永遠標記
 `competition_ready=false`，不得作為市場資料或真實 READY 證據。
 
@@ -68,7 +68,7 @@ python3 -m hoya_market_agents drill --provider-mode fake \
   --question "分析 BTC 過去 14 日市場狀態"
 ```
 
-輸出包含 `run_id`、七席 completion timeline、T+5 snapshot hash、辯論停止原因、
+輸出包含 `run_id`、七席 completion timeline、T+4:00 snapshot hash、辯論停止原因、
 報告完成時間與 `verify-run` 結果。
 
 ## 整體 system preflight
@@ -86,9 +86,27 @@ fixture 即使全數通過仍輸出 `NOT_READY`；`simulation_status=PASS` 只�
 故障注入可使用 `--fixture-failure login|model|write|renderer`，每種都必須輸出
 `NOT_READY`。
 
-真實 preflight 必須從 fresh Codex Task 取得 `<CODEX_RUN_ID>` 與該次 one-time
-`<CODEX_CHALLENGE>`。Operator 也必須在 provider preflight 前預先指定尚未使用的
-`<COMPETITION_RUN_ID>` 與 `<COMPETITION_CHALLENGE>`：
+正式使用時，使用者只需在 fresh Codex Task 貼上題目並要求開始。Core 先以內部命令驗證
+題目並自動產生 fresh `<CODEX_CHALLENGE>`、尚未使用的 `<COMPETITION_RUN_ID>` 與不同的
+`<COMPETITION_CHALLENGE>`；這些是稽核欄位，不是使用者輸入：
+
+```bash
+# WSL（Core 內部）
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+python3 -m hoya_market_agents prepare-launch \
+  --question "分析 BTC 過去 14 日市場狀態" \
+  --data-root "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data"
+```
+
+`PREPARED` 不等於 provider READY。Core 接著建立三個受控 Codex 席並取得
+`<CODEX_RUN_ID>`，再使用剛才產生的內部值執行：
+`prepare-launch` 會在 Data Root 的 `preflight/launch-reservations/` 原子建立 hashed、
+write-once reservation，避免兩個 Core 啟動流程取得相同 Run ID；這不會略過後續 READY 閘門。
+
+Core 若無法自讀 runtime model，可接受操作員明確確認 UI 顯示 `gpt-5.6-sol`，並在
+handoff 記錄 `model_confirmation_source=operator_ui`；這不是 runtime attestation。此例外
+只適用 Core，三個 Codex 研究席的 actual model、持久 thread 與工具 receipt 仍須由
+runtime 證明。
 
 ```bash
 # WSL
@@ -100,7 +118,7 @@ python3 -m hoya_market_agents preflight --provider system --seats 7 \
   --competition-challenge <COMPETITION_CHALLENGE>
 ```
 
-缺少任何登入、actual model、七席搜尋 receipt、權限、T+4:45 contract、T+5 seal 或
+缺少任何登入、actual model、七席搜尋 receipt、權限、T+3:50 contract、T+4:00 seal 或
 T+13 report 證據時都輸出機器可讀 `NOT_READY` manifest。
 目前 Codex、Claude、Antigravity 的訂閱 CLI 都不提供可由第三方獨立驗證的
 provider/runtime attestation。manifest 會把 `provider_runtime_attestation` 列為
@@ -268,7 +286,7 @@ cat latest.json
 以下項目沒有可重現 live 證據，因此 system preflight 不會宣稱 READY：
 
 - 三個 GPT-5.6 Sol persistent threads 的 live `web_search`、actual model 與 runtime receipt。
-- 七個真實訂閱席在同一 run 於 T+4:45 前交付、T+5 seal，並於 T+13 前完成報告。
+- 七個真實訂閱席在同一 run 於 T+3:50 前交付、T+4:00 seal，並於 T+13 前完成報告。
 - 在上述 blocker 關閉前，正式 `$hoya-market-research` 必須停止並交付 NOT READY。
 - 向量資料庫、RAG、FinGPT、crawler 與 web service（依 ADR 0002 不在 MVP 範圍）。
 

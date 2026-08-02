@@ -1,20 +1,33 @@
 # Codex bridge contract
 
+> **Legacy 稽核路徑**：本 contract 描述 legacy 稽核路徑
+> （`prepare-launch`／handoff／`verify-preflight`），不在比賽冷啟動路徑上；
+> 快速路徑見 `SKILL.md`。
+
 Source of truth: `hoya_market_agents/codex_bridge.py`.
 
 Core creates exactly three persistent Codex threads first, then calls
 `build_codex_handoff(...)` with the observed metadata. Python validates and
 stores metadata; it never creates or impersonates an agent.
 
-The operator first generates a fresh URL-safe challenge. Core must copy that
-exact nonce into `preflight_challenge`. Verification rejects the wrong nonce,
+After the user supplies only the market question, Core runs `prepare-launch`.
+That command validates the question and generates a fresh URL-safe challenge,
+an unused competition run ID and a distinct competition challenge. Core must
+copy those values exactly into the handoff and authorization flow; it must not
+ask the user to generate or relay them. Verification rejects the wrong nonce,
 a handoff older than 300 seconds, a handoff too far in the future, or a handoff
 already bound to another system preflight. The binding artifact is write-once.
+The generated competition run ID is claimed by an atomic, hashed write-once
+reservation in `preflight/launch-reservations/`; an existing reservation or run
+directory makes Core generate another ID.
 
 ## Required runtime metadata
 
 - Core: `role=core`, `model=gpt-5.6-sol`, `model_confirmed=true`,
-  `created_threads_by=core`.
+  `created_threads_by=core`. New handoffs also record
+  `model_confirmation_source=runtime|operator_ui`; use `operator_ui` only when
+  the operator explicitly confirms that the UI shows the target model. Legacy
+  four-field handoffs remain valid and imply `runtime`.
 - Seats, in order: `spot-technical`, `derivatives`, `onchain`.
 - Each seat: unique non-empty `thread_id`, `actual_model=gpt-5.6-sol`, and
   `model_confirmed`, `capability_confirmed`, `persistent` all `true`.

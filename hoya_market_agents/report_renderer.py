@@ -14,6 +14,13 @@ import html
 from datetime import datetime, timedelta, timezone
 
 from .contract_validator import CONTRACT_VERSION, validate_report
+from .question_package import (
+    COMPARISON_STANCES,
+    EVENT_STANCE_LABELS,
+    MARKET_STANCE_LABELS,
+    NO_CLEAR_DIFFERENCE_LABEL,
+    OPEN_STANCE_LABELS,
+)
 from .report_contract import is_safe_source_url
 from .seats import SEAT_IDS
 
@@ -45,11 +52,17 @@ REPORT_AGENT_PROFILES = {
     "counter-evidence": ("Gemini・反證稽核員", "🔎"),
 }
 
-STANCE_LABELS = {
-    "bullish": "偏多",
-    "bearish": "偏空",
-    "neutral": "方向不明",
-}
+# The market ballot's own wording, kept as a name for callers that already know
+# their run is a market question. Everything that renders a stance goes through
+# ``stance_labels_for`` instead, because the question type is drawn live.
+STANCE_LABELS = dict(MARKET_STANCE_LABELS)
+
+# A stance string names exactly one question type's ballot, so the stances alone
+# decide the vocabulary; only the comparison ballot also needs the asset names.
+_FIXED_STANCE_LABELS = dict(MARKET_STANCE_LABELS)
+_FIXED_STANCE_LABELS.update(EVENT_STANCE_LABELS)
+_FIXED_STANCE_LABELS.update(OPEN_STANCE_LABELS)
+_COMPARISON_FALLBACK_NAMES = ("前者", "後者")
 
 CONSENSUS_LABELS = {
     "consensus": "達成共識",
@@ -100,6 +113,43 @@ NO_CONCLUSION = {
         "報告只呈現七席自己的公開立場、理由、引用證據與實際票數。"
     ),
 }
+
+
+def stance_labels_for(stances, assets=()):
+    """Name each stance in its own ballot's Traditional Chinese wording.
+
+    Mirrors ``question_package``'s wording, which stays the authority: the two
+    approved comparison labels carry the asset names, every other approved
+    ballot has fixed words, and an unknown stance keeps its raw value rather
+    than losing the vote it stands for.
+    """
+    names = [value for value in assets if isinstance(value, str) and value.strip()]
+    return {stance: _stance_wording(stance, names) for stance in stances}
+
+
+def resolve_stance_labels(stances, assets=(), provided=None):
+    """Prefer the ballot's recorded labels; derive them when they are incomplete."""
+    stances = tuple(stances)
+    if isinstance(provided, dict) and all(_is_label(provided.get(s)) for s in stances):
+        return {stance: provided[stance] for stance in stances}
+    return stance_labels_for(stances, assets)
+
+
+def _stance_wording(stance, names):
+    fixed = _FIXED_STANCE_LABELS.get(stance)
+    if fixed is not None:
+        return fixed
+    if stance not in COMPARISON_STANCES:
+        return str(stance)
+    if stance == COMPARISON_STANCES[-1]:
+        return NO_CLEAR_DIFFERENCE_LABEL
+    index = COMPARISON_STANCES.index(stance)
+    name = names[index] if len(names) > index else _COMPARISON_FALLBACK_NAMES[index]
+    return "{}較優".format(name)
+
+
+def _is_label(value):
+    return isinstance(value, str) and bool(value.strip())
 
 
 def build_report(
@@ -415,6 +465,7 @@ def _e(value):
 
 def render_market_markdown(report):
     """Render one already-validated, Core-authored report as Markdown."""
+    labels = _report_stance_labels(report)
     lines = [
         "# Hoya Bit 市場判斷報告",
         "",
@@ -426,7 +477,7 @@ def render_market_markdown(report):
             report["confidence"]["icon"],
             report["confidence"]["text"],
         ),
-        "- 票數：{}".format(_market_tally(report)),
+        "- 票數：{}".format(_market_tally(report, labels)),
         "- 共識狀態：{}".format(_consensus_label(report["consensus_status"])),
         "- 判斷：{}".format(report["judgement"]),
         "",
@@ -445,8 +496,8 @@ def render_market_markdown(report):
         lines += [
             "### {}（`{}`）".format(_seat_label(seat["seat_id"]), seat["seat_id"]),
             "",
-            "- 初始立場：{}".format(_stance_label(seat["initial_stance"])),
-            "- 最終立場：{}".format(_stance_label(seat["final_stance"])),
+            "- 初始立場：{}".format(_stance_label(seat["initial_stance"], labels)),
+            "- 最終立場：{}".format(_stance_label(seat["final_stance"], labels)),
             "- 是否改票：{}".format("是" if seat["stance_changed"] else "否"),
             "- 初始理由：{}".format(seat["initial_public_reason"]),
             "- 最終理由：{}".format(seat["public_reason"]),
@@ -477,6 +528,7 @@ def render_market_markdown(report):
 def render_market_html(report, sources=None):
     """Render one validated report as a self-contained, accessible HTML file."""
     confidence = report["confidence"]
+    labels = _report_stance_labels(report)
     evidence_by_id = _market_evidence_index(report, sources)
     parts = [
         "<!DOCTYPE html>",
@@ -514,7 +566,7 @@ def render_market_html(report, sources=None):
             _e(confidence["icon"]),
             _e(confidence["text"]),
         ),
-        '<span><strong>票數</strong> {}</span>'.format(_e(_market_tally(report))),
+        '<span><strong>票數</strong> {}</span>'.format(_e(_market_tally(report, labels))),
         '<span><strong>共識</strong> {}</span>'.format(
             _e(_consensus_label(report["consensus_status"]))
         ),
@@ -580,8 +632,8 @@ def render_market_html(report, sources=None):
             ),
             '<p class="stance-line"><span>初始 {}</span><span aria-hidden="true">→</span>'
             '<strong>最終 {}</strong></p>'.format(
-                _e(_stance_label(seat["initial_stance"])),
-                _e(_stance_label(seat["final_stance"])),
+                _e(_stance_label(seat["initial_stance"], labels)),
+                _e(_stance_label(seat["final_stance"], labels)),
             ),
             '<div class="seat-reason"><h4>最終判斷理由</h4><p>{}</p></div>'.format(
                 _e(seat["public_reason"])
@@ -689,11 +741,29 @@ _MARKET_CSS = (
 )
 
 
-def _market_tally(report):
+def _market_tally(report, labels):
     return "／".join(
-        "{}：{}".format(_stance_label(stance), count)
+        "{}：{}".format(_stance_label(stance, labels), count)
         for stance, count in report["tally"].items()
     )
+
+
+def _report_stance_labels(report):
+    """Read this run's ballot off the report itself: tally, seats and adoption."""
+    tally = report.get("tally")
+    stances = list(tally) if isinstance(tally, dict) else []
+    seats = report.get("seats") if isinstance(report.get("seats"), list) else []
+    candidates = [report.get("adopted_stance")]
+    candidates += [
+        seat.get(field)
+        for seat in seats
+        if isinstance(seat, dict)
+        for field in ("initial_stance", "final_stance")
+    ]
+    for stance in candidates:
+        if isinstance(stance, str) and stance and stance not in stances:
+            stances.append(stance)
+    return stance_labels_for(stances, report.get("assets") or ())
 
 
 def _comparison_items(cards, empty_text):
@@ -750,10 +820,10 @@ def _seat_label(value):
     return SEAT_LABELS.get(value, str(value))
 
 
-def _stance_label(value):
+def _stance_label(value, labels):
     if value is None or value == "":
         return "未取得有效立場"
-    return STANCE_LABELS.get(value, str(value))
+    return labels.get(value, str(value))
 
 
 def _consensus_label(value):

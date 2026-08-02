@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 
 from hoya_market_agents.debate_state_machine import (
+    DEBATE_START_MS,
+    FINAL_ROUND_END_MS,
+    FORCE_STOP_MS,
     CoreOverrideError,
+    DebateError,
     DebateLifecycleError,
     DebateStateMachine,
     DuplicateMessageError,
@@ -35,7 +39,7 @@ class DebateHarness:
         self.temp = tempfile.TemporaryDirectory()
         test_case.addCleanup(self.temp.cleanup)
         self.clock = FixedClock()
-        self.clock.advance_ms(300_000)
+        self.clock.advance_ms(DEBATE_START_MS)
         self.run = RunStore(Path(self.temp.name)).create_run(run_id, SEAT_IDS)
         self.evidence = [
             {
@@ -46,7 +50,7 @@ class DebateHarness:
             for seat_id in SEAT_IDS
         ]
         seal = self.run.seal_evidence_snapshot(
-            self.evidence, "2026-08-01T07:35:00Z", 300_000
+            self.evidence, "2026-08-01T07:34:00Z", DEBATE_START_MS
         )
         self.snapshot_sha = seal["sha256"]
         self.machine = DebateStateMachine(
@@ -58,6 +62,10 @@ class DebateHarness:
             evidence_snapshot_sha256=self.snapshot_sha,
             start_monotonic_ms=0,
         )
+
+    def advance_to(self, elapsed_ms):
+        """Move the fake clock to one absolute T+ instant of the debate."""
+        self.clock.advance_ms(elapsed_ms - self.machine.elapsed_ms)
 
     def message(self, seat_id, kind, suffix, **overrides):
         value = {
@@ -102,6 +110,9 @@ class DebateHarness:
             )
 
     def challenge_plan(self, stances):
+        """Pair opposing seats, or rotate the roster when the room agrees."""
+        if len(set(stances)) == 1:
+            return self.rotation_plan(stances)
         challenges = []
         incoming = {seat_id: [] for seat_id in SEAT_IDS}
         for index, seat_id in enumerate(SEAT_IDS):
@@ -137,6 +148,24 @@ class DebateHarness:
                 target_seat_id=target,
                 target_claim="{}-position".format(target),
                 stance=stances[author_index],
+            )
+            challenges.append(challenge)
+            incoming[target].append(challenge)
+        return challenges, incoming
+
+    def rotation_plan(self, stances):
+        """The devil's-advocate round: each seat challenges the next in roster order."""
+        challenges = []
+        incoming = {seat_id: [] for seat_id in SEAT_IDS}
+        for index, seat_id in enumerate(SEAT_IDS):
+            target = SEAT_IDS[(index + 1) % len(SEAT_IDS)]
+            challenge = self.message(
+                seat_id,
+                "challenge",
+                "challenge-to-{}".format(target),
+                target_seat_id=target,
+                target_claim="{}-position".format(target),
+                stance=stances[index],
             )
             challenges.append(challenge)
             incoming[target].append(challenge)
@@ -330,7 +359,7 @@ class DebateStateMachineTest(unittest.TestCase):
         harness = DebateHarness(self)
         stances = ["bullish"] * 3 + ["bearish"] * 2 + ["neutral"] * 2
         harness.complete_round(stances)
-        harness.clock.advance_ms(300_000)
+        harness.advance_to(FORCE_STOP_MS)
         harness.machine.tick()
 
         summary = harness.machine.persist()
@@ -482,13 +511,46 @@ class DebateStateMachineTest(unittest.TestCase):
             )
 
         fresh = DebateHarness(self, run_id="{}-late-window".format(RUN_ID))
-        fresh.clock.advance_ms(285_001)
+        fresh.advance_to(FINAL_ROUND_END_MS + 1)
         with self.assertRaises(LateMessageError):
             fresh.machine.relay(
                 fresh.message(
                     SEAT_IDS[0], "position", "after-final-window", stance="bullish", round=0
                 )
             )
+
+    def test_a_debate_start_override_must_match_the_run_s_own_seal(self):
+        """Ticket R7: 比較題晚 30 秒封存，辯論起點只認該 run 實際 seal。"""
+        harness = DebateHarness(self, run_id="{}-late-seal".format(RUN_ID))
+
+        with self.assertRaises(EvidenceSnapshotMismatchError):
+            DebateStateMachine(
+                run=harness.run,
+                clock=harness.clock,
+                gateway=None,
+                question_type="two_asset_comparison",
+                evidence_records=harness.evidence,
+                evidence_snapshot_sha256=harness.snapshot_sha,
+                start_monotonic_ms=0,
+                debate_start_ms=270_000,
+            )
+
+    def test_a_matching_debate_start_override_opens_the_room_at_that_instant(self):
+        harness = DebateHarness(self, run_id="{}-matching-seal".format(RUN_ID))
+        harness.advance_to(270_000)
+
+        machine = DebateStateMachine(
+            run=harness.run,
+            clock=harness.clock,
+            gateway=None,
+            question_type="single_asset_market_state",
+            evidence_records=harness.evidence,
+            evidence_snapshot_sha256=harness.snapshot_sha,
+            start_monotonic_ms=0,
+            debate_start_ms=DEBATE_START_MS,
+        )
+
+        self.assertEqual(DEBATE_START_MS, machine.debate_start_ms)
 
     def test_replacement_replay_keeps_one_seat_vote_not_an_attempt_vote(self):
         harness = DebateHarness(self)
@@ -511,6 +573,77 @@ class DebateStateMachineTest(unittest.TestCase):
         self.assertEqual(7, len(harness.machine.vote_table()))
         self.assertEqual(7, len(harness.machine.valid_votes()))
         self.assertTrue(harness.machine.verify_public_history())
+
+    def test_a_unanimous_room_may_scrutinise_any_other_seat(self):
+        """Ticket R8: 全場一致是最強共識，不是流局；第一輪改判證據品質。"""
+        harness = DebateHarness(self, "two_asset_comparison")
+        harness.positions(["asset_a_stronger"] * 7)
+
+        entry = harness.machine.relay(
+            harness.message(
+                SEAT_IDS[0],
+                "challenge",
+                "scrutiny",
+                stance="asset_a_stronger",
+                target_seat_id=SEAT_IDS[1],
+                target_claim="{}-position".format(SEAT_IDS[1]),
+            )
+        )
+
+        self.assertEqual("scrutiny", entry["challenge_mode"])
+
+    def test_a_unanimous_room_still_refuses_a_seat_challenging_itself(self):
+        harness = DebateHarness(self, "two_asset_comparison")
+        harness.positions(["asset_a_stronger"] * 7)
+
+        with self.assertRaises(DebateError):
+            harness.machine.relay(
+                harness.message(
+                    SEAT_IDS[0],
+                    "challenge",
+                    "self-challenge",
+                    stance="asset_a_stronger",
+                    target_seat_id=SEAT_IDS[0],
+                    target_claim="{}-position".format(SEAT_IDS[0]),
+                )
+            )
+
+    def test_a_room_holding_two_stances_still_demands_an_opposing_target(self):
+        harness = DebateHarness(self)
+        harness.positions(["bullish"] * 6 + ["bearish"])
+
+        with self.assertRaises(DebateError):
+            harness.machine.relay(
+                harness.message(
+                    SEAT_IDS[0],
+                    "challenge",
+                    "same-stance",
+                    stance="bullish",
+                    target_seat_id=SEAT_IDS[1],
+                    target_claim="{}-position".format(SEAT_IDS[1]),
+                )
+            )
+        entry = harness.machine.relay(
+            harness.message(
+                SEAT_IDS[0],
+                "challenge",
+                "opposing",
+                stance="bullish",
+                target_seat_id=SEAT_IDS[6],
+                target_claim="{}-position".format(SEAT_IDS[6]),
+            )
+        )
+
+        self.assertEqual("opposing", entry["challenge_mode"])
+
+    def test_a_unanimous_room_completes_its_round_and_reaches_six_votes(self):
+        harness = DebateHarness(self, "two_asset_comparison")
+
+        harness.complete_round(["asset_a_stronger"] * 7, count=6)
+
+        self.assertEqual("consensus_6_votes", harness.machine.stop_reason)
+        self.assertEqual(6, len(harness.machine.valid_votes()))
+        self.assertTrue(harness.machine.summary()["challenge_completed"])
 
     def test_message_after_consensus_is_rejected_as_late(self):
         harness = DebateHarness(self)

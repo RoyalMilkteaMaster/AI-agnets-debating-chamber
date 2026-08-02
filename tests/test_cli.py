@@ -118,6 +118,56 @@ class CliTest(unittest.TestCase):
         self.assertEqual("hoya-bit-market-agents_data", DEFAULT_DATA_ROOT.name)
         self.assertEqual(CODE_ROOT.parent, DEFAULT_DATA_ROOT.parent)
 
+    def test_core_prepare_launch_requires_only_the_question_and_internal_data_root(self):
+        code, out, err = self.run_cli(
+            "prepare-launch",
+            "--question",
+            QUESTION,
+            "--data-root",
+            str(self.data_root),
+        )
+
+        self.assertEqual(0, code, err)
+        payload = json.loads(out)
+        self.assertEqual("PREPARED", payload["status"])
+        self.assertRegex(
+            payload["competition_run_id"],
+            r"^\d{8}T\d{6}Z-btc-[0-9a-f]{6}$",
+        )
+        self.assertRegex(payload["preflight_challenge"], r"^[A-Za-z0-9_-]{24,128}$")
+        self.assertRegex(payload["competition_challenge"], r"^[A-Za-z0-9_-]{24,128}$")
+        self.assertNotEqual(
+            payload["preflight_challenge"], payload["competition_challenge"]
+        )
+        self.assertFalse((self.data_root / "runs").exists())
+
+    def test_prepare_launch_rejects_bad_question_without_writing_a_reservation(self):
+        code, out, err = self.run_cli(
+            "prepare-launch",
+            "--question",
+            "分析 DOGE 過去 14 日市場狀態",
+            "--data-root",
+            str(self.data_root),
+        )
+
+        self.assertEqual(2, code)
+        self.assertEqual("", out)
+        self.assertIn("NOT PREPARED", err)
+        self.assertFalse((self.data_root / "preflight").exists())
+
+    def test_prepare_launch_rejects_code_root_as_data_root(self):
+        code, out, err = self.run_cli(
+            "prepare-launch",
+            "--question",
+            QUESTION,
+            "--data-root",
+            str(CODE_ROOT),
+        )
+
+        self.assertEqual(2, code)
+        self.assertEqual("", out)
+        self.assertIn("Data Root", err)
+
 
 class CliSubprocessTest(unittest.TestCase):
     """The literal command from the ticket, run as its own process."""

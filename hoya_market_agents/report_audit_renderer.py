@@ -34,9 +34,28 @@ from .report_renderer import (
     SEAT_LABELS,
     SOURCE_TIER_LABELS,
     STANCE_LABELS,
+    resolve_stance_labels,
 )
 
 MISSING = "未提供"
+
+# 本模組單一寫入者（launcher）每個 run 只 render 一次；標籤在 render 開頭
+# 依該 run 的題型票面解析一次，之後所有 helper 共用。預設 market 詞彙。
+_ACTIVE_STANCE_LABELS = dict(STANCE_LABELS)
+
+
+def _activate_stance_labels(report):
+    """Resolve this run's stance vocabulary before any label lookup."""
+    tally = report.get("tally")
+    stances = tuple(tally.keys()) if isinstance(tally, dict) and tally else tuple(
+        STANCE_LABELS
+    )
+    provided = report.get("stance_labels")
+    provided = provided if isinstance(provided, dict) else None
+    _ACTIVE_STANCE_LABELS.clear()
+    _ACTIVE_STANCE_LABELS.update(
+        resolve_stance_labels(stances, report.get("assets") or (), provided)
+    )
 
 # Reuse the live room's names and avatars so the same Agent is recognisable on
 # all three pages.
@@ -89,6 +108,9 @@ class DebateAuditError(ValueError):
 def render_debate_html(report, sources):
     """Render the debate room and evidence cards as one offline HTML page."""
     messages, evidence = _validated(report, sources)
+    # 標籤解析必須在 fail-closed 驗證之後：結構不可用的輸入要走原本的
+    # 拒絕路徑，不能先在這裡炸出 AttributeError。
+    _activate_stance_labels(report)
     cards = {card["evidence_id"]: card for card in evidence}
 
     parts = [
@@ -312,7 +334,9 @@ def _stance_changes(messages):
         seat_id = message.get("seat_id")
         key = seat_id if isinstance(seat_id, str) and seat_id.strip() else None
         stance = message.get("stance")
-        current = stance if isinstance(stance, str) and stance in STANCE_LABELS else None
+        # 立場在寫入時已由狀態機驗證過；稽核頁只如實轉述，不再用詞彙表過濾，
+        # 否則非市場題型的合法立場會被誤判成 None、改票偵測整段失效。
+        current = stance if isinstance(stance, str) and stance.strip() else None
         previous = latest.get(key) if key is not None else None
         reason = message.get("stance_change_reason")
         reason = reason if isinstance(reason, str) and reason.strip() else None
@@ -474,7 +498,7 @@ def _category_label(value):
 
 
 def _stance_label(value):
-    return _label(value, STANCE_LABELS, "立場")
+    return _label(value, _ACTIVE_STANCE_LABELS, "立場")
 
 
 def _tier_label(value):

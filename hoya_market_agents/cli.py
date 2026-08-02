@@ -22,10 +22,13 @@ from pathlib import Path
 from .antigravity_adapter import AntigravityAdapter, AntigravityError
 from .claude_adapter import run_claude_preflight
 from .competition_drill import run_fake_competition_drill
+from .codex_inbox import run_submit_seat
+from .launcher import PHASE_FULL, PHASES, run_launch
 from .codex_bridge import (
     CodexBridgeError,
     STATUS_NOT_READY,
     TARGET_MODEL,
+    prepare_launch_inputs,
     verify_codex_preflight,
 )
 from .fake_provider import FakeProvider
@@ -41,6 +44,7 @@ from .run_store import RunStore, RunStoreError
 from .run_verifier import RunVerificationError, verify_run
 from .seats import RosterError
 from .prompt_builder import load_research_snapshot
+from .real_provider import CODEX_MODE_CLI, CODEX_MODES
 from .system_preflight import (
     REQUIRED_CHECK_IDS,
     PreflightError,
@@ -50,6 +54,7 @@ from .system_preflight import (
     preflight_manifest_path,
     write_competition_authorization,
     write_preflight_manifest,
+    write_ready_certificate,
 )
 
 CODE_ROOT = Path(__file__).resolve().parent.parent
@@ -66,8 +71,46 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="python -m hoya_market_agents",
         description="Hoya Bit market agents controller (WSL, Python 3 standard library only).",
+        epilog=(
+            "另有 submit-seat --run-id ... --seat-id ... --attempt-id ... "
+            "[--data-root ...]：把一個固定 GPT 席的 raw 輸出從 stdin 寫入 run inbox。"
+        ),
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
+
+    launch = subcommands.add_parser(
+        "launch", help="冷啟動一次完整的七席市場研究 run 並輸出 LAUNCHED 握手"
+    )
+    launch.add_argument("--question", required=True, help="自然語言題目")
+    launch.add_argument(
+        "--data-root",
+        default=str(DEFAULT_DATA_ROOT),
+        help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
+    )
+    launch.add_argument(
+        "--no-live", action="store_true", help="不啟動背景即時儀表板"
+    )
+    launch.add_argument(
+        "--handshake-file", help="把 LAUNCHED 握手內容原子寫入的檔案路徑"
+    )
+    launch.add_argument(
+        "--phase",
+        default=PHASE_FULL,
+        choices=list(PHASES),
+        help=(
+            "full 一條命令跑完研究、辯論、投票與報告（預設）；"
+            "research 只跑到 T+4:00 證據快照 SEALED，辯論改由人工主持。"
+        ),
+    )
+    launch.add_argument(
+        "--codex-mode",
+        default=CODEX_MODE_CLI,
+        choices=list(CODEX_MODES),
+        help=(
+            "Codex 三席的派發通道：cli 由 launch 直接跑 codex exec（預設，一條命令派滿七席）；"
+            "inbox 只寫 prompt 與 request，由 Core 手開 Codex threads 後備。"
+        ),
+    )
 
     run = subcommands.add_parser("run", help="執行一次完整分析並產生報告")
     run.add_argument(
@@ -82,6 +125,12 @@ def build_parser():
         default=str(DEFAULT_DATA_ROOT),
         help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
     )
+    prepare = subcommands.add_parser(
+        "prepare-launch",
+        help="Core 內部驗證題目並自動產生一次性 launch 參數",
+    )
+    prepare.add_argument("--question", required=True, help="使用者貼上的自然語言題目")
+    prepare.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     preflight = subcommands.add_parser(
         "preflight", help="賽前驗證真實 provider；不啟動市場研究 run"
     )
@@ -159,12 +208,21 @@ def build_parser():
     return parser
 
 
-def main(argv=None, stdout=None, stderr=None):
+def main(argv=None, stdin=None, stdout=None, stderr=None):
     """Run the CLI and return its exit code."""
     out = stdout or sys.stdout
     err = stderr or sys.stderr
-    args = build_parser().parse_args(argv if argv is not None else sys.argv[1:])
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # submit-seat owns its own parser in codex_inbox, so its argv passes through
+    # untouched instead of being re-declared here.
+    if argv[:1] == ["submit-seat"]:
+        return run_submit_seat(argv[1:], stdin or sys.stdin, out, err)
+    args = build_parser().parse_args(argv)
 
+    if args.command == "launch":
+        return _launch(args, out, err)
+    if args.command == "prepare-launch":
+        return _prepare_launch(args, out, err)
     if args.command == "preflight":
         return _preflight(args, out, err)
     if args.command == "verify-preflight":
@@ -194,6 +252,29 @@ def main(argv=None, stdout=None, stderr=None):
         return EXIT_FAILED
 
     _report_result(result, out)
+    return EXIT_OK
+
+
+def _launch(args, out, err):
+    return run_launch(
+        args.question,
+        Path(args.data_root),
+        out=out,
+        err=err,
+        no_live=args.no_live,
+        handshake_path=args.handshake_file,
+        codex_mode=args.codex_mode,
+        phase=args.phase,
+    )
+
+
+def _prepare_launch(args, out, err):
+    try:
+        payload = prepare_launch_inputs(args.question, Path(args.data_root))
+    except (UnsupportedQuestionError, CodexBridgeError) as exc:
+        print("NOT PREPARED：{}".format(exc), file=err)
+        return EXIT_REJECTED
+    print(json.dumps(payload, ensure_ascii=False, indent=2), file=out)
     return EXIT_OK
 
 
@@ -322,12 +403,17 @@ def _system_preflight(args, out, err):
                     else "competition run_id/challenge not supplied"
                 ),
             }
-        write_preflight_manifest(Path(args.data_root), preflight_id, manifest)
+        written_manifest = write_preflight_manifest(
+            Path(args.data_root), preflight_id, manifest
+        )
+        write_ready_certificate(
+            Path(args.data_root), preflight_id, manifest, written_manifest
+        )
     except (OSError, PreflightError) as exc:
         print("NOT READY：{}".format(exc), file=err)
         return EXIT_FAILED
     print(json.dumps(manifest, ensure_ascii=False, indent=2), file=out)
-    return EXIT_OK if manifest["ready"] else EXIT_FAILED
+    return EXIT_OK if manifest["provider_capabilities_ready"] else EXIT_FAILED
 
 
 def _fixture_system_checks():
@@ -669,6 +755,9 @@ def _codex_matrix(payload):
             "seat_id": "core",
             "target_model": "gpt-5.6-sol",
             "actual_model": payload["core"]["model"],
+            "model_confirmation_source": payload["core"].get(
+                "model_confirmation_source", "runtime"
+            ),
             "identity": "fresh Core Task",
         }
     ]
@@ -818,6 +907,9 @@ def _verify_preflight(args, out, err):
         "Run ID：{}".format(payload["run_id"]),
         "狀態：{}".format(payload["status"]),
         "Core 模型：{}".format(payload["core"]["model"]),
+        "Core 模型確認來源：{}".format(
+            payload["core"].get("model_confirmation_source", "runtime")
+        ),
         "目標模型：{}".format(TARGET_MODEL),
         "共享 prompt SHA-256：{}".format(payload["shared_prompt_sha256"]),
         "固定 GPT 席位：",

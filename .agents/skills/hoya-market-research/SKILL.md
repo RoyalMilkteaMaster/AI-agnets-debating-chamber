@@ -1,194 +1,101 @@
 ---
 name: hoya-market-research
-description: Run one Hoya Bit market-research analysis with the frozen Core plus seven-seat roster. Use when a fresh Codex Task must prove the three persistent Codex seats, aggregate live Claude and Antigravity checks, distribute the byte-identical shared prompt, and collect structured evidence, debate and votes for an approved market question.
+description: Fast-path launch for one Hoya Bit market-research run. Use when the user pastes an approved market question and says to start analysis. Core immediately runs the single launch command, which dispatches all seven seats itself, chairs the debate and the vote after the T+4:00 snapshot, writes the report and finalizes the run. Core reads the three handshakes and watches the live dashboard. No plan confirmation, no pre-game steps.
 ---
 
-# Hoya Bit market research (system gate)
+# Hoya Bit market research (fast path)
 
-You are **Core**. You are the only party that creates Codex subagent threads.
-The Python controller in this repo never creates, starts or impersonates a
-Codex agent — it builds contracts, validates records and verifies artifacts.
-
-## Invocation modes
-
-The Codex conversation is the operator's only question input. When the user
-pastes a supported market question here and says to start analysis, use that
-exact question as Core input; do not require or wait for a second web form.
-After the authorized competition run directory exists and before dispatching
-the seven seats, Core starts the read-only live server in WSL and opens the
-group-chat view in the Windows browser:
+You are **Core**. When the user pastes the question and says to start, do not
+confirm a plan — immediately run this single command (WSL; single-quote the
+question to avoid shell expansion):
 
 ```bash
-# WSL (Core only)
-nohup python3 -m hoya_market_agents live --data-root "$DATA_ROOT" \
-  --run-id "$COMPETITION_RUN_ID" --host 127.0.0.1 --port 8765 \
-  >/tmp/hoya-live-"$COMPETITION_RUN_ID".log 2>&1 &
-explorer.exe 'http://127.0.0.1:8765/live.html'
+nohup python3 -m hoya_market_agents launch --question '<題目>' \
+  --data-root <DATA_ROOT> --handshake-file /tmp/hoya-launch.json \
+  >/tmp/hoya-launch.log 2>&1 &
 ```
 
-If the loopback server cannot start, report that operational error explicitly;
-never claim that the browser is live. The browser is only an observer and does
-not change the preflight, evidence, debate, vote or verification rules below.
+`launch` does everything itself: validates the question, checks the
+`preflight/latest-ready.json` credential, creates the run, dispatches **all
+seven seats** in parallel — 3 Claude, 1 Antigravity and the 3 Codex seats
+through headless `codex exec` — starts the live server in the background (its
+failure never blocks), and immediately emits the LAUNCHED handshake (stdout
+first line, same content as the handshake file). It then keeps going by itself:
+the T+4:00 evidence seal (`SEALED`), the seven-seat debate and vote, your
+report and the manifest (`FINALIZED`). Never run `prepare-launch`,
+`verify-preflight`, provider preflight or `drill` here — those are pre-game
+steps and are never on the cold-start path.
 
-- `preflight system --mode fixture` validates schemas and failure handling only.
-  It is always `NOT_READY` and cannot authorize a market run.
-- `drill --provider-mode fake` exercises the complete seven-seat timeline,
-  debate, vote, report and verifier without subscriptions. It is always marked
-  fake and cannot authorize a real market run.
-- `preflight system --mode real` is the only aggregate readiness gate. It must
-  consume fresh provider evidence and a verified real competition drill.
+## Sole precondition
 
-## Frozen competition roster
+The only gate before dispatching seats: `<DATA_ROOT>/preflight/latest-ready.json`
+exists with `provider_capabilities_ready: true`, produced by the one-time
+pre-game `preflight --provider system --seats 7 --mode real`. If the credential
+is missing, `launch` exits 2 and explains; Core stops and reports — never
+bypass it. Pre-game checklist: `references/preflight-checklist.md`.
 
-| role / seat_id | provider | required actual model |
+## After the handshake
+
+Read the handshake JSON fields `run_id`, `run_dir`, `inbox_dir`, `live_url`,
+`codex_mode`, `codex_seats[{seat_id, attempt_id, prompt_path}]`. With the
+default `codex_mode: "cli"` there is **nothing left to dispatch**: watch
+`live_url` and wait. Do not open Codex threads and do not call `submit-seat` —
+a manual reply would duplicate a seat that `launch` already dispatched.
+
+`launch` prints exactly three JSON lines and then exits 0:
+
+| line | when | means |
 | --- | --- | --- |
-| `core` | Codex | `gpt-5.6-sol` |
-| `spot-technical` | Codex | `gpt-5.6-sol` |
-| `derivatives` | Codex | `gpt-5.6-sol` |
-| `onchain` | Codex | `gpt-5.6-sol` |
-| `official-events` | Claude | `opus` |
-| `news` | Claude | `opus` |
-| `social-macro` | Claude | `opus` |
-| `counter-evidence` | Antigravity | `gemini-3.1-pro-high` |
+| `LAUNCHED` | T+0:00 | run created, seven seats away, live server up |
+| `SEALED` | T+4:00 | evidence snapshot sealed; debate starts |
+| `FINALIZED` | ≤ T+13:00 | votes, report and manifest written |
 
-The roster is frozen in `config/agent_roster.json`. Do not silently substitute
-a model, provider, seat, tool policy or seat count.
+`FINALIZED` carries `consensus_status`, `adopted_stance`, `tally`,
+`stop_reason`, `report_status` and `report_html`. Report that line to the user
+and open `report_html`. `report_status: "red_audit"` is an honest outcome, not a
+crash: the report failed objective validation twice, so the run published the
+red 「報告驗證失敗」 version with its exact reasons — never rewrite it.
 
-## Fixed Codex seats
+**Chairing is scheduling, not authoring.** `launch` decides who challenges whom
+(derived from the seats' own published positions) and in what order messages are
+relayed. Every stance, public reason, evidence ID and change reason is the
+seat's verbatim output. Core never votes, never rewrites a seat and never
+removes a minority opinion.
 
-Exactly three persistent Codex subagent threads, one per fixed GPT seat:
+`--phase research` stops the command at `SEALED`. Use it only when the debate
+will be chaired by hand; the fast path never needs it.
 
-| seat_id | focus | Core-only write target (seat never receives filesystem tools) |
+## Fallback: `--codex-mode inbox`
+
+Only when the `codex exec` channel is unusable (CLI missing, logged out, or the
+handshake reports `codex_mode: "inbox"`), add `--codex-mode inbox` to the launch
+command. Then `launch` writes the three prompts and requests but dispatches no
+Codex seat, and Core drives them by hand: create 3 persistent Codex subagent
+threads (model `gpt-5.6-sol`, only `web_search` allowed). The first message of
+each thread is the complete content of that seat's `prompt_path` file — it
+already contains the question. No readiness-only bootstrap round. When a seat
+replies, pipe the raw reply verbatim through stdin:
+
+```bash
+python3 -m hoya_market_agents submit-seat --run-id <run_id> \
+  --seat-id <seat> --attempt-id <attempt> --data-root <DATA_ROOT>
+```
+
+## Frozen roster and Core rules
+
+| seats | provider | model |
 | --- | --- | --- |
-| `spot-technical` | 現貨價格、成交量與技術結構 | `agents/spot-technical/attempts/` |
-| `derivatives` | 衍生品、OI、Funding、清算與基差 | `agents/derivatives/attempts/` |
-| `onchain` | 鏈上、供給、巨鯨與交易所流量 | `agents/onchain/attempts/` |
+| core, spot-technical, derivatives, onchain | Codex | `gpt-5.6-sol` |
+| official-events, news, social-macro | Claude | `opus` |
+| counter-evidence | Antigravity | `gemini-3.1-pro-high` |
 
-Never open a fourth thread, never merge two seats into one thread, and never
-let Python open any of them.
-
-## Before launch — fail closed
-
-Do not send a single seat message until all of the following are confirmed.
-If any one cannot be confirmed, the run status is **NOT_READY** and you stop.
-There is no silent fallback to another model, another seat count or a
-non-persistent thread.
-
-1. Your own role is `core` and your confirmed runtime model identifier is
-   `gpt-5.6-sol` (**GPT-5.6 Sol**).
-2. The operator supplied a fresh 24-128 character URL-safe
-   `preflight_challenge`. Put that exact nonce in `build_codex_handoff(...)`;
-   never invent, reuse or alter it.
-   The operator also preselected one unused competition run ID and a distinct
-   `competition_challenge`; all seven real seats and provider receipts must
-   carry those exact values.
-3. The question passes `question_package.build_question_package` — an
-   unapproved question type is rejected before launch.
-4. The Data Root is a separate directory from the Code Root.
-5. The runtime permits only `allowed_tools=["web_search"]`, with no filesystem access, no secret
-   access, and public-structured-response-only mode for every seat. Preserve
-   each runtime dispatch receipt in preflight. Every seat needs a unique
-   `dispatch_id` and unique receipt ID; the receipt must bind that seat's
-   dispatch ID and the exact controlled-search policy hash. A prompt instruction or a
-   helper assertion is not enforcement proof.
-6. All three threads exist, are persistent, report an **actual model** of
-   `gpt-5.6-sol`, and expose an auditable `thread_id`.
-7. You wrote the handoff artifact `preflight/codex-handoff.json` into the run
-   directory and `verify-preflight` reports READY.
-8. You ran the provider authorization preflight within 300 seconds of handoff
-   creation, before dispatching the competition run:
-
-   ```bash
-   python3 -m hoya_market_agents preflight --provider system --seats 7 --mode real --codex-run-id CODEX_RUN_ID --codex-challenge CODEX_CHALLENGE --competition-run-id COMPETITION_RUN_ID --competition-challenge COMPETITION_CHALLENGE --data-root DATA_ROOT
-   ```
-
-9. The current subscription CLIs do not expose independently verifiable
-   provider/runtime attestation. Record `provider_runtime_attestation` as an
-   advisory; do not present local JSON or hashes as a provider signature. This
-   advisory does not block operational preauthorization. Run-scoped `search`,
-   `seven_seat_timeline` and `report_deadline` are proven by the authorized run.
-
-See `references/codex-bridge-contract.md` for the exact artifact shape and
-`references/preflight-checklist.md` for the fresh-task checklist.
-
-Use the Codex collaboration runtime to create three isolated subagents with an
-explicit `model: gpt-5.6-sol`, one fixed `seat_id` per persistent thread, the
-pinned `research` skill, and an enforced web-search-only tool allowlist. The bootstrap message contains only the seat
-identity and asks it to return a public readiness response; do not send the
-market question until live model, thread and tool-policy receipts pass
-preflight. Reuse the same thread with the runtime's follow-up operation for
-research and public debate. If the runtime does not expose actual model,
-persistent thread identity, enforceable tool restrictions, or a dispatch
-receipt, record `NOT READY` and stop. Never synthesize the receipt in Python.
-
-The Codex handoff proves that controlled `web_search` is available; each seat
-must still produce its own successful search receipt during the authorized
-run. Every receipt attempt must match the adopted
-evidence/debate/vote lineage and its parsed structured output must canonically
-equal the formal evidence records. Do not use a fixture, fake drill, prompt
-assertion, relaxed verifier, different model, or a Core-selected conclusion to
-replace those proofs.
-
-## What every seat receives
-
-Byte-identical for all three seats:
-
-- the versioned Question Package,
-- the pinned research snapshot **and** its hash,
-- the schema / contract text,
-- the source and time policy,
-- the shared prompt bytes (`shared_prompt_sha256` must be the same value for
-  all three seat entries).
-
-Only the seat `role` and `focus` differ in the dispatched task. `output_path`
-is Core-only audit metadata and must not grant the seat filesystem access.
-
-## During the run
-
-- 所有 Agent 公開分析、反駁、改票原因與 Core 報告文字使用繁體中文；
-  evidence ID、URL、資產代號、contract enum 與來源原文維持原始格式。
-  英文來源必須另寫繁體中文 `statement`，但不得把翻譯冒充 `excerpt` 原文。
-- Continuation messages to a persistent thread carry only public fields:
-  `claim_id`, `evidence_ids`, `stance`, `public_reason`, `responds_to` and
-  `stance_change_reason`. Never request, accept or store hidden
-  chain-of-thought, reasoning traces or scratchpads.
-- Seats return public structured responses; they never write Data Root and do
-  not receive filesystem, shell, environment, credential or secret tools.
-- Core passes the returned bytes to Python `seal_seat_handoff(...)`. Python
-  validates the exact public research schema before writing; invalid, private,
-  secret, hidden-reasoning or unknown fields write zero bytes. The same
-  validated UTF-8 bytes are written and hashed without summarising or changing
-  market meaning or votes.
-- Keep resume checkpoints public and write-once. They may contain only a
-  checkpoint ID, thread ID, evidence IDs, public status and provisional stance.
-  Python must load the sealed preflight and require the checkpoint's seat,
-  thread and attempt mapping to match it exactly before writing.
-- Only Core, through the Python validator/sealer, writes the fixed seat attempt
-  target in Data Root.
-- For a real competition run, preserve one indexed provider receipt per seat.
-  It must bind the authorized run/challenge, seat/attempt/provider/models,
-  unique dispatch and completion receipts, a successful search receipt
-  artifact, and SHA-256-indexed public transcript and structured output files.
-  Missing or duplicate lineage is `NOT_READY`; Python never manufactures it.
-
-## Verify
-
-```bash
-python3 -m hoya_market_agents verify-preflight --provider codex --run-id RUN_ID --challenge CODEX_CHALLENGE
-# tests / non-default location:
-python3 -m hoya_market_agents verify-preflight --provider codex --run-id RUN_ID --challenge CODEX_CHALLENGE --data-root /path/to/data
-```
-
-Exit `0` = READY. Exit `1` = NOT_READY; the reason is on stderr. The command
-only reads an artifact you already wrote — it starts nothing.
-
-After a completed competition run, verify the immutable artifact set and
-timeline before opening the report:
-
-```bash
-python3 -m hoya_market_agents verify-run --run-id RUN_ID --data-root DATA_ROOT
-```
-
-Core must preserve the exact final tally and every minority position. Core may
-format the report, but it may not select a side, change a vote, erase dissent or
-claim consensus that the debate state machine did not reach.
+- Roster 凍結於 `config/agent_roster.json`；不得替換模型、席位或席數。
+- 所有公開分析、辯論與報告使用繁體中文；evidence ID、URL、資產代號與 contract enum 維持原文。
+- Core 不得改票、不得改寫或刪除少數意見、不得代席位投票。
+- T+4:00 證據快照產生後，`launch` 依 architecture §5.3 的固定時間關卡主持辯論
+  （2026-08-02 使用者核准修訂）：開場逐席即時發布，某席開場已發且全場已有
+  兩種以上立場就立刻派發該席第一輪（快席不等慢席）、T+7:30 前完成第一輪反方
+  挑戰與首次投票（達 6 票即停）、T+8:00 門檻降為 5 票、T+8:45 與 T+9:45 前各
+  一輪改票機會、T+10:00 強制停止（4 票採用，否則未達共識）。
+- 未完成第一輪反方挑戰的席位不產生有效票；全室立場一致時沒有反方可挑戰，
+  該次辯論會誠實停在「有效票不足」，不得為了好看而補票。

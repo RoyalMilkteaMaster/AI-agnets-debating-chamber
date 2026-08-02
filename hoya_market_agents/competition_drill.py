@@ -8,13 +8,14 @@ from pathlib import Path
 
 from .clock import iso_utc
 from .contract_validator import CONTRACT_VERSION, validate_evidence_card
-from .debate_state_machine import DebateStateMachine
-from .question import UnsupportedQuestionError, analyze_question
+from .debate_state_machine import DebateStateMachine, stances_for
+from .question import SUPPORTED_ASSETS
+from .question_package import build_question_package
 from .report_audit_renderer import render_debate_html
 from .report_fixtures import load_fixture
 from .report_renderer import render_market_html, render_market_markdown
 from .report_workflow import run_report_workflow
-from .research_scheduler import ResearchScheduler
+from .research_scheduler import ResearchScheduler, research_deadlines
 from .run_store import RunStore, new_run_id
 from .seats import SEAT_IDS
 from .system_preflight import load_frozen_roster
@@ -22,6 +23,11 @@ from .system_preflight import load_frozen_roster
 
 DRILL_START_UTC = datetime(2026, 8, 1, 2, 0, 0, tzinfo=timezone.utc)
 LIMITATION = "不得作為真實市場或訂閱 provider READY 證據"
+OPEN_QUESTION_TYPE = "open_proposition"
+# An overall-market question names no asset, but an evidence card must still
+# carry one approved symbol. The drill labels those fixture cards with the
+# first approved asset; the text stays explicitly fake either way.
+FALLBACK_EVIDENCE_ASSET = SUPPORTED_ASSETS[0]
 
 
 @dataclass(frozen=True)
@@ -88,30 +94,19 @@ class _NoRepair:
 
 def run_fake_competition_drill(*, data_root, question, token):
     """Exercise scheduler, debate and report workflow with one fake clock."""
-    scope = analyze_question(question)
-    if len(scope.assets) != 1 or scope.assets[0] != "BTC":
-        raise UnsupportedQuestionError("competition drill 只接受 BTC 單幣合法題目。")
+    package = build_question_package(question)
+    stances = _drill_stances(package)
+    card_assets = tuple(package.assets) or (FALLBACK_EVIDENCE_ASSET,)
     roster = load_frozen_roster()
     clock = DrillClock()
-    run_id = new_run_id(clock.utc_now(), scope.asset_slug, token)
+    run_id = new_run_id(clock.utc_now(), package.asset_slug, token)
     store = RunStore(Path(data_root))
     run = store.create_run(run_id, SEAT_IDS)
-    run.write_json(
-        "question.json",
-        {
-            "schema_version": CONTRACT_VERSION,
-            "run_id": run_id,
-            "phase": "question",
-            "created_at_utc": iso_utc(clock.utc_now()),
-            "elapsed_ms": 0,
-            "question": question,
-            "question_type": "single_asset_market_state",
-            "assets": ["BTC"],
-            "period_days": scope.period_days,
-        },
-    )
+    run.write_json("question.json", _question_record(run_id, package, clock))
 
     models = {seat["seat_id"]: seat["target_model"] for seat in roster["seats"]}
+    # 演練跑的是這一種題型真正的時刻表：比較題封存在 T+4:30。
+    deadlines = research_deadlines(package.question_type)
     scheduler = ResearchScheduler(
         run=run,
         clock=clock,
@@ -120,6 +115,7 @@ def run_fake_competition_drill(*, data_root, question, token):
         format_repairer=_NoRepair(),
         primary_models=models,
         replacement_models=models,
+        deadlines=deadlines,
     )
     scheduler.start()
     completion_ms = {}
@@ -127,14 +123,22 @@ def run_fake_competition_drill(*, data_root, question, token):
         clock.advance_to(index * 1_000)
         attempt = scheduler.recovery.seats[seat_id].attempts[0]
         raw = json.dumps(
-            [_evidence(run_id, seat_id, attempt.attempt_id, clock)],
+            [
+                _evidence(
+                    run_id,
+                    seat_id,
+                    attempt.attempt_id,
+                    clock,
+                    card_assets[(index - 1) % len(card_assets)],
+                )
+            ],
             ensure_ascii=False,
         )
         if scheduler.submit_result(attempt.attempt_id, raw) != "adopted":
             raise RuntimeError("fixture seat 未被採用：{}".format(seat_id))
         completion_ms[seat_id] = clock.monotonic_ms()
 
-    for milestone in (30_000, 90_000, 150_000, 210_000, 285_000, 300_000):
+    for milestone in deadlines.milestones_ms[1:]:
         clock.advance_to(milestone)
         scheduler.tick()
     evidence = [
@@ -148,13 +152,13 @@ def run_fake_competition_drill(*, data_root, question, token):
         run=run,
         clock=clock,
         gateway=None,
-        question_type="single_asset_market_state",
+        question_type=package.question_type,
         evidence_records=evidence,
         evidence_snapshot_sha256=scheduler.seal["sha256"],
         start_monotonic_ms=0,
         started_at_utc=DRILL_START_UTC,
+        debate_start_ms=deadlines.seal_ms,
     )
-    stances = ["bullish"] * 6 + ["bearish"]
     _complete_first_round(debate, stances, scheduler.seal["sha256"])
     # Persist minority first; the sixth bullish vote then stops at 6/1 with all
     # seven seats valid instead of stopping before the dissenter can vote.
@@ -209,8 +213,8 @@ def run_fake_competition_drill(*, data_root, question, token):
     timeline = {
         "all_seats_dispatched_at_ms": 0,
         "seat_completion_ms": completion_ms,
-        "research_accept_until_ms": 285_000,
-        "evidence_snapshot_sealed_at_ms": 300_000,
+        "research_accept_until_ms": deadlines.accept_until_ms,
+        "evidence_snapshot_sealed_at_ms": deadlines.seal_ms,
         "evidence_snapshot_sha256": scheduler.seal["sha256"],
         "debate_stop_at_ms": votes["stop_elapsed_ms"],
         "debate_stop_reason": votes["stop_reason"],
@@ -223,9 +227,10 @@ def run_fake_competition_drill(*, data_root, question, token):
         "provider_mode": "fake-competition-drill",
         "competition_ready": False,
         "presentation_version": "2.0.0",
-        "question": question,
-        "assets": ["BTC"],
-        "period_days": scope.period_days,
+        "question": package.question,
+        "question_type": package.question_type,
+        "assets": list(package.assets),
+        "period_days": package.period_days,
         "started_at_utc": iso_utc(DRILL_START_UTC),
         "completed_at_utc": iso_utc(clock.utc_now()),
         "elapsed_ms": clock.monotonic_ms(),
@@ -250,7 +255,34 @@ def run_fake_competition_drill(*, data_root, question, token):
     return DrillResult(run_id, run.path, timeline)
 
 
-def _evidence(run_id, seat_id, attempt_id, clock):
+def _drill_stances(package):
+    """Take six of the first approved stance and one of the second dissent."""
+    options = tuple(getattr(package, "stance_options", ()) or ())
+    if len(options) < 2:
+        options = tuple(stances_for(package.question_type))
+    return [options[0]] * 6 + [options[1]]
+
+
+def _question_record(run_id, package, clock):
+    record = {
+        "schema_version": CONTRACT_VERSION,
+        "run_id": run_id,
+        "phase": "question",
+        "created_at_utc": iso_utc(clock.utc_now()),
+        "elapsed_ms": 0,
+        "question": package.question,
+        "question_type": package.question_type,
+        "assets": list(package.assets),
+        "period_days": package.period_days,
+    }
+    if package.question_type == OPEN_QUESTION_TYPE:
+        # The fake path never calls a real provider, so an open question keeps
+        # the degraded proposition: the user's own wording.
+        record["proposition"] = getattr(package, "proposition", None) or package.question
+    return record
+
+
+def _evidence(run_id, seat_id, attempt_id, clock, asset):
     index = SEAT_IDS.index(seat_id)
     retrieved = iso_utc(clock.utc_now())
     return {
@@ -262,7 +294,7 @@ def _evidence(run_id, seat_id, attempt_id, clock):
         "phase": "research",
         "created_at_utc": retrieved,
         "elapsed_ms": clock.monotonic_ms(),
-        "asset": "BTC",
+        "asset": asset,
         "category": seat_id,
         "statement": "本席提交的固定流程演練證據。",
         "direction": "oppose" if seat_id == "counter-evidence" else "support",

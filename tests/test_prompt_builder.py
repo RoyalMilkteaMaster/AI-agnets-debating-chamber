@@ -85,7 +85,7 @@ class PromptBuilderTest(unittest.TestCase):
 
         for required in (
             "T+1:30",
-            "T+5:00",
+            "T+4:00",
             "3 至 8 張",
             "最多 8 張",
             "source_tier",

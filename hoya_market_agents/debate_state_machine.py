@@ -16,14 +16,39 @@ from datetime import timedelta
 
 from .clock import iso_utc
 from .contract_validator import CONTRACT_VERSION
-from .question_package import COMPARISON_STANCES, EVENT_STANCES, MARKET_STANCES
+from .question_package import (
+    COMPARISON_STANCES,
+    EVENT_STANCES,
+    MARKET_STANCES,
+    OPEN_QUESTION_TYPE,
+    OPEN_STANCES,
+)
 from .run_store import RunStoreError
 from .seats import SEAT_IDS
 
-CHALLENGE_DEADLINE_MS = 390_000       # T+6:30 last first-round reply
-DEBATE_START_MS = 300_000              # T+5:00 sealed evidence broadcast
-THRESHOLD_FIVE_FROM_MS = 420_000      # T+7:00 threshold drops to five
-FINAL_ROUND_START_MS = 510_000        # T+8:30 final round opens
+# 2026-08-02 使用者核准的修訂時間表。研究讓出一分鐘後，辯論從 T+4:00 起跑，
+# 每一道牆都往後挪，好讓兩次真實 CLI 呼叫（開場 50-60 秒、第一輪 30-60 秒）
+# 各自有完整的時間，而不是擠在同一段 90 秒裡互相踩死。
+#
+# 起跑點是「該 run 實際封存的那一刻」，不是這個常數：兩幣比較題的研究窗到
+# T+4:30（research_scheduler.research_deadlines 是唯一權威）。常數留作預設，
+# 建構時可用 ``debate_start_ms`` 覆寫，且必須與 RunStore 的 seal 完全一致。
+DEBATE_START_MS = 240_000             # T+4:00 sealed evidence broadcast（單幣預設）
+# 2026-08-02 使用者核准的第二次修訂（Ticket R8）：第二輪提前到 T+6:00，達共識
+# 就準備結束，門檻要到 T+8:00 才降為五票。
+#
+# 已知風險，使用者知情取捨：實測第一輪最晚一份回覆落在 T+6:32（T+4:00 封存的
+# 那一版時間表）。6:00 這道牆之下，開場交卷最慢的那一席可能來不及完成第一輪，
+# 該席就只留初始立場、不產生有效票——這是為了讓第二輪與改票有完整兩分鐘而付
+# 出的代價，不是缺陷。
+# 2026-08-02 使用者指令「第二輪投票提前到 +6 分鐘」的本意是「封存後兩分鐘內完成
+# 第一輪表決」（下令時的心智模型是 4:00 封存）。牆因此改為相對制：
+# 第一輪牆＝該 run 封存時刻＋ROUND_ONE_WINDOW_MS（單幣 T+6:00、比較題 T+6:30）。
+# 常數保留為單幣預設，實際判定一律用 machine 實例的 challenge_deadline_ms。
+ROUND_ONE_WINDOW_MS = 120_000
+CHALLENGE_DEADLINE_MS = 360_000       # 單幣預設：240k 封存 + 120k 視窗
+THRESHOLD_FIVE_FROM_MS = 480_000      # T+8:00 threshold drops to five
+FINAL_ROUND_START_MS = 525_000        # T+8:45 second round closes, final opens
 FINAL_ROUND_END_MS = 585_000          # T+9:45 final round closes
 FORCE_STOP_MS = 600_000               # T+10:00 forced stop, four adopts
 
@@ -32,13 +57,22 @@ STANCES_BY_QUESTION_TYPE = {
     "overall_market_state": MARKET_STANCES,
     "two_asset_comparison": COMPARISON_STANCES,
     "event_impact": EVENT_STANCES,
+    OPEN_QUESTION_TYPE: OPEN_STANCES,
     # Ticket #4's contract names remain accepted until its callers migrate.
     "single_asset": MARKET_STANCES,
     "market": MARKET_STANCES,
     "comparison": COMPARISON_STANCES,
     "event": EVENT_STANCES,
 }
-NEUTRAL_STANCES = (MARKET_STANCES[-1], COMPARISON_STANCES[-1], EVENT_STANCES[-1])
+# 每套詞彙的第三個選項都是「不表態」：中性票的加重舉證（衝突證據、不確定
+# 原因、改變條件）必須四型一致，否則 open 模式的「無法決定」會變成舉證
+# 負擔最低的逃生門。
+NEUTRAL_STANCES = (
+    MARKET_STANCES[-1],
+    COMPARISON_STANCES[-1],
+    EVENT_STANCES[-1],
+    OPEN_STANCES[-1],
+)
 
 MESSAGE_KINDS = ("position", "challenge", "response", "final_vote")
 
@@ -104,7 +138,7 @@ def required_votes_at(elapsed_ms):
     return 6
 
 
-def phase_at(elapsed_ms):
+def phase_at(elapsed_ms, challenge_deadline_ms=CHALLENGE_DEADLINE_MS):
     """Name the deadline window an elapsed time falls in."""
     if elapsed_ms >= FORCE_STOP_MS:
         return "forced_stop"
@@ -114,7 +148,7 @@ def phase_at(elapsed_ms):
         return "final_round"
     if elapsed_ms >= THRESHOLD_FIVE_FROM_MS:
         return "five_vote_threshold"
-    if elapsed_ms >= CHALLENGE_DEADLINE_MS:
+    if elapsed_ms >= challenge_deadline_ms:
         return "first_round_closed"
     return "first_round"
 
@@ -196,11 +230,15 @@ class DebateStateMachine:
         seat_ids=SEAT_IDS,
         start_monotonic_ms=None,
         started_at_utc=None,
+        debate_start_ms=DEBATE_START_MS,
     ):
         self.run = run
         self.clock = clock
         self.gateway = gateway
         self.question_type = question_type
+        self.debate_start_ms = debate_start_ms
+        # 第一輪牆是相對制：封存後兩分鐘（使用者 2026-08-02 指令的本意）。
+        self.challenge_deadline_ms = debate_start_ms + ROUND_ONE_WINDOW_MS
         self.stances = stances_for(question_type)
         self.seat_ids = tuple(seat_ids)
         self.evidence_records = list(evidence_records)
@@ -221,7 +259,7 @@ class DebateStateMachine:
         if (
             seal.get("sha256") != evidence_snapshot_sha256
             or seal.get("record_count") != len(self.evidence_records)
-            or seal.get("elapsed_ms") != DEBATE_START_MS
+            or seal.get("elapsed_ms") != self.debate_start_ms
         ):
             raise EvidenceSnapshotMismatchError(
                 "傳入 Evidence snapshot 與 RunStore seal 不一致。"
@@ -231,12 +269,16 @@ class DebateStateMachine:
         }
         if start_monotonic_ms is None:
             raise DebateLifecycleError(
-                "必須提供整個 Run 的 start_monotonic_ms，不能在 T+5 重設時間。"
+                "必須提供整個 Run 的 start_monotonic_ms，不能在 T+4 重設時間。"
             )
         self.start_monotonic_ms = start_monotonic_ms
         current_elapsed = max(0, clock.monotonic_ms() - self.start_monotonic_ms)
-        if current_elapsed < DEBATE_START_MS:
-            raise DebateLifecycleError("Evidence snapshot 尚未到 T+5，不得啟動辯論。")
+        if current_elapsed < self.debate_start_ms:
+            raise DebateLifecycleError(
+                "Evidence snapshot 尚未到 T+{}ms，不得啟動辯論。".format(
+                    self.debate_start_ms
+                )
+            )
         self.started_at_utc = started_at_utc or (
             clock.utc_now() - timedelta(milliseconds=current_elapsed)
         )
@@ -385,6 +427,7 @@ class DebateStateMachine:
             raise DebateError("public_reason 必須為非空字串。")
 
         lineage = self._validate_lineage(seat, content, elapsed)
+        extra = {}
 
         round_number = content.get("round")
         if kind == "position":
@@ -400,15 +443,15 @@ class DebateStateMachine:
         ):
             self._reject(content, "invalid_round", elapsed)
             raise DebateLifecycleError("debate round 必須為 1、2 或 3。")
-        elif elapsed <= CHALLENGE_DEADLINE_MS and round_number != 1:
+        elif elapsed <= self.challenge_deadline_ms and round_number != 1:
             self._reject(content, "round_does_not_match_deadline", elapsed)
-            raise DebateLifecycleError("T+6:30 前只能提交第一輪內容。")
-        elif CHALLENGE_DEADLINE_MS < elapsed < FINAL_ROUND_START_MS and round_number != 2:
+            raise DebateLifecycleError("第一輪牆（封存＋2:00）前只能提交第一輪內容。")
+        elif self.challenge_deadline_ms < elapsed < FINAL_ROUND_START_MS and round_number != 2:
             self._reject(content, "round_does_not_match_deadline", elapsed)
-            raise DebateLifecycleError("T+6:30 後、T+8:30 前只能提交第二輪內容。")
+            raise DebateLifecycleError("第一輪牆後、T+8:45 前只能提交第二輪內容。")
         elif elapsed >= FINAL_ROUND_START_MS and round_number != 3:
             self._reject(content, "round_does_not_match_deadline", elapsed)
-            raise DebateLifecycleError("T+8:30 後只能提交最後一輪內容。")
+            raise DebateLifecycleError("T+8:45 後只能提交最後一輪內容。")
 
         stance = content.get("stance")
         if stance not in self.stances:
@@ -451,9 +494,11 @@ class DebateStateMachine:
                         "中性立場必須列出至少兩筆衝突證據、無法判斷原因與改票所需新證據。"
                     )
         if kind == "challenge":
-            if elapsed > CHALLENGE_DEADLINE_MS or seat.initial is None:
+            if elapsed > self.challenge_deadline_ms or seat.initial is None:
                 self._reject(content, "late_or_missing_initial_challenge", elapsed)
-                raise DebateLifecycleError("第一輪反方 challenge 必須在 T+6:30 前且先有 position。")
+                raise DebateLifecycleError(
+                    "第一輪 challenge 必須在第一輪牆（封存＋2:00）前且先有 position。"
+                )
             for field in ("target_seat_id", "target_claim"):
                 value = content.get(field)
                 if not isinstance(value, str) or not value.strip():
@@ -464,9 +509,14 @@ class DebateStateMachine:
                 raise UnknownSeatError(
                     "challenge 指向未知 seat_id：{!r}".format(content["target_seat_id"])
                 )
-            if not self._is_opposing(seat, content["target_seat_id"]):
+            mode = self._challenge_mode(seat, content["target_seat_id"])
+            if mode is None:
                 self._reject(content, "challenge_not_opposing", elapsed)
-                raise DebateError("第一輪挑戰必須針對相反立場的席位。")
+                raise DebateError(
+                    "第一輪挑戰必須針對相反立場的席位；只有全場立場一致時才放寬為"
+                    "壓力測試。"
+                )
+            extra["challenge_mode"] = mode
             target = self._seat_message(content["target_claim"])
             if target is None or target["content"].get("seat_id") != content["target_seat_id"]:
                 self._reject(content, "unknown_target_claim", elapsed)
@@ -517,12 +567,36 @@ class DebateStateMachine:
                 self._reject(content, "changed_vote_missing_reason", elapsed)
                 raise DebateLifecycleError("改票必須保存非空 stance_change_reason。")
 
-        return self._record(seat, content, elapsed, lineage)
+        return self._record(seat, content, elapsed, lineage, extra)
 
     def _seat_message(self, message_id):
         for entry in self.entries:
             if entry.get("event") == "seat_message" and entry.get("message_id") == message_id:
                 return entry
+        return None
+
+    def opening_stances(self):
+        """Return the distinct stances the published openings actually hold."""
+        return {
+            seat.initial["stance"]
+            for seat in self.seats.values()
+            if seat.initial is not None
+        }
+
+    def _challenge_mode(self, seat, target_seat_id):
+        """Name the standard this first-round challenge is judged by.
+
+        ``opposing`` is the normal room: a challenge has to name a seat holding
+        a different stance. ``scrutiny`` is the devil's-advocate round a room
+        whose openings are unanimous gets instead — there is no opposite to
+        name, and a unanimous room is the strongest consensus available, not a
+        room that failed to debate. ``None`` means the challenge meets neither
+        standard and must be refused.
+        """
+        if self._is_opposing(seat, target_seat_id):
+            return "opposing"
+        if target_seat_id != seat.seat_id and len(self.opening_stances()) == 1:
+            return "scrutiny"
         return None
 
     def _is_opposing(self, seat, target_seat_id):
@@ -569,7 +643,7 @@ class DebateStateMachine:
 
     # -- recording ----------------------------------------------------------
 
-    def _record(self, seat, content, elapsed, lineage):
+    def _record(self, seat, content, elapsed, lineage, extra=None):
         if lineage is not None:
             seat.attempt_ids.append(lineage["attempt_id"])
             if lineage["kind"] == "replacement":
@@ -601,6 +675,7 @@ class DebateStateMachine:
                 "stance_change_reason": content.get("stance_change_reason"),
                 "content": content,
                 "content_sha256": digest,
+                **(extra or {}),
             },
             elapsed=elapsed,
         )
@@ -656,7 +731,7 @@ class DebateStateMachine:
             "event": event,
             "created_at_utc": self._utc_at(elapsed),
             "elapsed_ms": elapsed,
-            "deadline_phase": phase_at(elapsed),
+            "deadline_phase": phase_at(elapsed, self.challenge_deadline_ms),
             **detail,
         }
         entry["entry_sha256"] = content_sha256(entry)
