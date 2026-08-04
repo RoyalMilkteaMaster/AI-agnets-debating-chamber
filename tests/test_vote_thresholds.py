@@ -9,6 +9,7 @@ from hoya_market_agents.debate_state_machine import (
     FINAL_ROUND_END_MS,
     FINAL_ROUND_START_MS,
     FORCE_STOP_MS,
+    ROUND_ONE_WINDOW_MS,
     THRESHOLD_FIVE_FROM_MS,
     LateMessageError,
     phase_at,
@@ -23,7 +24,9 @@ class DebateScheduleTest(unittest.TestCase):
 
     def test_every_debate_wall_matches_the_approved_schedule(self):
         self.assertEqual(240_000, DEBATE_START_MS)
-        self.assertEqual(360_000, CHALLENGE_DEADLINE_MS)
+        # 第一輪牆是相對制：封存 ＋ 3 分鐘（單幣預設 T+7:00、比較題 T+7:30）。
+        self.assertEqual(180_000, ROUND_ONE_WINDOW_MS)
+        self.assertEqual(420_000, CHALLENGE_DEADLINE_MS)
         self.assertEqual(480_000, THRESHOLD_FIVE_FROM_MS)
         self.assertEqual(525_000, FINAL_ROUND_START_MS)
         self.assertEqual(585_000, FINAL_ROUND_END_MS)

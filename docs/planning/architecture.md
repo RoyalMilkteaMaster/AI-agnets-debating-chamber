@@ -12,7 +12,7 @@
 
 ```text
 D:\workstationD\hoya bit\
-├─ milktea-agents-army-codex\   # 通用 Codex 開發流程插件，不放黑客松產品程式
+├─ milktea-agents-skills-for-codex\   # 通用 Codex 開發流程插件，不放黑客松產品程式
 ├─ hoya-bit-market-agents\      # Code Root
 └─ hoya-bit-market-agents_data\ # Data Root
 ```

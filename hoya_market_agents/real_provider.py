@@ -423,10 +423,16 @@ class RealSeatRunner:
             code_root=self.code_root,
             data_root=self.data_root,
         )
+        # 第七席做的是跟 Claude 三席一模一樣的研究，卻用 adapter 的 60 秒
+        # smoke 預設，等於同一份工作只給四分之一的時間——run
+        # 20260803T113838Z 就是這樣連兩次 timeout 後失去該席。研究呼叫給它
+        # 與 Claude 席相同的預算；辯論回合的呼叫仍由 turn 截止時的 cancel
+        # 終止，不會因為預算變長而拖過牆。
         self.antigravity_adapter = antigravity_adapter or AntigravityAdapter(
             code_root=self.code_root,
             data_root=self.data_root,
             runner=process_runner.run_process,
+            timeout_seconds=self._research_timeout_seconds(),
         )
         self.codex_adapter = codex_adapter or CodexExecAdapter(runner=process_runner)
         self.codex_mode = codex_mode

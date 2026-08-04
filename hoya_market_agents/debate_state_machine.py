@@ -34,19 +34,19 @@ from .seats import SEAT_IDS
 # T+4:30（research_scheduler.research_deadlines 是唯一權威）。常數留作預設，
 # 建構時可用 ``debate_start_ms`` 覆寫，且必須與 RunStore 的 seal 完全一致。
 DEBATE_START_MS = 240_000             # T+4:00 sealed evidence broadcast（單幣預設）
-# 2026-08-02 使用者核准的第二次修訂（Ticket R8）：第二輪提前到 T+6:00，達共識
-# 就準備結束，門檻要到 T+8:00 才降為五票。
+# 第一輪的牆是相對的：該 run 實際封存的時刻 ＋ ROUND_ONE_WINDOW_MS，所以兩幣
+# 比較題（封存晚 30 秒）的第一輪也拿得到同樣長的視窗。常數只是單幣預設，實際
+# 判定一律走 machine 實例的 challenge_deadline_ms。
 #
-# 已知風險，使用者知情取捨：實測第一輪最晚一份回覆落在 T+6:32（T+4:00 封存的
-# 那一版時間表）。6:00 這道牆之下，開場交卷最慢的那一席可能來不及完成第一輪，
-# 該席就只留初始立場、不產生有效票——這是為了讓第二輪與改票有完整兩分鐘而付
-# 出的代價，不是缺陷。
-# 2026-08-02 使用者指令「第二輪投票提前到 +6 分鐘」的本意是「封存後兩分鐘內完成
-# 第一輪表決」（下令時的心智模型是 4:00 封存）。牆因此改為相對制：
-# 第一輪牆＝該 run 封存時刻＋ROUND_ONE_WINDOW_MS（單幣 T+6:00、比較題 T+6:30）。
-# 常數保留為單幣預設，實際判定一律用 machine 實例的 challenge_deadline_ms。
-ROUND_ONE_WINDOW_MS = 120_000
-CHALLENGE_DEADLINE_MS = 360_000       # 單幣預設：240k 封存 + 120k 視窗
+# 這道牆不是「辯論何時結束」——湊滿門檻票數的那一刻就結束了。它是慢席的截止
+# 線，而慢席投不投得到票，決定的是六票同向能不能成立。實測 run
+# 20260802T055930Z 的教訓：Claude 席開場落在封存＋40 秒，第一輪呼叫要讀完整
+# 證據快照與全場逐字稿、再花 50-70 秒；120 秒的窗只留給它們 73 秒，三席同時
+# 掉隊，有效票剩四張，於是既湊不到六票（無法提早結束），信心也被壓成紅燈。
+# 180 秒讓「開場＋挑戰＋relay」那條鏈完整放得下；七席都投得到票時，共識反而
+# 在 T+6:30 前就成立，比原本乾等到 T+10 更早收工。
+ROUND_ONE_WINDOW_MS = 180_000
+CHALLENGE_DEADLINE_MS = DEBATE_START_MS + ROUND_ONE_WINDOW_MS  # 單幣預設 T+7:00
 THRESHOLD_FIVE_FROM_MS = 480_000      # T+8:00 threshold drops to five
 FINAL_ROUND_START_MS = 525_000        # T+8:45 second round closes, final opens
 FINAL_ROUND_END_MS = 585_000          # T+9:45 final round closes

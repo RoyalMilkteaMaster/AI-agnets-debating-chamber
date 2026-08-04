@@ -1305,13 +1305,26 @@ class RevisedScheduleTimingTest(DebateDriverTestCase):
         self.assertEqual(6, votes["tally"]["bullish"])
         self.assertLessEqual(votes["stop_elapsed_ms"], CHALLENGE_DEADLINE_MS)
 
-    def test_a_hundred_second_opening_honestly_misses_the_two_minute_window(self):
-        # 使用者知情取捨：第一輪牆＝封存＋2:00。支援的最慢鏈是 115 秒
-        # （120 秒窗 − 5 秒 relay 裕度）；100 秒開場＋60 秒挑戰＝160 秒，
-        # 該席誠實成為 provisional，其他六席照常取得有效票。
+    def test_a_hundred_second_opening_still_completes_that_seat_s_first_round(self):
+        # 第一輪牆＝封存＋3:00，支援的最慢鏈是 175 秒（180 秒窗 − 5 秒 relay
+        # 裕度）。100 秒開場＋60 秒挑戰＝160 秒仍在窗內：慢席不該只因為慢
+        # 就失去有效票，因為少一張票就可能讓六票同向的共識不成立。
         latency_ms = self.latencies()
         latency_ms[("social-macro", "opening")] = 100_000
         latency_ms[("social-macro", "r1")] = 60_000
+        runner = self.build_latency_runner(BEARISH_FIVE_NEUTRAL_TWO, latency_ms)
+
+        driver, votes = self.drive(runner)
+
+        self.assertEqual("valid", _seat_row(votes, "social-macro")["state"])
+        self.assertEqual(7, votes["valid_vote_count"])
+
+    def test_a_chain_past_the_wall_is_honestly_left_provisional(self):
+        # 牆之外仍然 fail closed：180 秒窗放不下的鏈（100 秒開場＋120 秒挑戰）
+        # 只留初始立場，不產生有效票，其餘六席照常。
+        latency_ms = self.latencies()
+        latency_ms[("social-macro", "opening")] = 100_000
+        latency_ms[("social-macro", "r1")] = 120_000
         runner = self.build_latency_runner(BEARISH_FIVE_NEUTRAL_TWO, latency_ms)
 
         driver, votes = self.drive(runner)
@@ -1322,14 +1335,16 @@ class RevisedScheduleTimingTest(DebateDriverTestCase):
     def test_the_collection_budgets_stay_inside_their_own_walls(self):
         turns = build_turns(("bullish", "bearish", "neutral"))
 
-        self.assertEqual(CHALLENGE_DEADLINE_MS - 5_000, turns["r1"].collect_until_ms)
+        self.assertEqual(
+            DEBATE_START_MS + ROUND_ONE_WINDOW_MS - 5_000, turns["r1"].collect_until_ms
+        )
         self.assertEqual(FINAL_ROUND_START_MS - 5_000, turns["r2"].collect_until_ms)
         self.assertEqual(FINAL_ROUND_END_MS - 5_000, turns["r3"].collect_until_ms)
         self.assertEqual(DEBATE_START_MS, turns["opening"].relay_from_ms)
         self.assertEqual(FINAL_ROUND_START_MS, turns["r3"].relay_from_ms)
 
     def test_a_later_seal_moves_the_first_round_wall_with_it(self):
-        """相對牆：第一輪牆＝封存＋2:00；r2/r3 的絕對牆不動。"""
+        """相對牆：第一輪牆＝封存＋ROUND_ONE_WINDOW_MS；r2/r3 的絕對牆不動。"""
         turns = build_turns(
             ("asset_a_stronger", "asset_b_stronger", "no_clear_difference"),
             COMPARISON_SEAL_MS,
