@@ -6,11 +6,12 @@ and time only moves when the scripted runner or the sleeper moves the fake
 clock — exactly the compressed-time technique ``test_competition_drill`` uses.
 """
 
+import hashlib
 import json
 import queue
 import tempfile
 import unittest
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,30 +21,41 @@ from tests.fakes import FIXED_START_UTC, FixedClock, ScriptedTokenSource
 from hoya_market_agents.clock import iso_utc
 from hoya_market_agents.contract_validator import CONTRACT_VERSION
 from hoya_market_agents.debate_driver import (
+    CORE_REPORT_SCHEMA,
     DebateDriver,
     assemble_market_report,
     assign_challenges,
     build_turns,
     challenge_message_id,
     run_after_seal,
+    validate_core_narrative,
 )
-from hoya_market_agents.debate_state_machine import (
-    CHALLENGE_DEADLINE_MS,
-    DEBATE_START_MS,
-    FINAL_ROUND_END_MS,
-    FINAL_ROUND_START_MS,
-    FORCE_STOP_MS,
-    ROUND_ONE_WINDOW_MS,
-    THRESHOLD_FIVE_FROM_MS,
-    stances_for,
+from hoya_market_agents.debate_rules import debate_rules
+from hoya_market_agents.debate_state_machine import content_sha256, stances_for
+from hoya_market_agents.report_audit_renderer import render_debate_html
+from hoya_market_agents.report_contract import (
+    CONFIDENCE_ICONS,
+    CONFIDENCE_LEVELS,
+    confidence_cap,
 )
+from hoya_market_agents.report_renderer import render_market_html, render_market_markdown
 from hoya_market_agents.launcher import run_launch
 from hoya_market_agents.question_package import build_question_package
 from hoya_market_agents.research_scheduler import research_deadlines
 from hoya_market_agents.run_store import RunStore
-from hoya_market_agents.run_verifier import verify_run
+from hoya_market_agents.run_verifier import RunVerificationError, verify_run
 from hoya_market_agents.seats import SEAT_IDS
 from hoya_market_agents.system_preflight import write_ready_certificate
+
+# 取值來源改成 config/debate_rules.json 的載入器；斷言值刻意不動。
+RULES = debate_rules()
+DEBATE_START_MS = RULES.debate_start_ms
+ROUND_ONE_WINDOW_MS = RULES.round_one_window_ms
+CHALLENGE_DEADLINE_MS = RULES.challenge_deadline_ms()
+THRESHOLD_FIVE_FROM_MS = RULES.reduced_threshold_from_ms
+FINAL_ROUND_START_MS = RULES.final_round_start_ms
+FINAL_ROUND_END_MS = RULES.final_round_end_ms
+FORCE_STOP_MS = RULES.force_stop_ms
 
 QUESTION = "分析 BTC 過去 14 日市場狀態"
 COMPARISON_QUESTION = "比較 BTC 與 ETH 過去 14 日的相對強弱"
@@ -87,6 +99,14 @@ REAL_OPENING_LATENCY_MS = {
 # asset_a_stronger；這裡在單幣題型上重現同一種房間）。
 UNANIMOUS_SEVEN = dict.fromkeys(SEAT_IDS, "bullish")
 UNANIMOUS_COMPARISON_SEVEN = dict.fromkeys(SEAT_IDS, "asset_a_stronger")
+
+# Ticket 03 之後，七席開場全數同立場會先觸發盲投直過，所以魔鬼代言人輪（Ticket
+# R8）的房間必須是「一致、但還缺一席開場」——那正是 §11.3 保留給 6 票以下的原
+# 規則。缺的那一席用真實的 provider 超時製造，不是憑空拿掉一個席位。
+SCRUTINY_SILENT_SEAT = SEAT_IDS[-1]
+SCRUTINY_SPEAKING_SEATS = tuple(
+    seat_id for seat_id in SEAT_IDS if seat_id != SCRUTINY_SILENT_SEAT
+)
 
 # 第一輪的實測與估計：codex/antigravity 仍在 20 秒內，claude 帶著完整公開紀錄
 # 重讀一次，估 30-60 秒。
@@ -577,7 +597,7 @@ class DebateDriverTestCase(unittest.TestCase):
         self.sleeper.runner = runner
         return runner
 
-    def drive(self, runner):
+    def drive(self, runner, rules=None):
         driver = DebateDriver(
             run=self.run,
             clock=self.clock,
@@ -590,6 +610,7 @@ class DebateDriverTestCase(unittest.TestCase):
             started_at_utc=FIXED_START_UTC,
             sleeper=self.sleeper,
             err=self.err,
+            rules=rules,
         )
         return driver, driver.run_debate()
 
@@ -620,6 +641,9 @@ class DebateDriverTestCase(unittest.TestCase):
 CONCLUSION_FIRST_RULE = (
     "public_reason 的第一句必須是 30-60 字的核心結論（先立場與理由），之後才展開論據。"
 )
+
+# Ticket 03 範圍第 3 條的原文語意，逐字寫在測試裡，不從實作 import 回來。
+PERSUASION_GOAL = "你的目標是以證據說服對立席位改票，使己方達到當前門檻"
 
 
 QUESTION_BY_TYPE = {
@@ -950,7 +974,7 @@ class DebateRoundTest(DebateDriverTestCase):
         )
 
     def test_a_room_that_agrees_on_one_stance_reaches_consensus(self):
-        """Ticket R8: 全場一致是最強共識，跑完魔鬼代言人輪就該收工。"""
+        """Ticket R8 → Ticket 03：全場一致仍是最強共識，現在直接盲投直過收工。"""
         runner = self.build_runner(
             UNANIMOUS_SEVEN,
             wave_advance_ms={"opening": 30_000, "r1": 50_000, "r2": 60_000, "r3": 60_000},
@@ -958,15 +982,16 @@ class DebateRoundTest(DebateDriverTestCase):
 
         driver, votes = self.drive(runner)
 
-        self.assertEqual("consensus_6_votes", votes["stop_reason"])
+        self.assertEqual("unanimous_blind_pass", votes["stop_reason"])
         self.assertEqual("consensus", votes["consensus_status"])
         self.assertEqual("bullish", votes["adopted_stance"])
-        self.assertEqual(6, votes["valid_vote_count"])
+        self.assertEqual(7, votes["valid_vote_count"])
         self.assertFalse(votes["red_no_conclusion"])
         self.assertTrue(votes["market_conclusion_allowed"])
-        # 七席都公開講過話，紀錄必須留著；第六票達標時第七票已無處可投。
+        # 七席都公開講過話，紀錄必須留著；開場原文就是每一席的最終票。
         self.assertEqual(["bullish"] * 7, [row["initial_stance"] for row in votes["votes"]])
-        self.assertEqual(tuple(SEAT_IDS), driver.viable)
+        self.assertEqual(["bullish"] * 7, [row["final_stance"] for row in votes["votes"]])
+        self.assertEqual((), driver.viable)
         self.assertEqual(list(SEAT_IDS), list(driver.published))
         self.assertEqual(votes, self.votes_file())
 
@@ -981,7 +1006,9 @@ class DebateRoundTest(DebateDriverTestCase):
         self.assertEqual("FINALIZED", handshake["status"])
         self.assertEqual("consensus", handshake["consensus_status"])
         self.assertEqual("bullish", handshake["adopted_stance"])
-        self.assertEqual(6, handshake["valid_vote_count"])
+        self.assertEqual("unanimous_blind_pass", handshake["stop_reason"])
+        self.assertEqual(7, handshake["valid_vote_count"])
+        self.assertEqual("accepted", handshake["report_status"])
 
     def test_each_reply_reaches_events_before_the_next_one_arrives(self):
         # 直播頁只讀 events.jsonl：一則講完就要看得到，不能整波結束才一次倒出來。
@@ -1154,7 +1181,11 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
 
     run 20260802T043728Z-btc-eth-f8ea46 的七席開場立場完全一致，「第一輪必須挑戰
     相反立場」讓整波 r1 被跳過、零有效票，乾等到 T+10 才流局。修訂後同一個房間
-    要跑完魔鬼代言人輪，七席都拿到有效票，並在最早的門檻點收工。
+    要跑完魔鬼代言人輪，發言的席位都拿到有效票，並在最早的門檻點收工。
+
+    Ticket 03 把「七席全數同立場」改判為盲投直過，所以魔鬼代言人輪剩下的適用範
+    圍是「立場一致、但還缺一席開場」——§11.3 明文保留給 6 票以下的原規則。這裡
+    缺的那一席由真實的 provider 超時造成（實測 run 20260802T022316Z 的形狀）。
     """
 
     def latencies(self):
@@ -1169,6 +1200,9 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
                 for seat_id, value in REAL_FIRST_ROUND_LATENCY_MS.items()
             }
         )
+        # 這一席的開場超出 driver 自己交出去的預算，provider 回超時，房間因此
+        # 停在六席一致，直過不成立。
+        latency_ms[(SCRUTINY_SILENT_SEAT, "opening")] = 10_000_000
         return latency_ms
 
     def test_a_unanimous_room_runs_a_scrutiny_round_and_reaches_consensus(self):
@@ -1177,10 +1211,10 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
         driver, votes = self.drive(runner)
 
         self.assertEqual(
-            ["{}-r1".format(seat_id) for seat_id in SEAT_IDS],
+            ["{}-r1".format(seat_id) for seat_id in SCRUTINY_SPEAKING_SEATS],
             [item for item in runner.started if item.endswith("-r1")],
         )
-        self.assertEqual(tuple(SEAT_IDS), driver.viable)
+        self.assertEqual(SCRUTINY_SPEAKING_SEATS, driver.viable)
         self.assertEqual("consensus_6_votes", votes["stop_reason"])
         self.assertEqual("consensus", votes["consensus_status"])
         self.assertEqual("bullish", votes["adopted_stance"])
@@ -1202,24 +1236,33 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
             for entry in driver.machine.entries
             if entry.get("kind") == "challenge"
         }
-        self.assertEqual(set(SEAT_IDS), set(challenges))
+        self.assertEqual(set(SCRUTINY_SPEAKING_SEATS), set(challenges))
         self.assertEqual(
             {"scrutiny"}, {entry["challenge_mode"] for entry in challenges.values()}
         )
         # roster 順序輪替：每席挑戰下一席，最後一席挑戰第一席。
+        rotated = [
+            SCRUTINY_SPEAKING_SEATS[(index + 1) % len(SCRUTINY_SPEAKING_SEATS)]
+            for index in range(len(SCRUTINY_SPEAKING_SEATS))
+        ]
         self.assertEqual(
-            [SEAT_IDS[(index + 1) % len(SEAT_IDS)] for index in range(len(SEAT_IDS))],
-            [challenges[seat_id]["target_seat_id"] for seat_id in SEAT_IDS],
+            rotated,
+            [
+                challenges[seat_id]["target_seat_id"]
+                for seat_id in SCRUTINY_SPEAKING_SEATS
+            ],
         )
 
     def test_the_scrutiny_prompt_asks_for_a_stress_test_not_a_fake_opponent(self):
         runner = self.build_runner(
-            UNANIMOUS_SEVEN, wave_advance_ms={"opening": 30_000, "r1": 50_000}
+            UNANIMOUS_SEVEN,
+            wave_advance_ms={"opening": 30_000, "r1": 50_000},
+            silent=[(SCRUTINY_SILENT_SEAT, "opening")],
         )
 
         self.drive(runner)
 
-        self.assertEqual(len(SEAT_IDS), len(runner.prompts["r1"]))
+        self.assertEqual(len(SCRUTINY_SPEAKING_SEATS), len(runner.prompts["r1"]))
         for prompt in runner.prompts["r1"]:
             self.assertIn(SCRUTINY_RULE, prompt)
             self.assertNotIn("持相反立場", prompt)
@@ -1242,6 +1285,209 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
             self.assertIn("持相反立場", prompt)
             self.assertNotIn(SCRUTINY_RULE, prompt)
         self.assertEqual(7, votes["valid_vote_count"])
+
+
+class PersuasionPromptTest(DebateDriverTestCase):
+    """Ticket 03：辯論輪的 prompt 必須說明白目的是用證據把票拉過來。
+
+    句子取自 Ticket 原文與 architecture §11.3「prompt 層強化『說服對方拉票』語
+    意」，不是從實作抄回來的。
+    """
+
+    def test_every_debate_round_prompt_states_the_persuasion_goal(self):
+        runner = self.build_runner(BEARISH_FIVE_NEUTRAL_TWO)
+
+        self.drive(runner)
+
+        debate_slugs = sorted(slug for slug in runner.prompts if slug != "opening")
+        self.assertEqual(["r1", "r2", "r3"], debate_slugs)
+        for slug in debate_slugs:
+            for prompt in runner.prompts[slug]:
+                self.assertIn(PERSUASION_GOAL, prompt, slug)
+
+    def test_the_blind_opening_prompt_carries_no_persuasion_goal(self):
+        # 開場是互不可見的盲投：這一刻場上還沒有任何立場可以被說服。
+        runner = self.build_runner(BEARISH_FIVE_NEUTRAL_TWO)
+
+        self.drive(runner)
+
+        self.assertEqual(len(SEAT_IDS), len(runner.prompts["opening"]))
+        for prompt in runner.prompts["opening"]:
+            self.assertNotIn(PERSUASION_GOAL, prompt)
+
+    def test_the_goal_names_the_threshold_this_round_s_votes_will_face(self):
+        """「當前門檻」是這一輪的票被計入時的門檻，不是派工那一刻的門檻。
+
+        最後一輪的內容要等自己的視窗（T+8:45）打開才 relay，那時門檻已經降成
+        五票；照派工時刻報六票，等於要席位去湊一個它的票永遠碰不到的目標。
+        """
+        runner = self.build_runner(BEARISH_FIVE_NEUTRAL_TWO)
+
+        self.drive(runner)
+
+        expected = {
+            "r1": RULES.initial_votes,
+            "r2": RULES.initial_votes,
+            "r3": RULES.reduced_votes,
+        }
+        # 這一版的預期值必須真的分歧，否則測不出「跟著視窗走」這件事。
+        self.assertNotEqual(expected["r2"], expected["r3"])
+        for slug, votes in expected.items():
+            self.assertIn(slug, runner.prompts)
+            for prompt in runner.prompts[slug]:
+                self.assertIn(
+                    "{}（{} 票）".format(PERSUASION_GOAL, votes), prompt, slug
+                )
+
+    def test_a_late_revote_wave_names_the_threshold_it_is_dispatched_under(self):
+        """Reviewer B 第 1 輪 [建議]：r2 延後到門檻降低之後才產 prompt。
+
+        補上 B 造出的 operand-replacement 缺口：把
+        ``max(elapsed, relay_from)`` 換成單獨的 ``relay_from`` 時，r2 永遠報六
+        票，這個案例會紅。第一席的 prompt 在門檻降低前產出（六票），其餘席位
+        的 prompt 產在 r2 波推進之後（五票）。
+        """
+        runner = self.build_runner(
+            BEARISH_FIVE_NEUTRAL_TWO,
+            wave_advance_ms={"opening": 30_000, "r1": 50_000, "r2": 170_000},
+        )
+
+        self.drive(runner)
+
+        named = [
+            RULES.reduced_votes
+            if "（{} 票）".format(RULES.reduced_votes) in prompt
+            else RULES.initial_votes
+            for prompt in runner.prompts["r2"]
+        ]
+        self.assertEqual(RULES.initial_votes, named[0])
+        self.assertEqual(RULES.reduced_votes, named[-1])
+        self.assertEqual(
+            {RULES.initial_votes, RULES.reduced_votes},
+            set(named),
+            "r2 波跨過 T+8:00，門檻必須跟著降階",
+        )
+
+    def test_a_unanimous_scrutiny_round_still_states_the_same_goal(self):
+        # 全場一致時沒有對立席位，但那一輪仍然是為了移動票數而存在。
+        runner = self.build_runner(
+            UNANIMOUS_SEVEN,
+            wave_advance_ms={"opening": 30_000, "r1": 50_000},
+            silent=[(SCRUTINY_SILENT_SEAT, "opening")],
+        )
+
+        self.drive(runner)
+
+        self.assertEqual(len(SCRUTINY_SPEAKING_SEATS), len(runner.prompts["r1"]))
+        for prompt in runner.prompts["r1"]:
+            self.assertIn(PERSUASION_GOAL, prompt)
+
+
+class UnanimousBlindPassDriverTest(DebateDriverTestCase):
+    """Ticket 03：七席盲投同立場 → 不派任何辯論輪，直接進報告流程。
+
+    architecture §11.3：opening 是互不可見的盲投，七席各自獨立得出同一結論即
+    直接停止。魔鬼代言人輪只在「還有席位沒發言」的一致房間才跑得到（見
+    UnanimousRoomScrutinyTest）。
+    """
+
+    def test_a_unanimous_blind_opening_skips_every_debate_round(self):
+        runner = self.build_runner(
+            UNANIMOUS_SEVEN, wave_advance_ms={"opening": 30_000}
+        )
+
+        driver, votes = self.drive(runner)
+
+        # 只派過開場那一波；r1/r2/r3 一次都沒有離開過這台機器。
+        self.assertEqual(
+            ["{}-opening".format(seat_id) for seat_id in SEAT_IDS], runner.started
+        )
+        self.assertEqual("unanimous_blind_pass", votes["stop_reason"])
+        self.assertEqual("consensus", votes["consensus_status"])
+        self.assertEqual("bullish", votes["adopted_stance"])
+        self.assertEqual(7, votes["valid_vote_count"])
+        self.assertEqual(7, votes["threshold_required"])
+        self.assertEqual(votes, self.votes_file())
+
+    def test_the_public_record_holds_seven_openings_and_nothing_else(self):
+        runner = self.build_runner(
+            UNANIMOUS_SEVEN, wave_advance_ms={"opening": 30_000}
+        )
+
+        driver, _ = self.drive(runner)
+
+        seat_messages = [
+            entry
+            for entry in driver.machine.entries
+            if entry.get("event") == "seat_message"
+        ]
+        self.assertEqual({"position"}, {entry["kind"] for entry in seat_messages})
+        self.assertEqual(len(SEAT_IDS), len(seat_messages))
+        self.assertEqual(list(SEAT_IDS), list(driver.published))
+        self.assertEqual((), driver.viable)
+        self.assertEqual({}, driver.assignment)
+
+    def test_the_run_stops_at_the_last_opening_not_at_the_forced_stop(self):
+        # 直過的價值就是「最快被辨識」：時間不能拖到 T+10 才結算。
+        runner = self.build_runner(
+            UNANIMOUS_SEVEN, wave_advance_ms={"opening": 30_000}
+        )
+
+        _, votes = self.drive(runner)
+
+        self.assertEqual(SEAL_MS + 30_000, votes["stop_elapsed_ms"])
+        self.assertLess(votes["stop_elapsed_ms"], CHALLENGE_DEADLINE_MS)
+
+    def test_a_configured_six_vote_threshold_also_skips_every_debate_round(self):
+        """Reviewer B 第 1 輪 [重要] ②：非預設門檻下仍派出整輪 r1。
+
+        停止發生在 ``_publish_position`` 內部那一則 relay 裡，而不是開場波結束
+        時。預設 7 票看不出來——七席一致時停止後 ``viable_seats`` 本來就是空
+        的，沒有東西可派；門檻設 6 時最後一席是反方，場上有兩種立場，停止之後
+        那一次 ``_call_first_round`` 就會把七席 r1 全派出去。
+        """
+        rules = replace(RULES, unanimous_blind_pass_votes=6)
+        runner = self.build_runner(
+            BULLISH_SIX, wave_advance_ms={"opening": 30_000}
+        )
+
+        driver, votes = self.drive(runner, rules=rules)
+
+        self.assertEqual(
+            ["{}-opening".format(seat_id) for seat_id in SEAT_IDS], runner.started
+        )
+        self.assertEqual([], [item for item in runner.started if item.endswith("-r1")])
+        self.assertEqual("unanimous_blind_pass", votes["stop_reason"])
+        self.assertEqual(6, votes["threshold_required"])
+        self.assertEqual("bullish", votes["adopted_stance"])
+        self.assertEqual(7, votes["valid_vote_count"])
+        self.assertEqual({"bullish": 6, "bearish": 1, "neutral": 0}, votes["tally"])
+        # 反方那一席仍是有效票，也仍留在異議名單裡。
+        self.assertEqual(
+            ["counter-evidence"], [item["seat_id"] for item in votes["dissent"]]
+        )
+        self.assertEqual((), driver.viable)
+
+    def test_a_six_one_blind_opening_still_runs_the_whole_debate(self):
+        """驗收條件二：6/1 盲投照常進辯論，行為與現制一致。"""
+        runner = self.build_runner(
+            BULLISH_SIX, wave_advance_ms={"opening": 30_000, "r1": 50_000}
+        )
+
+        driver, votes = self.drive(runner)
+
+        self.assertEqual(
+            ["{}-r1".format(seat_id) for seat_id in SEAT_IDS],
+            [item for item in runner.started if item.endswith("-r1")],
+        )
+        self.assertEqual("consensus_6_votes", votes["stop_reason"])
+        self.assertEqual(tuple(SEAT_IDS), driver.viable)
+        self.assertTrue(
+            any(
+                entry.get("kind") == "challenge"
+                for entry in driver.machine.entries
+            )
+        )
 
 
 class RevisedScheduleTimingTest(DebateDriverTestCase):
@@ -1375,6 +1621,29 @@ class TurnWindowAuthorityTest(unittest.TestCase):
             self.assertNotIn("relay_until_ms", names, slug)
 
 
+class CoreNarrativeLightSetTest(unittest.TestCase):
+    """Core 的輸出 schema 與撰稿驗證必須用 report_contract 那一份燈號集合。"""
+
+    def test_the_output_schema_offers_exactly_the_approved_lights(self):
+        self.assertEqual(
+            list(CONFIDENCE_LEVELS),
+            CORE_REPORT_SCHEMA["properties"]["confidence_level"]["enum"],
+        )
+
+    def test_every_approved_light_is_accepted_by_the_narrative_check(self):
+        for level in CONFIDENCE_LEVELS:
+            with self.subTest(level=level):
+                self.assertIsNotNone(
+                    validate_core_narrative(narrative(confidence_level=level))
+                )
+
+    def test_a_light_outside_the_approved_set_is_refused(self):
+        for level in ("yellow_green", "grene", "", None):
+            with self.subTest(level=repr(level)):
+                with self.assertRaises(ValueError):
+                    validate_core_narrative(narrative(confidence_level=level))
+
+
 class ReportAndFinalizeTest(DebateDriverTestCase):
     def test_finalize_writes_a_verifiable_fast_path_manifest(self):
         runner = self.build_runner(
@@ -1420,7 +1689,7 @@ class ReportAndFinalizeTest(DebateDriverTestCase):
         )
 
         handshake = self.finish(
-            runner, core_narratives=[narrative(confidence_level="green")] * 2
+            runner, core_narratives=[narrative(confidence_level="blue")] * 2
         )
 
         report = json.loads((self.run.path / "report.json").read_text(encoding="utf-8"))
@@ -1443,7 +1712,7 @@ class ReportAndFinalizeTest(DebateDriverTestCase):
         )
 
         handshake = self.finish(
-            runner, core_narratives=[narrative(confidence_level="green")] * 2
+            runner, core_narratives=[narrative(confidence_level="blue")] * 2
         )
 
         attempts = json.loads(
@@ -1456,7 +1725,7 @@ class ReportAndFinalizeTest(DebateDriverTestCase):
         for item in attempts:
             self.assertTrue(item["problems"], item)
             self.assertTrue(item["submitted_at_utc"].endswith("Z"), item)
-            self.assertEqual("green", item["draft"]["confidence"]["level"])
+            self.assertEqual("blue", item["draft"]["confidence"]["level"])
             self.assertEqual(NARRATIVE["judgement"], item["draft"]["judgement"])
 
     def test_an_accepted_core_draft_leaves_no_rejected_draft_behind(self):
@@ -1479,7 +1748,7 @@ class ReportAndFinalizeTest(DebateDriverTestCase):
 
         prompt = runner.core_adapter.calls[0]
         self.assertIn('"consensus_status": "consensus"', prompt)
-        self.assertIn("confidence_level 的客觀上限是 yellow_green", prompt)
+        self.assertIn("confidence_level 的客觀上限是 green", prompt)
         self.assertIn("counter-evidence", prompt)
 
     def test_core_writes_the_report_without_any_search_capability(self):
@@ -1497,9 +1766,14 @@ class FullLaunchTest(unittest.TestCase):
     """One command from an approved question to a verifiable run bundle."""
 
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.data_root = Path(self._tmp.name) / "data"
+        self._reset_run_root()
+
+    def _reset_run_root(self):
+        """A fresh, certificated data root — one test may launch several runs."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self._tmp = tmp
+        self.data_root = Path(tmp.name) / "data"
         self.data_root.mkdir(parents=True)
         self.clock = FixedClock()
         self.results = None
@@ -1507,6 +1781,13 @@ class FullLaunchTest(unittest.TestCase):
         self.out = Stream()
         self.err = Stream()
         self._write_certificate()
+
+    @staticmethod
+    def _room(bullish, bearish, neutral=0):
+        """Seven seats' opening stances by bloc size."""
+        assert bullish + bearish + neutral == len(SEAT_IDS)
+        stances = ("bullish",) * bullish + ("bearish",) * bearish + ("neutral",) * neutral
+        return dict(zip(SEAT_IDS, stances))
 
     def _write_certificate(self):
         manifest = {
@@ -1522,7 +1803,10 @@ class FullLaunchTest(unittest.TestCase):
         )
         write_ready_certificate(self.data_root, PREFLIGHT_ID, manifest, path)
 
-    def _runner_factory(self, stances=BULLISH_SIX, **unused):
+    def _runner_factory(self, stances=BULLISH_SIX, core_narratives=None, **runner_options):
+        runner_options.setdefault("wave_advance_ms", {"opening": 30_000, "r1": 50_000})
+        narratives = list(core_narratives) if core_narratives else [narrative()]
+
         def factory(*, run, data_root, results_queue, **options):
             self.results = results_queue
             self.runner = FullRunFakeRunner(
@@ -1530,8 +1814,8 @@ class FullLaunchTest(unittest.TestCase):
                 results_queue,
                 self.clock,
                 stances,
-                core_adapter=ScriptedCoreAdapter(self.clock, [narrative()]),
-                wave_advance_ms={"opening": 30_000, "r1": 50_000},
+                core_adapter=ScriptedCoreAdapter(self.clock, narratives),
+                **runner_options,
             )
             return self.runner
 
@@ -1574,6 +1858,1038 @@ class FullLaunchTest(unittest.TestCase):
         )
         self.assertTrue(
             any(item["kind"] == "final_vote" for item in seat_messages)
+        )
+
+    def test_a_unanimous_blind_pass_run_verifies_with_an_empty_debate(self):
+        """Ticket 03 驗收條件一：七席盲投全同立場的完整 run bundle。
+
+        無任何辯論訊息（只有七則開場）、``votes.json`` 記 ``unanimous_blind_pass``、
+        報告三頁照常產出、``verify-run`` PASS。
+        """
+        code = run_launch(
+            QUESTION,
+            self.data_root,
+            clock=self.clock,
+            token_source=ScriptedTokenSource(["abc123"]),
+            runner_factory=self._runner_factory(stances=UNANIMOUS_SEVEN),
+            sleeper=StepSleeper(self.clock, step_ms=30_000),
+            out=self.out,
+            err=self.err,
+            no_live=True,
+        )
+
+        self.assertEqual(0, code, self.err.text)
+        finalized = json.loads(self.out.lines[-1])
+        run_dir = Path(finalized["run_dir"])
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual("unanimous_blind_pass", votes["stop_reason"])
+        self.assertEqual(
+            "unanimous_blind_pass", manifest["competition_timeline"]["debate_stop_reason"]
+        )
+        self.assertEqual("consensus", votes["consensus_status"])
+        self.assertEqual("bullish", votes["adopted_stance"])
+        self.assertEqual(7, votes["valid_vote_count"])
+        self.assertEqual(7, votes["threshold_required"])
+        self.assertEqual(7, votes["tally"]["bullish"])
+        self.assertEqual([], votes["dissent"])
+        self.assertFalse(votes["challenge_completed"])
+        self.assertLessEqual(votes["stop_elapsed_ms"], CHALLENGE_DEADLINE_MS)
+
+        # 「無任何辯論訊息」＝公開紀錄只有七則開場，沒有挑戰、回應或改票。
+        debate = [
+            json.loads(line)
+            for line in (run_dir / "debate.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        seat_messages = [
+            entry for entry in debate if entry.get("event") == "seat_message"
+        ]
+        self.assertEqual({"position"}, {entry["kind"] for entry in seat_messages})
+        self.assertEqual(len(SEAT_IDS), len(seat_messages))
+        self.assertEqual(set(SEAT_IDS), {entry["seat_id"] for entry in seat_messages})
+
+        # 報告正常產出。
+        for name in ("report.json", "report.md", "report.html", "debate.html"):
+            self.assertTrue((run_dir / name).is_file(), name)
+        self.assertEqual("accepted", finalized["report_status"])
+
+        verification = verify_run(self.data_root, finalized["run_id"])
+        self.assertEqual("VERIFIED", verification["status"])
+
+    def test_a_debated_run_cannot_relabel_itself_as_a_blind_pass(self):
+        """改一個停止原因字串就想冒充直過：公開紀錄裡的挑戰會揭穿它。"""
+        code = run_launch(
+            QUESTION,
+            self.data_root,
+            clock=self.clock,
+            token_source=ScriptedTokenSource(["abc123"]),
+            runner_factory=self._runner_factory(),
+            sleeper=StepSleeper(self.clock, step_ms=30_000),
+            out=self.out,
+            err=self.err,
+            no_live=True,
+        )
+
+        self.assertEqual(0, code, self.err.text)
+        finalized = json.loads(self.out.lines[-1])
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual("VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"])
+
+        votes_path = run_dir / "votes.json"
+        votes = json.loads(votes_path.read_text(encoding="utf-8"))
+        self.assertEqual("consensus_6_votes", votes["stop_reason"])
+        votes.update(
+            stop_reason="unanimous_blind_pass",
+            threshold_required=RULES.unanimous_blind_pass_votes,
+            challenge_completed=False,
+        )
+        payload = json.dumps(votes, ensure_ascii=False, indent=2) + "\n"
+        votes_path.write_text(payload, encoding="utf-8")
+
+        manifest_path = run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["competition_timeline"]["debate_stop_reason"] = "unanimous_blind_pass"
+        manifest["artifacts"]["votes.json"]["sha256"] = hashlib.sha256(
+            payload.encode("utf-8")
+        ).hexdigest()
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "七則開場"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def _launch(self, stances, step_ms=30_000, **runner_options):
+        # step_ms 是輪詢粒度：所有席位都秒回時看不出差別，但只要有一席不回，
+        # 粗粒度的輪詢會一步跨過第一輪牆，讓整場退化成「沒有人投得到票」。
+        code = run_launch(
+            QUESTION,
+            self.data_root,
+            clock=self.clock,
+            token_source=ScriptedTokenSource(["abc123"]),
+            runner_factory=self._runner_factory(stances=stances, **runner_options),
+            sleeper=StepSleeper(self.clock, step_ms=step_ms),
+            out=self.out,
+            err=self.err,
+            no_live=True,
+        )
+        self.assertEqual(0, code, self.err.text)
+        return json.loads(self.out.lines[-1])
+
+    def _reindex(self, run_dir, name, text):
+        """Rewrite one artifact and repair the manifest index, as a forger would."""
+        (run_dir / name).write_text(text, encoding="utf-8")
+        manifest_path = run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"][name]["sha256"] = hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest()
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+    def _debate_entries(self, run_dir):
+        return [
+            json.loads(line)
+            for line in (run_dir / "debate.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+
+    def _reforge_debate(self, run_dir, entries):
+        """Republish a tampered public record as a fully self-consistent bundle.
+
+        偽造者會做完整套：重算每一則的 ``entry_sha256``、整條 public history
+        雜湊鏈、由新的公開紀錄重新渲染三頁報告，最後修好 manifest 的 artifact
+        index。這樣做出來的 bundle 每一項既有檢查都過得去，只有把公開紀錄與票
+        表對起來的檢查才擋得住。
+        """
+        history = hashlib.sha256(b"").hexdigest()
+        for entry in entries:
+            payload = {
+                key: value
+                for key, value in entry.items()
+                if key not in ("entry_sha256", "public_history_sha256")
+            }
+            entry["entry_sha256"] = content_sha256(payload)
+            history = hashlib.sha256(
+                (history + entry["entry_sha256"]).encode("utf-8")
+            ).hexdigest()
+            entry["public_history_sha256"] = history
+        self._reindex(
+            run_dir,
+            "debate.jsonl",
+            "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries),
+        )
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        sources = {
+            "evidence": [
+                json.loads(line)
+                for line in (run_dir / "evidence.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ],
+            "debate": [entry for entry in entries if entry.get("seat_id")],
+            "votes": json.loads((run_dir / "votes.json").read_text(encoding="utf-8")),
+        }
+        self._reindex(run_dir, "report.md", render_market_markdown(report))
+        self._reindex(run_dir, "report.html", render_market_html(report, sources))
+        self._reindex(run_dir, "debate.html", render_debate_html(report, sources))
+
+    def test_a_forged_blind_pass_bundle_is_refused(self):
+        """兩位 Reviewer 第 1 輪 [重要] ①：完全自洽的偽造 bundle 也必須被拒。
+
+        由合法 7/7 run 把一席的開場改成反方，重算該則的 ``content_sha256``、
+        整條 entry／public history 雜湊鏈、重新渲染三頁報告、修好 manifest 的
+        artifact index——票表則維持七票一致。這份 bundle 每一項既有檢查都過得
+        去（第 1 輪實測 VERIFIED），只有把公開紀錄與票表對起來才擋得住。
+        """
+        finalized = self._launch(UNANIMOUS_SEVEN)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        entries = self._debate_entries(run_dir)
+        target = next(
+            entry
+            for entry in entries
+            if entry.get("event") == "seat_message"
+            and entry.get("seat_id") == "counter-evidence"
+        )
+        target["stance"] = "bearish"
+        target["content"]["stance"] = "bearish"
+        target["content_sha256"] = content_sha256(target["content"])
+        self._reforge_debate(run_dir, entries)
+
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        self.assertEqual(7, votes["tally"]["bullish"])
+        self.assertEqual(
+            {"bullish": 6, "bearish": 1},
+            _opening_tally(entries),
+            "偽造後的公開紀錄應為 6/1",
+        )
+
+        with self.assertRaisesRegex(
+            RunVerificationError, "counter-evidence.*initial_stance"
+        ):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def _sources_on_disk(self, run_dir, votes=None):
+        """The three official artifacts a renderer reads, as the bundle has them."""
+        if votes is None:
+            votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        return {
+            "evidence": [
+                json.loads(line)
+                for line in (run_dir / "evidence.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ],
+            "debate": [
+                entry
+                for entry in self._debate_entries(run_dir)
+                if entry.get("seat_id")
+            ],
+            "votes": votes,
+        }
+
+    def _forge_report(self, run_dir, mutate):
+        """Rewrite report.json and republish the three views it feeds.
+
+        偽造者會把三頁都重新渲染、雜湊也修好，所以「報告是不是由 report.json
+        產生」這道檢查照樣過得去；只有讀得懂燈號的檢查才擋得住。
+        """
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        mutate(report)
+        self._reindex(
+            run_dir,
+            "report.json",
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        )
+        sources = self._sources_on_disk(run_dir)
+        self._reindex(run_dir, "report.md", render_market_markdown(report))
+        self._reindex(run_dir, "report.html", render_market_html(report, sources))
+        self._reindex(run_dir, "debate.html", render_debate_html(report, sources))
+        return report
+
+    def _forge_votes(self, run_dir, mutate, sync_tally=False):
+        """Rewrite votes.json and republish everything downstream of it."""
+        votes_path = run_dir / "votes.json"
+        votes = json.loads(votes_path.read_text(encoding="utf-8"))
+        mutate(votes)
+        self._reindex(
+            run_dir, "votes.json", json.dumps(votes, ensure_ascii=False, indent=2) + "\n"
+        )
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        if sync_tally:
+            report["tally"] = dict(votes["tally"])
+            self._reindex(
+                run_dir,
+                "report.json",
+                json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            )
+        sources = self._sources_on_disk(run_dir, votes)
+        self._reindex(run_dir, "report.md", render_market_markdown(report))
+        self._reindex(run_dir, "report.html", render_market_html(report, sources))
+        self._reindex(run_dir, "debate.html", render_debate_html(report, sources))
+        if sync_tally:
+            manifest_path = run_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["tally"] = dict(votes["tally"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        return votes
+
+    def test_a_bundle_may_not_publish_a_light_outside_the_approved_set(self):
+        """燈號級別集合一致性：驗證器與 report_contract 必須讀同一份 enum。
+
+        報告 schema 的 enum、renderer 的樣式與 ``run_verifier`` 全部由
+        ``report_contract.CONFIDENCE_LEVELS`` 供應，所以退場的 ``yellow_green``
+        與根本不存在的 ``grene`` 都必須在驗證階段被擋下來——即使三頁都重新渲
+        染過、雜湊也修好。
+        """
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        for level in ("yellow_green", "grene"):
+            with self.subTest(level=level):
+                self._forge_report(
+                    run_dir,
+                    lambda report, level=level: report["confidence"].update(level=level),
+                )
+
+                with self.assertRaisesRegex(RunVerificationError, "核准燈號"):
+                    verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_bundle_may_not_publish_a_light_above_its_vote_count(self):
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        self._forge_report(
+            run_dir,
+            lambda report: report["confidence"].update(
+                level="blue", icon=CONFIDENCE_ICONS["blue"]
+            ),
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "高於資料上限"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_bundle_that_understates_its_own_light_is_still_verified(self):
+        # 上限是上限，不是規定值：Core 自行下修必須照樣通過。
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+
+        self._forge_report(
+            run_dir,
+            lambda report: report["confidence"].update(
+                level="yellow", icon=CONFIDENCE_ICONS["yellow"]
+            ),
+        )
+
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+    # 每一級各自的票面：藍綠黃橘是共識停止，紅是未達共識停止。
+    #
+    # 落在強停牆上的兩室（4/3 與 3/3/1）要用比較細的輪詢粒度：30 秒一步會一腳
+    # 跨過 T+10 停在 620000ms，而 run_verifier 要求停止時間不得超出封存至 T+10。
+    # 那是測試替身的輪詢假象，不是產品行為——10 秒一步就精確停在 600000ms。
+    LIGHT_BALLOTS = (
+        ("blue", (7, 0, 0), 30_000),
+        ("green", (6, 1, 0), 30_000),
+        ("yellow", (5, 2, 0), 30_000),
+        ("orange", (4, 3, 0), 10_000),
+        ("red", (3, 3, 1), 10_000),
+    )
+
+    def test_every_approved_light_is_reachable_by_a_real_bundle(self):
+        """驗收條件 5 的反向保護：任何漏掉某一級的 allowlist 都要有測試轉紅。
+
+        只驗「未知值被拒」擋不住「合法值被誤拒」——例如日後某處新增一份只排除
+        ``orange`` 的第二 allowlist。這裡逐級產生**對應票數的真實 bundle**、以
+        該級發布、再送進 ``verify_run``；五級全部走一次，漏掉任何一級都會紅。
+        """
+        self.assertEqual(
+            set(CONFIDENCE_LEVELS), {level for level, _, _ in self.LIGHT_BALLOTS}
+        )
+        for level, blocs, step_ms in self.LIGHT_BALLOTS:
+            with self.subTest(level=level):
+                self._reset_run_root()
+                finalized = self._launch(
+                    self._room(*blocs),
+                    step_ms=step_ms,
+                    core_narratives=[narrative(confidence_level=level)],
+                )
+                run_dir = Path(finalized["run_dir"])
+                report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+                html = (run_dir / "report.html").read_text(encoding="utf-8")
+
+                self.assertEqual("accepted", finalized["report_status"], self.err.text)
+                self.assertEqual(level, report["confidence"]["level"])
+                self.assertEqual(CONFIDENCE_ICONS[level], report["confidence"]["icon"])
+                self.assertEqual(
+                    level, confidence_cap(report, self._sources_on_disk(run_dir))
+                )
+                self.assertIn('class="confidence {}"'.format(level), html)
+                self.assertIn(
+                    "<strong>{}</strong>".format(CONFIDENCE_ICONS[level]), html
+                )
+                self.assertEqual(
+                    "VERIFIED",
+                    verify_run(self.data_root, finalized["run_id"])["status"],
+                )
+
+    def test_a_real_no_consensus_bundle_publishes_the_red_light(self):
+        """S1：合法的 3/3/1 未達共識——七張有效票，最大集團 3——是紅燈。
+
+        ADR 0003 決策 1 只給「最終採納立場」的票數一個燈號；未達共識時沒有採
+        納立場，可數的採納票數是 0。
+        """
+        finalized = self._launch(
+            self._room(3, 3, 1),
+            step_ms=10_000,
+            core_narratives=[narrative(confidence_level="red")],
+        )
+        run_dir = Path(finalized["run_dir"])
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+
+        self.assertEqual("forced_stop_no_consensus", votes["stop_reason"])
+        self.assertEqual("no_consensus", report["consensus_status"])
+        self.assertIsNone(report["adopted_stance"])
+        self.assertEqual(7, votes["valid_vote_count"])
+        self.assertEqual({"bullish": 3, "bearish": 3, "neutral": 1}, report["tally"])
+        self.assertEqual("accepted", finalized["report_status"], self.err.text)
+        self.assertEqual("red", report["confidence"]["level"])
+        self.assertEqual(
+            "red", confidence_cap(report, self._sources_on_disk(run_dir))
+        )
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+    def test_a_real_no_consensus_bundle_may_not_publish_orange(self):
+        # 漏擋方向：orange 正是修正前那個未達共識上限，必須被拒到紅牌。
+        finalized = self._launch(
+            self._room(3, 3, 1),
+            step_ms=10_000,
+            core_narratives=[narrative(confidence_level="orange")] * 2,
+        )
+        run_dir = Path(finalized["run_dir"])
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        attempts = json.loads(
+            (run_dir / "diagnostics" / "report-attempts.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual("red_audit", finalized["report_status"])
+        self.assertEqual("red", report["confidence"]["level"])
+        self.assertTrue(
+            any(
+                "信心 orange 高於資料上限 red" in problem
+                for item in attempts
+                for problem in item["problems"]
+            ),
+            attempts,
+        )
+
+    def test_the_objective_ceiling_of_a_six_vote_bundle_is_green(self):
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(6, report["tally"]["bullish"])
+        self.assertEqual("green", confidence_cap(report, self._sources_on_disk(run_dir)))
+
+    def test_a_seven_vote_bundle_may_publish_the_blue_light(self):
+        # 燈號的最終選擇權在 Core，Python 只給上限；這裡證明七票時 blue 是可
+        # 達到的，而且真的渲染成藍燈、通過完整 bundle 驗證。
+        finalized = self._launch(UNANIMOUS_SEVEN)
+        run_dir = Path(finalized["run_dir"])
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        self.assertEqual(7, report["tally"]["bullish"])
+        self.assertEqual("blue", confidence_cap(report, self._sources_on_disk(run_dir)))
+
+        published = self._forge_report(
+            run_dir,
+            lambda report: report["confidence"].update(
+                level="blue", icon=CONFIDENCE_ICONS["blue"]
+            ),
+        )
+
+        html = (run_dir / "report.html").read_text(encoding="utf-8")
+        self.assertIn('class="confidence blue"', html)
+        self.assertIn("<strong>🔵</strong>", html)
+        self.assertIn(published["confidence"]["text"], html)
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+    def test_a_bundle_may_not_lie_about_whether_the_room_challenged(self):
+        """Reviewer A 第 2 輪 [重要] ②：旗標的兩個方向都必須被公開紀錄戳破。
+
+        只驗它是布林值擋不住說謊。這裡兩個方向各測一次：真的辯論過的 run 謊
+        稱沒質詢，以及一席掉隊的 run 謊稱全員完成。
+        """
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+        self.assertTrue(
+            json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))[
+                "challenge_completed"
+            ]
+        )
+
+        self._forge_votes(
+            run_dir, lambda votes: votes.update(challenge_completed=False)
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "challenge_completed"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_blind_pass_bundle_may_not_claim_it_challenged(self):
+        finalized = self._launch(UNANIMOUS_SEVEN)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        self._forge_votes(
+            run_dir, lambda votes: votes.update(challenge_completed=True)
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "challenge_completed"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_bundle_may_not_invent_an_extra_tally_column(self):
+        """Reviewer B 第 2 輪 [建議]：多一個永遠是 0 的立場，重算照樣相等。
+
+        votes／report／manifest 三份 tally 同步加上同一個捏造欄位、三頁重渲
+        染、index 修好——所有「重算後相等」的檢查都還是相等，只有把欄位釘回
+        該場自己的立場 enum 才擋得住。
+        """
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        votes = self._forge_votes(
+            run_dir,
+            lambda votes: votes["tally"].update(fabricated=0),
+            sync_tally=True,
+        )
+        self.assertNotIn("fabricated", votes["stances"])
+
+        with self.assertRaisesRegex(RunVerificationError, "立場 enum"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_valid_vote_whose_first_round_vanished_is_refused(self):
+        """§5.4 的逐席規則必須真的接在 verify_run 上，不能只有函式自己有測試。
+
+        由合法 6/1 run 刪掉一席的 challenge 與 response、重算整條雜湊鏈並重新
+        渲染三頁報告；votes.json 不動，那一席仍宣稱自己是有效票。房間旗標在這
+        份 bundle 裡仍是 true，所以擋下它的只可能是逐席回查。
+        """
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        entries = self._debate_entries(run_dir)
+        kept = [
+            entry
+            for entry in entries
+            if not (
+                entry.get("seat_id") == "news"
+                and entry.get("kind") in ("challenge", "response")
+            )
+        ]
+        self.assertLess(len(kept), len(entries), "這一席本來就該有第一輪訊息")
+        self._reforge_debate(run_dir, kept)
+
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        self.assertEqual("valid", _seat_row(votes, "news")["state"])
+        self.assertTrue(votes["challenge_completed"])
+
+        with self.assertRaisesRegex(RunVerificationError, "news.*第一輪"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_blind_pass_bundle_may_not_invent_a_replacement_attempt(self):
+        """兩位 Reviewer 第 2 輪 [重要] ①：完整 bundle 追加幽靈 attempt。
+
+        votes 的 ``attempt_ids`` 追加一個公開紀錄裡不存在的 attempt，並同步
+        report 的 ``replacement_attempt_ids``、重渲染三頁、修好 index——只驗
+        「有包含」的檢查完全抓不到。
+        """
+        finalized = self._launch(UNANIMOUS_SEVEN)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        phantom = "spot-technical-a2-phantom"
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        for row in report["seats"]:
+            if row["seat_id"] == "spot-technical":
+                row["replacement_attempt_ids"] = [phantom]
+        self._reindex(
+            run_dir,
+            "report.json",
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        )
+
+        def add_phantom(votes):
+            for row in votes["votes"]:
+                if row["seat_id"] == "spot-technical":
+                    row["attempt_ids"] = row["attempt_ids"] + [phantom]
+
+        votes = self._forge_votes(run_dir, add_phantom)
+        self.assertEqual(
+            ["spot-technical-a1", phantom],
+            _seat_row(votes, "spot-technical")["attempt_ids"],
+        )
+
+        # 第 4 輪起 attempt lineage 由 ``_verify_attempt_lineage`` 單一權威把
+        # 關（直過與普通辯論同一條規則），所以訊息由它發出。
+        with self.assertRaisesRegex(
+            RunVerificationError, "spot-technical.*attempt lineage"
+        ):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_blind_pass_bundle_may_not_erase_its_attempt_ids(self):
+        """第 4 輪 R1：兩邊同時是 ``None`` 時 ``[None] == [None]`` 不得成立。
+
+        狀態機對空的或非字串 attempt 一律丟 ``UnknownAttemptError``，所以這是
+        一份狀態機不可能產生的 bundle。
+        """
+        finalized = self._launch(UNANIMOUS_SEVEN)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        entries = self._debate_entries(run_dir)
+        for entry in entries:
+            if entry.get("seat_id") == "spot-technical":
+                entry.pop("attempt_id", None)
+                entry["content"].pop("attempt_id", None)
+                entry["content_sha256"] = content_sha256(entry["content"])
+        self._reforge_debate(run_dir, entries)
+
+        def blank_attempts(votes):
+            for row in votes["votes"]:
+                if row["seat_id"] == "spot-technical":
+                    row["attempt_ids"] = [None]
+
+        self._forge_votes(run_dir, blank_attempts)
+
+        with self.assertRaisesRegex(
+            RunVerificationError, "spot-technical.*非空字串 attempt_id"
+        ):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_debated_bundle_may_not_invent_a_replacement_attempt(self):
+        """第 4 輪 R2：普通路徑也必須驗 attempt 真的在公開紀錄裡出現過。
+
+        我第 3 輪主張「不能限制成單一 attempt」——那半句對；但「所以完全不
+        驗」不成立，兩位 Reviewer 都用這個形狀打穿了。
+        """
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        phantom = "spot-technical-a2-phantom"
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        for row in report["seats"]:
+            if row["seat_id"] == "spot-technical":
+                row["replacement_attempt_ids"] = [phantom]
+        self._reindex(
+            run_dir,
+            "report.json",
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        )
+
+        def add_phantom(votes):
+            for row in votes["votes"]:
+                if row["seat_id"] == "spot-technical":
+                    row["attempt_ids"] = row["attempt_ids"] + [phantom]
+
+        self._forge_votes(run_dir, add_phantom)
+
+        with self.assertRaisesRegex(
+            RunVerificationError, "spot-technical.*attempt lineage"
+        ):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def _promote_to_second_attempt(self, run_dir, seat_id, attempt_id, replay=None):
+        """Re-attribute a seat's final vote to a later attempt, as a forger would."""
+        entries = self._debate_entries(run_dir)
+        vote = next(
+            entry
+            for entry in entries
+            if entry.get("seat_id") == seat_id and entry.get("kind") == "final_vote"
+        )
+        vote["attempt_id"] = attempt_id
+        vote["content"]["attempt_id"] = attempt_id
+        vote["content_sha256"] = content_sha256(vote["content"])
+        if replay is not None:
+            entries.insert(entries.index(vote), replay)
+        self._reforge_debate(run_dir, entries)
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        for row in report["seats"]:
+            if row["seat_id"] == seat_id:
+                row["replacement_attempt_ids"] = [attempt_id]
+        self._reindex(
+            run_dir,
+            "report.json",
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        )
+        self._forge_votes(
+            run_dir,
+            lambda votes: [
+                row.update(attempt_ids=["{}-a1".format(seat_id), attempt_id])
+                for row in votes["votes"]
+                if row["seat_id"] == seat_id
+            ],
+        )
+
+    def test_a_new_attempt_without_its_replay_event_is_refused(self):
+        """第 5 輪 T1①：有 a2 訊息、沒有 replacement replay event。"""
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        self._promote_to_second_attempt(
+            run_dir, "spot-technical", "spot-technical-a2"
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "未一一對應"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_an_orphan_replay_event_is_refused(self):
+        """第 5 輪 T1②：孤立的 replay event，沒有任何新 attempt 訊息。
+
+        用 Reviewer A 的形狀——事件冒用既有的 a1、``votes`` 維持 ``[a1]``——
+        這樣它繞得過 ``report_contract`` 的 attempt 回查，真正擋下它的是本票新
+        增的「事件必須與替補 attempt 一一對應」。
+        """
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        entries = self._debate_entries(run_dir)
+        entries.insert(
+            len(entries) - 1,
+            {
+                "schema_version": CONTRACT_VERSION,
+                "run_id": finalized["run_id"],
+                "phase": "debate",
+                "event": "replacement_replayed_public_history",
+                "seat_id": "spot-technical",
+                "attempt_id": "spot-technical-a1",
+                "replaced_attempt_id": "spot-technical-a1",
+                "replayed_history_sha256": "0" * 64,
+                "elapsed_ms": 320_000,
+                "created_at_utc": "2026-03-14T02:04:20.000Z",
+                "deadline_phase": "first_round",
+            },
+        )
+        self._reforge_debate(run_dir, entries)
+
+        with self.assertRaisesRegex(RunVerificationError, "未一一對應"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_an_attempt_sequence_that_skips_a_number_is_refused(self):
+        """第 5 輪 T2：a1 之後直接跳到 a3，序列不是 canonical 的。"""
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+
+        self._promote_to_second_attempt(
+            run_dir, "spot-technical", "spot-technical-a3"
+        )
+
+        with self.assertRaisesRegex(
+            RunVerificationError, "第 2 個 attempt 應為 'spot-technical-a2'"
+        ):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_negative_timestamp_is_refused(self):
+        """第 5 輪 T3：整席時間戳改成負值，相對順序維持不變。"""
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        entries = self._debate_entries(run_dir)
+        stamps = [-4, -3, -2, -1]
+        index = 0
+        for entry in entries:
+            if entry.get("seat_id") == "spot-technical" and entry.get("kind"):
+                entry["elapsed_ms"] = stamps[min(index, len(stamps) - 1)]
+                index += 1
+        self._reforge_debate(run_dir, entries)
+
+        order = [
+            entry["elapsed_ms"]
+            for entry in self._debate_entries(run_dir)
+            if entry.get("seat_id") == "spot-technical" and entry.get("kind")
+        ]
+        self.assertEqual(sorted(order), order, "相對順序必須維持不變")
+
+        # 第 6 輪起負值先被無條件的底線擋下（不需要 timeline）；範圍檢查是有
+        # timeline 時才追加的第二層。
+        with self.assertRaisesRegex(RunVerificationError, "非負整數毫秒"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_near_miss_attempt_name_is_refused(self):
+        """第 6 輪 V1：拿掉命名體系豁免後，改一個字元也不再放行。"""
+        for attempt_id in ("spot-technical-b2", "spot-technical-A2", "spot-technical-a1x"):
+            with self.subTest(attempt_id=attempt_id):
+                self.setUp()
+                finalized = self._launch(BULLISH_SIX)
+                run_dir = Path(finalized["run_dir"])
+                self._promote_to_second_attempt(run_dir, "spot-technical", attempt_id)
+
+                with self.assertRaisesRegex(
+                    RunVerificationError, "第 2 個 attempt 應為 'spot-technical-a2'"
+                ):
+                    verify_run(self.data_root, finalized["run_id"])
+
+    def test_an_entry_wedged_between_the_replay_event_and_its_message_is_refused(self):
+        """第 6 輪 V2：事件與新 attempt 首則訊息之間插入別席發言。"""
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        entries = self._debate_entries(run_dir)
+        vote = next(
+            entry
+            for entry in entries
+            if entry.get("seat_id") == "spot-technical"
+            and entry.get("kind") == "final_vote"
+        )
+        vote["attempt_id"] = "spot-technical-a2"
+        vote["content"]["attempt_id"] = "spot-technical-a2"
+        vote["content_sha256"] = content_sha256(vote["content"])
+        position = entries.index(vote)
+        wedged = next(
+            entry
+            for entry in entries
+            if entry.get("seat_id") == "counter-evidence"
+            and entry.get("kind") == "final_vote"
+        )
+        event = {
+            "schema_version": CONTRACT_VERSION,
+            "run_id": finalized["run_id"],
+            "phase": "debate",
+            "event": "replacement_replayed_public_history",
+            "seat_id": "spot-technical",
+            "attempt_id": "spot-technical-a2",
+            "replaced_attempt_id": "spot-technical-a1",
+            "elapsed_ms": vote["elapsed_ms"],
+            "created_at_utc": vote["created_at_utc"],
+            "deadline_phase": vote["deadline_phase"],
+        }
+        entries.insert(position, dict(wedged))
+        entries.insert(position, event)
+        # 重算雜湊鏈後把 replay 事件引用的公開歷史補成正確值。
+        self._reforge_debate(run_dir, entries)
+        entries = self._debate_entries(run_dir)
+        index = next(
+            i
+            for i, entry in enumerate(entries)
+            if entry.get("event") == "replacement_replayed_public_history"
+        )
+        entries[index]["replayed_history_sha256"] = entries[index - 1][
+            "public_history_sha256"
+        ]
+        self._reforge_debate(run_dir, entries)
+
+        report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+        for row in report["seats"]:
+            if row["seat_id"] == "spot-technical":
+                row["replacement_attempt_ids"] = ["spot-technical-a2"]
+        self._reindex(
+            run_dir,
+            "report.json",
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+        )
+        self._forge_votes(
+            run_dir,
+            lambda votes: [
+                row.update(attempt_ids=["spot-technical-a1", "spot-technical-a2"])
+                for row in votes["votes"]
+                if row["seat_id"] == "spot-technical"
+            ],
+        )
+
+        with self.assertRaisesRegex(
+            RunVerificationError, "未緊鄰它自己的第一則訊息"
+        ):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_negative_timestamp_is_refused_even_without_a_timeline(self):
+        """第 6 輪 V3：時間戳底線不得只在有 competition_timeline 時生效。"""
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+
+        entries = self._debate_entries(run_dir)
+        for entry in entries:
+            if entry.get("seat_id") == "spot-technical" and entry.get("kind"):
+                entry["elapsed_ms"] = -1
+                break
+        self._reforge_debate(run_dir, entries)
+
+        manifest_path = run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("competition_timeline")
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "非負整數毫秒"):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_first_round_message_stamped_before_the_opening_is_refused(self):
+        """第 4 輪 R3：紀錄順序原封不動，只把 challenge 的時間戳移到開場之前。
+
+        我第 3 輪主張「逐席已涵蓋，全域單調性不必驗」——Reviewer A 證明逐席
+        當時只比了 final vote，position 與 challenge 之間根本沒有人在比。
+        """
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        entries = self._debate_entries(run_dir)
+        position = next(
+            entry
+            for entry in entries
+            if entry.get("seat_id") == "spot-technical"
+            and entry.get("kind") == "position"
+        )
+        challenge = next(
+            entry
+            for entry in entries
+            if entry.get("seat_id") == "spot-technical"
+            and entry.get("kind") == "challenge"
+        )
+        self.assertGreater(challenge["elapsed_ms"], position["elapsed_ms"])
+        challenge["elapsed_ms"] = position["elapsed_ms"] - 1
+        self._reforge_debate(run_dir, entries)
+
+        # 紀錄順序完全沒動，只有時間戳被改。
+        order = [
+            entry["kind"]
+            for entry in self._debate_entries(run_dir)
+            if entry.get("seat_id") == "spot-technical"
+        ]
+        self.assertEqual(["position", "challenge"], order[:2])
+
+        with self.assertRaisesRegex(
+            RunVerificationError, "spot-technical.*elapsed_ms 早於該席開場"
+        ):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_vote_recorded_before_its_own_first_round_is_refused(self):
+        """Reviewer B 第 2 輪 [重要] ③：把 final vote 移到 challenge 之前。
+
+        訊息集合一則不多一則不少，只有順序變了；整條公開歷史雜湊鏈、三頁報告
+        與 manifest index 全部重算過。§5.4 的「完成」蘊含順序，所以只確認「三
+        種訊息都出現過」的檢查抓不到這一種。
+        """
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
+        )
+
+        entries = self._debate_entries(run_dir)
+        vote = next(
+            entry
+            for entry in entries
+            if entry.get("seat_id") == "spot-technical"
+            and entry.get("kind") == "final_vote"
+        )
+        entries.remove(vote)
+        position_index = next(
+            index
+            for index, entry in enumerate(entries)
+            if entry.get("seat_id") == "spot-technical"
+            and entry.get("kind") == "position"
+        )
+        vote["elapsed_ms"] = entries[position_index]["elapsed_ms"]
+        entries.insert(position_index + 1, vote)
+        self._reforge_debate(run_dir, entries)
+
+        order = [
+            (entry["kind"], entry["elapsed_ms"])
+            for entry in self._debate_entries(run_dir)
+            if entry.get("seat_id") == "spot-technical"
+        ]
+        self.assertEqual("final_vote", order[1][0], order)
+
+        with self.assertRaisesRegex(
+            RunVerificationError, "spot-technical.*第一輪生命週期"
+        ):
+            verify_run(self.data_root, finalized["run_id"])
+
+    def test_a_seat_that_missed_its_first_round_does_not_void_the_consensus(self):
+        """Reviewer B 第 1 輪 [重要] ③：一席掉隊的合法 run 必須 PASS。
+
+        §5.4 只要求**每張有效票**完成第一輪，不要求所有開場參與者皆完成。
+        ``challenge_completed`` 是房間層級旗標，那一席掉隊時它就是 False——
+        把它當成共識的必要條件會誤殺這個形狀（實測比賽 run 就長這樣）。
+        """
+        stances = dict.fromkeys(SEAT_IDS[:5], "bullish")
+        stances.update({"social-macro": "bearish", "counter-evidence": "bearish"})
+
+        finalized = self._launch(
+            stances,
+            step_ms=1_000,
+            silent=[("social-macro", "r1")],
+            wave_advance_ms={"opening": 30_000, "r1": 50_000, "r2": 50_000},
+        )
+        run_dir = Path(finalized["run_dir"])
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        row = {item["seat_id"]: item for item in votes["votes"]}["social-macro"]
+
+        self.assertEqual("accepted", finalized["report_status"])
+        self.assertEqual("consensus_{}_votes".format(RULES.reduced_votes), votes["stop_reason"])
+        self.assertEqual(RULES.reduced_votes, votes["threshold_required"])
+        self.assertEqual(len(SEAT_IDS) - 1, votes["valid_vote_count"])
+        self.assertEqual("consensus", votes["consensus_status"])
+        self.assertEqual("bullish", votes["adopted_stance"])
+        self.assertEqual("provisional", row["state"])
+        self.assertIsNone(row["final_stance"])
+        self.assertEqual("bearish", row["initial_stance"])
+        # 房間旗標誠實地是 False，但共識仍然成立。
+        self.assertFalse(votes["challenge_completed"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
         )
 
     def test_a_two_asset_comparison_seals_at_four_thirty_and_still_verifies(self):
@@ -1637,6 +2953,185 @@ class FullRunFakeRunner(ScriptedDebateRunner):
 
 def _seat_row(votes, seat_id):
     return next(row for row in votes["votes"] if row["seat_id"] == seat_id)
+
+
+def _opening_tally(entries):
+    """Count the openings the public record actually holds, by stance."""
+    counts = {}
+    for entry in entries:
+        if entry.get("event") == "seat_message" and entry.get("kind") == "position":
+            counts[entry["stance"]] = counts.get(entry["stance"], 0) + 1
+    return counts
+
+
+class AfterSealRulesSnapshotTest(DebateDriverTestCase):
+    """Ticket 11 D1：封存後的整段流程共用一份規則快照。
+
+    ``run_after_seal`` 原本讀三次規則權威：driver 建構、Core prompt 的信心上限、
+    以及報告驗證。撰稿當下被告知一個上限、交稿後被另一份規則驗收，於是一份完全
+    合法的報告變成 ``red_audit``，錯誤訊息還是「信心 X 高於資料上限 Y」——而輸出
+    裡沒有任何欄位記得那兩個數字來自不同的設定。
+
+    這一組全部走 ``ScriptedDebateRunner`` 與 ``ScriptedCoreAdapter``，**不發出任
+    何 codex 呼叫**。第 2 輪我宣稱這條路徑「需要真實 codex 所以量不到」，那是一
+    個沒驗證過的假設。
+    """
+
+    def all_bullish(self):
+        return self.build_runner({seat: "bullish" for seat in SEAT_IDS})
+
+    def stricter(self):
+        """Same ladder, plus a downgrade that always fires: blue → orange.
+
+        七席全票在任何合法階梯上都是 blue（blue 的 min_votes 上限就是席位數），
+        所以要讓上限低於稿件宣稱的 yellow，只能靠降級。
+        """
+        from hoya_market_agents.debate_rules import DowngradeRule
+
+        shipped = debate_rules()
+        return replace(
+            shipped,
+            confidence=replace(
+                shipped.confidence,
+                downgrades=(
+                    DowngradeRule(
+                        rule="few_independent_domains",
+                        levels=3,
+                        min_independent_domains=99,
+                    ),
+                ),
+            ),
+        )
+
+    def answering(self, *rulesets):
+        reads = []
+
+        def next_answer():
+            reads.append(None)
+            return rulesets[min(len(reads) - 1, len(rulesets) - 1)]
+
+        return next_answer, reads
+
+    def patched(self, authority):
+        """Swap the authority in every module the after-seal flow reads it from."""
+        from unittest import mock
+
+        from hoya_market_agents import debate_driver, report_contract, report_workflow
+
+        return [
+            mock.patch.object(module, "debate_rules", authority)
+            for module in (debate_driver, report_contract, report_workflow)
+            if hasattr(module, "debate_rules")
+        ]
+
+    def finish_with(self, authority):
+        runner = self.all_bullish()
+        patches = self.patched(authority)
+        for patch in patches:
+            patch.start()
+        try:
+            return self.finish(runner)
+        finally:
+            for patch in patches:
+                patch.stop()
+
+    def test_the_shipped_rules_accept_the_ordinary_run(self):
+        """FP 方向：整組改動不得讓正常路徑改變行為。"""
+        handshake = self.finish(self.all_bullish())
+
+        self.assertEqual("accepted", handshake["report_status"])
+        self.assertEqual([], handshake["report_errors"])
+
+    def test_a_reload_after_the_prompt_does_not_reject_a_legal_report(self):
+        """核心回歸：撰稿後規則變嚴，報告仍必須照舊被接受。"""
+        authority, reads = self.answering(debate_rules(), self.stricter())
+
+        handshake = self.finish_with(authority)
+
+        self.assertEqual(1, len(reads), "第二次讀取＝一個 reload 插得進來的窗口")
+        self.assertEqual("accepted", handshake["report_status"])
+        self.assertEqual([], handshake["report_errors"])
+
+    def test_a_report_above_the_ceiling_is_still_rejected(self):
+        """FP 方向：單一快照 ≠ 不驗證。
+
+        整段流程都用同一份嚴格規則時，稿件宣稱的 yellow 高於 orange 上限，必須
+        照樣被擋下來——證明上一條的 accepted 是因為只讀一次，不是因為檢查沒跑。
+        """
+        strict = self.stricter()
+
+        handshake = self.finish_with(lambda: strict)
+
+        self.assertEqual("red_audit", handshake["report_status"])
+        self.assertIn("信心 yellow 高於資料上限 orange", handshake["report_errors"])
+
+    def test_the_whole_after_seal_flow_reads_the_authority_once(self):
+        from tests.test_debate_rules import count_authority_reads
+
+        runner = self.all_bullish()
+
+        self.assertEqual(1, count_authority_reads(lambda: self.finish(runner)))
+
+    def test_the_red_audit_path_also_reads_the_authority_once(self):
+        """紅字稽核也在同一份快照上。
+
+        ``_red_outcome`` 會把自己組出來的稽核報告再驗一次；那次驗證的結果被丟
+        棄，所以它讀哪一份規則**不影響輸出**——正因如此，只驗成功路徑的計數測試
+        完全蓋不到它。這條測試就是為了蓋住那個洞：Core 直接爆掉，流程走紅字稽
+        核，讀取次數仍然必須是 1。
+        """
+        from tests.test_debate_rules import count_authority_reads
+
+        class ExplodingCoreAdapter:
+            def __init__(self, clock):
+                self.clock = clock
+                self.calls = []
+
+            def invoke(self, prompt, schema, work_dir, allow_search=True):
+                self.calls.append(prompt)
+                self.clock.advance_ms(1_000)
+                raise RuntimeError("core down")
+
+        runner = self.build_runner(
+            {seat: "bullish" for seat in SEAT_IDS},
+            core_adapter=ExplodingCoreAdapter(self.clock),
+        )
+        handshake = {}
+
+        def finish():
+            handshake.update(self.finish(runner))
+
+        reads = count_authority_reads(finish)
+
+        self.assertEqual("red_audit", handshake["report_status"])
+        self.assertEqual(1, reads)
+
+    def test_the_prompt_ceiling_and_the_verdict_come_from_one_ruleset(self):
+        """上限只會被寫進 prompt 一次，而驗收用的就是同一份。
+
+        兩份設定並存時，prompt 裡會出現一個上限、驗證會用另一個；這裡直接檢查
+        Core 收到的 prompt 只提到一個上限，而且報告被接受。
+        """
+        authority, reads = self.answering(debate_rules(), self.stricter())
+        runner = self.all_bullish()
+        patches = self.patched(authority)
+        for patch in patches:
+            patch.start()
+        try:
+            handshake = self.finish(runner)
+        finally:
+            for patch in patches:
+                patch.stop()
+
+        ceilings = [
+            line
+            for prompt in runner.core_adapter.calls
+            for line in prompt.splitlines()
+            if "客觀上限是" in line
+        ]
+        self.assertEqual(["- confidence_level 的客觀上限是 blue；不得高於它。"], ceilings)
+        self.assertEqual("accepted", handshake["report_status"])
+        self.assertEqual(1, len(reads))
 
 
 if __name__ == "__main__":

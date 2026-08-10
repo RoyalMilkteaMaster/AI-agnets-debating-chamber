@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-Hant" data-report-profile="grill-me" data-report-status="ready-for-approval" data-work-id="wp-20260809-125056-b3e957c6">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>前端重設計與七席換套｜實作藍圖核准報告</title>
+  <style>
+    :root {
+      --靛藍: #3432a8;
+      --深紫: #211d58;
+      --青色: #17a7b8;
+      --格線: rgba(75, 78, 170, .08);
+      --淡紫: #f1f0ff;
+      --白色: #ffffff;
+      --文字: #191b3a;
+      --淡字: #636786;
+      --線條: #d8d9ec;
+      --警示: #c16b1a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--文字);
+      background-color: #f7f7fc;
+      background-image:
+        linear-gradient(var(--格線) 1px, transparent 1px),
+        linear-gradient(90deg, var(--格線) 1px, transparent 1px);
+      background-size: 24px 24px;
+      font-family: "Microsoft JhengHei", system-ui, sans-serif;
+      line-height: 1.6;
+    }
+    .頁面 { width: min(1240px, calc(100% - 36px)); margin: 0 auto; padding: 30px 0 64px; }
+    .藍圖頁首 { position: relative; overflow: hidden; padding: 46px; border-radius: 24px; color: white; background: linear-gradient(120deg, var(--深紫), var(--靛藍) 62%, #177b9c); box-shadow: 0 20px 48px rgba(40, 36, 108, .2); }
+    .藍圖頁首::after { content: ""; position: absolute; right: -70px; top: -110px; width: 310px; height: 310px; border: 45px solid rgba(255,255,255,.08); border-radius: 50%; }
+    .眉題 { margin: 0 0 8px; color: #9ce5ee; font-weight: 800; letter-spacing: .15em; }
+    h1 { margin: 0; max-width: 850px; font-size: clamp(2rem, 5vw, 4rem); line-height: 1.08; }
+    .摘要 { max-width: 800px; color: #d9dcff; font-size: 1.08rem; }
+    .藍圖指標 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 26px; }
+    .藍圖指標 div { padding: 14px; border: 1px solid rgba(255,255,255,.18); border-radius: 12px; background: rgba(255,255,255,.09); backdrop-filter: blur(8px); }
+    .藍圖指標 small { display: block; color: #c4c7f6; }
+    .藍圖指標 strong { display: block; margin-top: 3px; }
+    main { display: grid; gap: 18px; margin-top: 20px; }
+    section { position: relative; padding: 30px; border: 1px solid var(--線條); border-radius: 16px; background: rgba(255,255,255,.96); box-shadow: 0 10px 25px rgba(39, 37, 91, .06); }
+    section::before { content: attr(data-step); position: absolute; right: 22px; top: 18px; color: #dbdcf1; font-size: 2.5rem; font-weight: 900; }
+    h2 { margin: 0 0 18px; color: var(--深紫); font-size: 1.55rem; }
+    h3 { margin: 26px 0 10px; color: var(--靛藍); font-size: 1.12rem; }
+    .指標列, .雙欄, .泳道 { display: grid; gap: 14px; }
+    .指標列 { grid-template-columns: repeat(4, 1fr); }
+    .雙欄 { grid-template-columns: repeat(2, 1fr); }
+    .卡片 { padding: 17px; border: 1px solid var(--線條); border-radius: 12px; background: var(--白色); }
+    .卡片 strong { display: block; color: var(--靛藍); font-size: 1.2rem; }
+    .票券列 { display: flex; gap: 12px; overflow-x: auto; padding: 8px 2px 15px; align-items: stretch; }
+    .票券 { flex: 0 0 230px; min-height: 135px; padding: 16px; border-top: 5px solid var(--青色); border-radius: 12px; background: var(--淡紫); }
+    .票券 small { color: var(--淡字); }
+    .票券 strong { display: block; margin: 5px 0; }
+    .依賴線 { color: var(--靛藍); font-weight: 900; align-self: center; }
+    .矩陣 { overflow-x: auto; border: 1px solid var(--線條); border-radius: 12px; margin-bottom: 8px; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 12px 14px; border-bottom: 1px solid var(--線條); text-align: left; vertical-align: top; }
+    th { color: var(--深紫); background: #eeeefd; }
+    .警示 { padding: 16px; border-left: 5px solid var(--警示); border-radius: 8px; background: #fff6e9; }
+    details { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--線條); }
+    summary { color: var(--靛藍); cursor: pointer; font-weight: 800; }
+    .核准列 { display: flex; flex-wrap: wrap; gap: 10px; }
+    .核准項目 { padding: 12px 17px; border: 2px solid var(--靛藍); border-radius: 9px; color: var(--靛藍); background: white; font-weight: 800; }
+    .report-colophon { padding: 22px 4px; color: var(--淡字); }
+    code { padding: 1px 5px; border-radius: 4px; background: #eeeefd; font-size: .93em; }
+    ul { margin: 8px 0; padding-left: 20px; }
+    @media (max-width: 820px) { .藍圖指標, .指標列, .雙欄 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="頁面">
+    <header class="藍圖頁首">
+      <p class="眉題">實作藍圖｜核准前</p>
+      <h1>前端重設計與七席換套<br>實作藍圖核准報告</h1>
+      <p class="摘要">預計把 Hoya Bit 的網頁前端統一到一套設計系統、把七席的名稱與研究方向改成依資產類別自動換套、把發問改成標的選單、並讓離線報告可手動匯出 PDF；入口改為隱藏視窗捷徑、頁面上可優雅關閉伺服器。規劃為 8 張 Tickets，因共用熱點檔案而排成單一線性鏈（無並行批次），最長依賴路徑 8 層。待使用者決定的事項有一項：Ticket 07 的不可逆刪檔是否要求先備份。規劃資料齊備，建議核准後開始實作。</p>
+      <div class="藍圖指標">
+        <div><small>需求數</small><strong>8 條（R1–R8）</strong></div>
+        <div><small>Ticket 數</small><strong>8 張</strong></div>
+        <div><small>並行批次</small><strong>無（單一線性鏈）</strong></div>
+        <div><small>最大風險</small><strong>Ticket 07 不可逆刪檔</strong></div>
+        <div><small>設計輔助</small><strong id="design-assist">內建模板（Claude Design 無法使用）</strong></div>
+      </div>
+    </header>
+
+    <main>
+      <section id="原始需求與範圍" data-step="01">
+        <h2>原始需求與規劃覆蓋</h2>
+      <h3>原始需求對照（R-ID 逐字）</h3>
+      <ul class="req-id-list">
+        <li><strong>R-001</strong>：頁面清單重整：即時辯論主頁、歷史與命中率合併頁、設定、run 詳情（功能保留、版面套新系統）、市場報告與完整辯論（內容不碰、右上角必可點）</li>
+        <li><strong>R-002</strong>：保護區功能凍結：動態聊天室、燈位、正方／反方／無法判斷票數的內容、位置、語意色不動，僅外衣可隨新設計系統統一</li>
+        <li><strong>R-003</strong>：全部網頁頁面套同一套新設計系統：語意色保留只校準色階、系統字型堆疊、零外部資源</li>
+        <li><strong>R-004</strong>：入口動線改造：刪除辯論室預覽.html 與開啟辯論室.bat、桌面捷徑隱藏啟動、頁面「關閉伺服器」按鈕與備援關閉捷徑</li>
+        <li><strong>R-005</strong>：七席換套：股票／幣圈／開放三套依資產類別自動切換名稱與方向，seat_id 與 output_dir 永不改，含分工細表與提供者對調</li>
+        <li><strong>R-006</strong>：標的選單發問：資產類別選單＋標的輸入框，接 T05 的 assets／asset_class 接縫，建議清單來自過往 run 標的</li>
+        <li><strong>R-007</strong>：全繁體中文：webapp 畫面不得出現英文資料原值，標籤從既有權威帶出</li>
+        <li><strong>R-008</strong>：PDF 手動匯出：報告頁按鈕以 Edge 無頭模式轉出 report.pdf 與 debate.pdf 存入該 run 資料夾</li>
+      </ul>
+
+
+        <p>需求來源：<code>docs/planning/requirements.md</code>〈前端重設計與七席換套（2026-08-09 核准）〉、架構 <code>docs/planning/architecture.md</code> §12、<code>docs/adr/0006-seat-profile-sets.md</code>，並整理為 <code>spec.md</code>。以下八條為使用者一開始提出、且已於需求訪談逐項定案的要求。</p>
+
+        <h3>使用者提出的八條必要需求</h3>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>識別</th><th>使用者要求</th><th>驗收條件（可判定）</th><th>負責 Ticket</th></tr></thead>
+            <tbody>
+              <tr><td>R1</td><td>頁面清單精簡：即時辯論（主頁）、歷史與命中率（合併一頁，上統計卡下 run 列表帶命中結果）、設定、run 詳情保留、市場報告與完整辯論兩份離線報告右上角必可點</td><td>開 <code>/history</code> 一頁同時看到統計卡與列表；<code>/stats</code> 回 302 轉跳；沒產出報告的 run 顯示中文狀態</td><td>04（合併頁）、03（run 詳情套版）</td></tr>
+              <tr><td>R2</td><td>保護區功能凍結、外衣可換：動態聊天室、燈位、正方／反方／無法判斷票數的內容、位置、語意色不動，只有字體、間距、卡片樣式可隨新設計系統統一</td><td>三項保護區的 DOM 結構、元素順序與語意色類別與改版前一致；行為測試全數沿用且全綠</td><td>03（外衣）、08（行為回歸）</td></tr>
+              <tr><td>R3</td><td>全部網頁頁面套同一套新設計系統；語意色保留語意只校準色階；系統字型堆疊、零外部資源</td><td>全站單一樣式表；token 改一處渲染即變；渲染後無外部網域資源；對比度達 WCAG AA 且報出實測數字</td><td>03</td></tr>
+              <tr><td>R4</td><td>入口動線改造：刪除 <code>辯論室預覽.html</code>、<code>開啟辯論室.bat</code> 退役、桌面捷徑隱藏視窗啟動、頁面右上角「關閉伺服器」優雅寫 <code>server_stop</code>、備援「關閉辯論室」捷徑</td><td>雙擊捷徑無黑框直接開瀏覽器；已在跑時不重複啟動；按鈕停機後出現 <code>server_stop</code> 且無殘留執行緒；兩個檔案不再存在</td><td>07</td></tr>
+              <tr><td>R5</td><td>七席換套：股票套（台股美股共用）與幣圈套依資產類別自動切換顯示名稱與方向，開放題沿用通用敘述；<code>seat_id</code> 與 <code>output_dir</code> 永不改；含七席分工細表與提供者對調</td><td>台股題顯示股票套、幣題顯示幣圈套且 webapp 與離線報告一致；roster 缺席位或缺任一套組即 fail-closed；家族配額維持 codex 3／claude 3／gemini 1</td><td>01（套組權威）、02（提供者對調）</td></tr>
+              <tr><td>R6</td><td>標的選單：以選單選資產類別與標的取代純文字解析，接 T05 的 <code>assets</code>／<code>asset_class</code> 接縫</td><td>launcher 收到的參數等於使用者所選，與題目文字無關；建議清單來自過往 run 且已去重；webapp 內無 SQL</td><td>05</td></tr>
+              <tr><td>R7</td><td>全繁體中文：畫面上不得出現英文資料原值，標籤必須從既有權威帶出</td><td>webapp 各頁渲染後 grep，枚舉英文原值零命中；標的代號、<code>run_id</code>、<code>seat_id</code>、evidence ID 不在此限</td><td>03、04、05、08</td></tr>
+              <tr><td>R8</td><td>PDF 手動匯出：報告頁按鈕以 Edge 無頭模式把現成 HTML 轉 <code>report.pdf</code>／<code>debate.pdf</code> 存入該 run 資料夾，HTML 與報告版面不動</td><td>匯出後兩份 PDF 出現且既有檔案未被修改；<code>run_verifier</code> 仍通過；失敗回誠實錯誤頁且不留半成品</td><td>06</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>驗收群組覆蓋矩陣</h3>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>驗收群組</th><th>內容</th><th>覆蓋 Ticket</th><th>覆蓋狀態</th></tr></thead>
+            <tbody>
+              <tr><td>A1</td><td>入口與停機（5 條）</td><td>07、08</td><td>已覆蓋</td></tr>
+              <tr><td>A2</td><td>規則生效、報告可點、PDF 落地（4 條）</td><td>03、06、08</td><td>已覆蓋</td></tr>
+              <tr><td>A3</td><td>換套與標的選單（5 條）</td><td>01、05、08</td><td>已覆蓋</td></tr>
+              <tr><td>A4</td><td>保護區與全站綠燈（3 條）</td><td>03、08</td><td>已覆蓋</td></tr>
+              <tr><td>A5</td><td>全繁體中文（4 條）</td><td>04、05、08</td><td>已覆蓋</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><strong>覆蓋缺口：無。</strong>R1–R8 與 A1–A5 每一項都至少由一張 Ticket 負責，且 Ticket 08 會逐條複驗 A1–A5。</p>
+
+        <h3>明確不處理的範圍</h3>
+        <ul>
+          <li>開放題中性第三套的完整研究方向設計（open 套只沿用既有通用敘述，使 fail-closed 驗證可通過）。</li>
+          <li>離線 HTML 報告的版面改版。</li>
+          <li>離線報告 renderer 的版面調整，唯一開口是席位標籤來源。</li>
+          <li>行動版專屬佈局。</li>
+        </ul>
+
+        <details>
+          <summary>展開：來源文件實際路徑</summary>
+          <ul>
+            <li><code>hoya-bit-market-agents-final/docs/planning/requirements.md</code>（2026-08-09 核准節）</li>
+            <li><code>hoya-bit-market-agents-final/docs/planning/architecture.md</code> §12</li>
+            <li><code>hoya-bit-market-agents-final/docs/adr/0006-seat-profile-sets.md</code></li>
+            <li><code>hoya-bit-market-agents-final/CONTEXT.md</code>（席位方向套組、基本面研究員、標的選單、歷史與命中率頁）</li>
+            <li><code>hoya-bit-market-agents-final/docs/work/post-competition-refit/tickets/13-frontend-single-page.md</code>（一頁式辯論室現況與硬約束背景）</li>
+          </ul>
+        </details>
+      </section>
+
+      <section id="目標架構與資料流" data-step="02">
+        <h2>目標架構與資料流</h2>
+
+        <h3>修改前與預計修改後</h3>
+        <div class="雙欄">
+          <div class="卡片">
+            <strong>修改前</strong>
+            <ul>
+              <li>席位顯示名稱散在三處：<code>config/agent_roster.json</code>（只有 <code>focus</code>）、<code>seats.py</code> 的 <code>SEAT_IDENTITIES</code>、<code>report_renderer.py</code> 的 <code>SEAT_LABELS</code>。</li>
+              <li>提供者分組另外寫死在 <code>real_provider.py</code> 與 <code>codex_bridge.py</code> 的席位 ID 常數中。</li>
+              <li>webapp 有歷史查詢頁與命中率統計頁兩份頁面；辯論室另有一份隔離樣式。</li>
+              <li>run 目錄有兩條核准寫入路徑：launch 起子程序、<code>outcome.json</code>。</li>
+              <li>入口在工作區根目錄：<code>start-webapp.ps1</code>、<code>開啟辯論室.bat</code>、靜態快照 <code>辯論室預覽.html</code>。</li>
+            </ul>
+          </div>
+          <div class="卡片">
+            <strong>預計修改後</strong>
+            <ul>
+              <li><code>config/agent_roster.json</code> 成為席位資訊單一權威，每席新增 <code>profiles</code> 三套 <code>stock</code>／<code>crypto</code>／<code>open</code>，載入 fail-closed。</li>
+              <li>顯示端（webapp 與離線報告）與 prompt 全部改讀同一個席位標籤讀取口。</li>
+              <li>設計 token 以資料形式落在 webapp <code>pages.py</code>（沿用 <code>THEMES</code> 模式），全站收斂為單一樣式表，<code>ContrastTest</code> 直接從 token 計算。</li>
+              <li>webapp 頁面收斂：<code>/history</code> 為合併頁，<code>GET /stats</code> 302 轉跳。</li>
+              <li>run 目錄新增第三條寫入路徑，只新增 <code>.pdf</code>。</li>
+              <li>啟動與關閉邏輯移入 Code Root <code>scripts/</code>，工作區根目錄只留兩個捷徑。</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>模組異動清單</h3>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>動作</th><th>模組</th><th>責任</th></tr></thead>
+            <tbody>
+              <tr><td>修改（Schema 升版）</td><td><code>config/agent_roster.json</code></td><td>席位資訊唯一權威：<code>seat_id</code>、<code>output_dir</code>、提供者、三套 <code>profiles</code></td></tr>
+              <tr><td>修改</td><td><code>hoya_market_agents/seats.py</code></td><td><code>load_roster</code> 讀取並 fail-closed 驗證 <code>profiles</code>；提供資產類別到套組的單一判定處與席位標籤單一讀取口；移除寫死顯示名稱</td></tr>
+              <tr><td>修改（僅標籤來源）</td><td><code>report_renderer.py</code>、<code>report_audit_renderer.py</code></td><td>刪除席位標籤寫死表，改走同一讀取口；版面、章節、輸出內容不動</td></tr>
+              <tr><td>不動</td><td><code>run_verifier.py</code></td><td>離線 bundle 導覽與檔案存在檢查維持現狀</td></tr>
+              <tr><td>修改</td><td><code>prompt_builder.py</code></td><td>席位 prompt 的研究方向改為依 run 資產類別選出的套組</td></tr>
+              <tr><td>修改</td><td><code>real_provider.py</code>、<code>codex_bridge.py</code>、<code>system_preflight.py</code></td><td>提供者分組與預檢同步 roster 的 <code>provider</code> 欄位</td></tr>
+              <tr><td>修改</td><td>webapp <code>pages.py</code></td><td>持有設計 token 表；產生全站單一樣式表與各頁版面</td></tr>
+              <tr><td>修改</td><td>webapp <code>views.py</code></td><td>合併頁資料整形；routes 不含查詢邏輯</td></tr>
+              <tr><td>修改</td><td>webapp <code>server.py</code></td><td>路由與端點：合併頁、轉跳、PDF 匯出、停機</td></tr>
+              <tr><td>新增</td><td>webapp PDF 匯出模組</td><td>接受可注入轉換器，把現成 HTML 轉為 PDF；預設以 Edge 無頭模式並在 WSL 下以 <code>wslpath</code> 轉路徑</td></tr>
+              <tr><td>新增</td><td>Code Root <code>scripts/</code></td><td>承載啟動與關閉邏輯，工作區根目錄 <code>start-webapp.ps1</code> 併入</td></tr>
+              <tr><td>移除</td><td>工作區根目錄 <code>辯論室預覽.html</code>、<code>開啟辯論室.bat</code></td><td>誤導性的靜態快照與會留主控台黑框的入口</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>公開介面、資料所有權與資料流</h3>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>資料</th><th>唯一權威</th><th>讀取路徑</th></tr></thead>
+            <tbody>
+              <tr><td>席位顯示名稱與研究方向</td><td><code>config/agent_roster.json</code> 的 <code>profiles</code></td><td><code>seats.py</code> 的單一讀取口 → webapp、離線報告、prompt</td></tr>
+              <tr><td>設計 token（色彩、字級、間距）</td><td>webapp <code>pages.py</code>（<code>THEMES</code> 模式）</td><td>樣式表與 <code>ContrastTest</code> 皆由 token 推導，不維護第二份色值</td></tr>
+              <tr><td>run 查詢資料</td><td><code>run_index</code></td><td>唯一取數路徑 <code>run_index.query_runs</code>，webapp 內零 SQL；標的建議在 Python 端去重</td></tr>
+              <tr><td>資產類別與燈號詞彙</td><td><code>config/market_scopes.json</code>、<code>report_contract.CONFIDENCE_LEVELS</code></td><td>前端不建第二份詞彙表</td></tr>
+              <tr><td>run artifact</td><td>run 目錄檔案</td><td>唯讀；核准寫入路徑三條：launch 起子程序、<code>outcome.json</code>、新增 <code>.pdf</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>端點契約</h3>
+        <ul>
+          <li><code>GET /history</code>：歷史與命中率合併頁。</li>
+          <li><code>GET /stats</code>：302 轉跳 <code>/history</code>。</li>
+          <li><code>POST /run/&lt;id&gt;/export-pdf</code>：成功時在 run 目錄產生兩份 PDF；失敗回誠實錯誤頁。</li>
+          <li><code>POST /shutdown</code>：先回覆已關閉頁面，再優雅停機並照常寫 <code>server_stop</code>。</li>
+        </ul>
+
+        <h3>相容性與遷移</h3>
+        <ul>
+          <li><code>seat_id</code>（含歷史名 <code>counter-evidence</code>）與 <code>output_dir</code> 永不改；歷史 run 目錄、<code>ANTIGRAVITY_SEAT_IDS</code> 與賽前預檢都綁著它。</li>
+          <li>所有 run（含歷史 run）一律以現行套組顯示，不回溯保存當時套組。舊逐字稿中第七席自稱「反證稽核員」而標籤顯示「基本面研究員」，是已核准的已知代價。</li>
+          <li>roster schema 升版後，預檢與測試 fixtures 同步更新。</li>
+          <li>舊書籤 <code>/stats</code> 以 302 維持可用。</li>
+          <li>離線報告版面不動，兩份可直接分享的報告內容維持現狀。</li>
+        </ul>
+      </section>
+
+      <section id="Ticket執行藍圖" data-step="03">
+        <h2>Ticket 執行藍圖</h2>
+
+        <h3>依賴鏈（規劃執行順序）</h3>
+        <div class="票券列">
+          <div class="票券"><small>Ticket 01</small><strong>席位方向套組單一權威</strong><small>roster profiles 三套、fail-closed 載入、標籤來源收斂、prompt 換套注入</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 02</small><strong>提供者對調</strong><small>資金流獵人改 claude、新聞探員改 codex，維持 3／3／1</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 03</small><strong>全站設計系統核心</strong><small>token 進 THEMES、單一樣式表、全站套版、對比度從 token 計算</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 04</small><strong>歷史與命中率合併頁</strong><small>合併頁、<code>/stats</code> 302、手動結果表單併入</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 05</small><strong>標的選單發問</strong><small>類別選單與標的輸入、launcher 參數接縫、建議去重</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 06</small><strong>PDF 手動匯出</strong><small>新模組、匯出端點、按鈕、假轉換器接縫、頁尾誠實</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 07</small><strong>關閉伺服器與入口</strong><small>停機端點、<code>scripts/</code>、兩個捷徑、刪除舊入口檔</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 08</small><strong>端到端驗收</strong><small>股票題與幣題全流程、A1–A5 逐條、繁中 grep、對比度數字</small></div>
+        </div>
+        <p>最長依賴路徑：8 層（01 至 08 全鏈）。</p>
+
+        <h3>並行泳道與不能並行的實際原因</h3>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>批次</th><th>Tickets</th><th>可否並行</th><th>實際原因</th></tr></thead>
+            <tbody>
+              <tr><td>第 1 波</td><td>01</td><td>單張</td><td>最上游，其餘全部依賴它的席位標籤讀取口</td></tr>
+              <tr><td>第 2 波</td><td>02</td><td>否</td><td>與 01 共同寫入 <code>config/agent_roster.json</code></td></tr>
+              <tr><td>第 3 波</td><td>03</td><td>否</td><td>檔案範圍與 02 不重疊，但共用 roster 讀取路徑與全專案測試套件；02 改動 roster 期間 03 的全套驗收會因不相干原因變紅，故不並行</td></tr>
+              <tr><td>第 4 至 7 波</td><td>04、05、06、07</td><td>否</td><td>四張票全部寫入 webapp <code>pages.py</code>（本案最大共用熱點）與 <code>server.py</code>，一律排成單鏈，任何時刻只有一張票持有寫入權</td></tr>
+              <tr><td>第 8 波</td><td>08</td><td>否</td><td>總驗收，需要前七票全部落地；驗收期間不得有其他票同時修改產品程式碼</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>本規劃<strong>沒有任何可安全並行的批次</strong>。唯一在檔案層面可並行的組合是 02 與 03，已依共用資源理由否決；若使用者要收回這段時間，代價是紅燈歸因會變模糊。</p>
+
+        <h3>寫入所有權與共用資源鎖</h3>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>Ticket</th><th>專屬寫入範圍（摘要）</th><th>共用資源鎖</th></tr></thead>
+            <tbody>
+              <tr><td>01</td><td><code>agent_roster.json</code>、<code>seats.py</code>、<code>prompt_builder.py</code>、兩個 renderer 的標籤來源、<code>report_fixtures.py</code>、五個既有測試與一個新測試模組</td><td>roster 檔、全專案測試套件</td></tr>
+              <tr><td>02</td><td><code>agent_roster.json</code> 的提供者類欄位、<code>real_provider.py</code>、<code>codex_bridge.py</code>、<code>system_preflight.py</code> 與對應測試</td><td>roster 檔、全專案測試套件</td></tr>
+              <tr><td>03</td><td>webapp <code>pages.py</code>、<code>live.py</code>、<code>settings.py</code>、<code>tests/test_webapp.py</code>、新增設計 token 測試</td><td><code>pages.py</code> 熱點鏈、全專案測試套件</td></tr>
+              <tr><td>04</td><td><code>pages.py</code>、<code>views.py</code>、<code>server.py</code>、<code>outcome.py</code>、新增合併頁測試</td><td><code>pages.py</code> 與 <code>server.py</code> 熱點鏈</td></tr>
+              <tr><td>05</td><td><code>pages.py</code>、<code>views.py</code>、<code>server.py</code>、<code>launch.py</code>、新增標的選單測試</td><td>同上</td></tr>
+              <tr><td>06</td><td>新增 webapp PDF 匯出模組、<code>server.py</code>、<code>pages.py</code>、新增匯出測試</td><td>同上，另加 run 目錄寫入路徑</td></tr>
+              <tr><td>07</td><td><code>server.py</code>、<code>pages.py</code>、新增 Code Root <code>scripts/</code>、工作區根目錄捷徑與刪檔、新增停機測試</td><td>同上，另加工作區根目錄</td></tr>
+              <tr><td>08</td><td>新增端到端驗收測試與證據</td><td>全專案測試套件</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>沒有任何兩張 Ticket 的專屬寫入範圍重疊；<code>pages.py</code>、<code>server.py</code>、<code>agent_roster.json</code> 與 <code>tests/test_webapp.py</code> 一律列為共用資源鎖，靠阻擋關係保證單一持有者。</p>
+
+        <details>
+          <summary>展開：各 Ticket 的可驗證交付結果與使用者價值</summary>
+          <div class="矩陣">
+            <table>
+              <thead><tr><th>Ticket</th><th>可驗證交付結果</th><th>使用者價值</th></tr></thead>
+              <tbody>
+                <tr><td>01</td><td>七席三套 <code>profiles</code> 齊備並 fail-closed；台股 fixture 的離線報告不含幣圈或舊席名；<code>seat_id</code> 與 <code>output_dir</code> 逐一未變</td><td>台股題不再印幣圈席名，席位資訊只有一份</td></tr>
+                <tr><td>02</td><td>roster 與程式內分組常數一致性測試通過；家族配額 codex 3／claude 3／gemini 1</td><td>相似資訊面不再由同一模型家族研究</td></tr>
+                <tr><td>03</td><td>全站單一樣式表；token 改一處渲染即變；對比度實測數字達 WCAG AA；保護區 DOM 與行為未變</td><td>各頁視覺一致，辯論框行為原封不動</td></tr>
+                <tr><td>04</td><td>合併頁一頁看完統計與列表；<code>/stats</code> 回 302；提交結果只寫 <code>outcome.json</code></td><td>一次看完成績與紀錄，舊書籤不失效</td></tr>
+                <tr><td>05</td><td>「文字與選單不一致」案例下 launcher 收到的參數等於選單所選；建議清單去重；webapp 無 SQL</td><td>系統不必猜標的，少打字</td></tr>
+                <tr><td>06</td><td>匯出後兩份 PDF 出現、既有檔案雜湊未變、<code>run_verifier</code> 通過；失敗不留半成品</td><td>分析完直接產生可轉寄的檔案</td></tr>
+                <tr><td>07</td><td>停機先回應後停機並寫 <code>server_stop</code>、無殘留執行緒；捷徑無黑框且不重複啟動；兩個舊檔已不存在</td><td>雙擊就開、按一下就關</td></tr>
+                <tr><td>08</td><td>A1–A5 逐條對照表全數通過，附兩組 fixture 證據、席位標籤逐席比對、繁中 grep 與對比度數字</td><td>確認整套改版合起來真的能用</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <section id="Agent與驗收設計" data-step="04">
+        <h2>Agent 分工與驗收關卡</h2>
+
+        <h3>Developer 配置</h3>
+        <p>八張 Tickets 全部規劃為 <code>claude-opus-5</code> 搭配 <code>high</code> 推理強度，固定升級路徑 <code>claude-opus-5</code>／<code>xhigh</code>。沒有任何一張符合 Sonnet 的「局部、低風險、不涉及跨模組設計、Schema、權限、資料風險或公開介面」條件。</p>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>Ticket</th><th>選擇理由（符合的具體條件）</th></tr></thead>
+            <tbody>
+              <tr><td>01</td><td>Schema 升版、公開介面變更、跨模組改動、相容性底線</td></tr>
+              <tr><td>02</td><td>供應商路由與權限對應、賽前預檢、跨模組寫死常數一致性</td></tr>
+              <tr><td>03</td><td>跨模組設計抽象、影響全部頁面的公開輸出、需在不動保護區行為下完成</td></tr>
+              <tr><td>04</td><td>公開端點契約異動、寫檔頁面的頁尾誠實規則、零 SQL 邊界</td></tr>
+              <tr><td>05</td><td>公開接縫（launcher 參數契約）、輸入驗證、改變 run 啟動的資料來源</td></tr>
+              <tr><td>06</td><td>新增 run 目錄第三條寫入路徑（資料風險）、新增端點、外部程序呼叫與失敗不可逆性</td></tr>
+              <tr><td>07</td><td>程序生命週期、新增端點、跨 Code Root 與工作區的結構調整、不可逆刪檔</td></tr>
+              <tr><td>08</td><td>需跨全部七票判讀行為一致性並指名退回對象</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Reviewer 分工</h3>
+        <ul>
+          <li>預設 <code>both</code> 模式：<strong>Reviewer A 只執行 Spec Review</strong>（是否符合已核准需求與驗收條件），<strong>Reviewer B 只執行 Standards Review</strong>（能跑、可讀、架構清楚、無明顯衍生問題）。</li>
+          <li>單 Reviewer 模式（<code>a_only</code> 或 <code>b_only</code>）才由該位覆蓋兩軸，避免重複審查。</li>
+          <li>實際名單由執行 Task 最新的 reviewers 設定決定，Ticket 不自行固定或搜尋設定。</li>
+          <li>每位啟用的 Reviewer 都載入程式碼審查技能，只執行 Coordinator 指定的審查軸。</li>
+        </ul>
+
+        <h3>Findings 處理與定向複驗</h3>
+        <ul>
+          <li>每個 Finding 由提出它的原 Reviewer 擁有。</li>
+          <li>Developer 不得照單全收，必須重現、查證或以測試驗證；建議不正確時要提出證據並維持立場。</li>
+          <li>Developer 修正或反駁後，只交回該 Finding 的原 Reviewer 定向複驗；Coordinator 不重排嚴重度、不合併成裁決、不用另一個模型投票。</li>
+          <li>Finding Owner 必須依證據關閉、降級或撤回。未達共識前 Ticket 不得標記完成。</li>
+          <li>只有缺少產品價值、公開契約、不可逆資料處置或安全接受程度等關鍵決策時，才交給使用者。</li>
+        </ul>
+
+        <h3>測試接縫與驗收方式</h3>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>Ticket</th><th>新測試接縫</th><th>必交證據重點</th></tr></thead>
+            <tbody>
+              <tr><td>01</td><td>roster profiles 載入器（可指定設定路徑，缺套、缺席、缺欄位 fail-closed）、資產類別到套組選擇規則、席位標籤讀取口</td><td>台股與幣圈兩份 fixture 報告的標籤片段、四種缺漏情境的錯誤訊息、識別碼前後比對</td></tr>
+              <tr><td>02</td><td>roster 載入結果與提供者分組常數的一致性斷言、預檢輸出</td><td>對調前後家族計數、一致性測試結果、預檢輸出片段</td></tr>
+              <tr><td>03</td><td>設計 token 表、token 到對比度計算、webapp 端席位標籤注入點</td><td>各頁渲染後 HTML 存檔、對比度實測數字表、保護區 DOM 前後比對、設計參考技能的 commit SHA</td></tr>
+              <tr><td>04</td><td>合併頁資料整形（可注入查詢結果）、轉跳、手動記錄結果表單</td><td>合併頁渲染存檔、302 回應標頭、繁中 grep、SQL 掃描為零</td></tr>
+              <tr><td>05</td><td>標的表單到 launcher 參數傳遞（假 launcher）、建議清單去重函式</td><td>文字與選單不一致案例的參數輸出、去重前後清單、繁中 grep</td></tr>
+              <tr><td>06</td><td>PDF 匯出處理器（注入假轉換器，不真的呼叫 Edge）</td><td>匯出前後 run 目錄清單與雜湊比對、失敗路徑的目錄狀態、驗證器執行結果</td></tr>
+              <tr><td>07</td><td>停機處理器（先回應後停機、寫入紀錄）、啟動腳本的已在跑判定</td><td>停機順序與紀錄輸出、殘留執行緒斷言、捷徑實際執行觀察、刪檔前後目錄清單</td></tr>
+              <tr><td>08</td><td>沿用前七票全部接縫，加上端到端 fixture 流程</td><td>A1–A5 逐條對照表、席位標籤逐席比對表、繁中 grep 完整輸出、對比度數字、全站測試退出碼</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="警示">
+          <strong>前端實際操作驗收的誠實規則</strong>：執行環境沒有可自動截圖的瀏覽器。Tickets 03 至 08 標示「適用」並逐項列出操作步驟，證據沿用既有慣例，以渲染後 HTML 存檔加關鍵元素斷言呈現，實機操作部分據實記錄文字觀察，<strong>不得假稱有截圖</strong>。Tickets 01 與 02 標示「不適用」並寫明判定依據。
+        </div>
+
+        <details>
+          <summary>展開：完整模型與驗證指令設定</summary>
+          <ul>
+            <li>Developer 初始模型：<code>claude-opus-5</code>；<code>model_reasoning_effort</code>：<code>high</code>（八張皆同）。</li>
+            <li>升級路徑：<code>claude-opus-5</code>／<code>xhigh</code>；<code>max</code> 需使用者針對該 Ticket 明確核准。</li>
+            <li>Reviewer 模型由執行 Task 的角色設定獨立控制，不在 Ticket 內固定。</li>
+            <li>迭代期快速檢查：各票對應的單一測試模組（秒級）。</li>
+            <li>Ready for Review 完整驗收（八張統一）：於 WSL 執行 <code>PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests</code>。</li>
+            <li>若專案仍沿用既有攔截器慣例，對應環境變數的實際值由 Coordinator 提供，不寫入票面。</li>
+            <li>Findings 修正後由 Coordinator 依影響範圍指定要重跑的指令，不預設重跑全套。</li>
+            <li>所有執行、除錯、衝突與 Review 證據保存位置：各 Ticket 的「執行與 Review 紀錄」。</li>
+          </ul>
+        </details>
+      </section>
+
+      <section id="風險與核准" data-step="05">
+        <h2>風險與核准選項</h2>
+
+        <h3>風險、影響與回復方式</h3>
+        <div class="矩陣">
+          <table>
+            <thead><tr><th>風險</th><th>類型</th><th>會影響什麼</th><th>如何避免</th><th>需要回復時怎麼做</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>webapp <code>pages.py</code> 是本案最大共用熱點，Tickets 03 至 07 全部經過它</td>
+                <td>寫入衝突、排程</td>
+                <td>五張票排隊，任一票卡住整條鏈停擺</td>
+                <td>強制排成單鏈並互相阻擋；逐票明列專屬寫入範圍，禁止重疊</td>
+                <td>鏈上任一票可獨立回退，因寫入範圍互斥，不影響已完成的上游票</td>
+              </tr>
+              <tr>
+                <td>Ticket 07 含不可逆刪檔：工作區根目錄的 <code>辯論室預覽.html</code>、<code>開啟辯論室.bat</code>，以及併入後移除的 <code>start-webapp.ps1</code></td>
+                <td>資料、不可逆</td>
+                <td>這三個檔位於工作區根目錄，<strong>不在版本控制範圍內</strong>，刪除後無法用版本控制救回</td>
+                <td>刪除前先備份到暫存區；票面已把刪檔前後目錄清單列為必交證據</td>
+                <td>從備份複製回工作區根目錄。<strong>沒有備份就無法回復</strong>，這是本案唯一無法靠版本控制回復的動作</td>
+              </tr>
+              <tr>
+                <td>Ticket 01 需修改離線報告 renderer</td>
+                <td>相容性</td>
+                <td>唯一開口是席位標籤來源，誤傷版面會讓「可直接複製給別人」的兩份報告走鐘</td>
+                <td>票面限定只動標籤來源，版面、章節、輸出字串結構不動；驗證器不動</td>
+                <td>回退該票對 renderer 的修改；既有 renderer 測試與逐字比對可即時偵測</td>
+              </tr>
+              <tr>
+                <td>Ticket 06 新增 run 目錄第三條寫入路徑</td>
+                <td>資料、唯讀邊界</td>
+                <td>踩到驗證器檢查或留下半寫 PDF，會污染唯讀的 run artifact</td>
+                <td>只新增 <code>.pdf</code>；匯出前後雜湊比對；失敗路徑斷言不留檔；轉換器可注入，測試不呼叫真實 Edge</td>
+                <td>刪除新增的 PDF 即可還原；既有檔案本就不允許被修改，雜湊比對可證明</td>
+              </tr>
+              <tr>
+                <td>Ticket 02 的提供者資訊實際存在三份寫死來源：<code>real_provider.py</code> 的兩組席位 ID 常數、<code>codex_bridge.py</code> 的一組，以及賽前預檢</td>
+                <td>相容性、隱藏相依</td>
+                <td>改了 roster 而漏改常數，會造成席位被派到錯誤的模型家族</td>
+                <td>此項為規劃階段抽查程式庫才發現，架構文件未點名；票面已加入「roster 與分組常數一致性測試」，改一邊沒改另一邊即紅燈</td>
+                <td>回退該票；一致性測試會在回退後立即恢復綠燈</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>尚未解決、需要使用者決定的事項</h3>
+        <ul>
+          <li><strong>Ticket 07 的刪檔備份要求</strong>：是否要求 Developer 在刪除工作區根目錄三個檔案前先完成備份，並把備份位置列為必交證據。目前票面已寫「刪除前必須先備份」，但備份位置尚未指定，需使用者確認或授權由 Coordinator 指定。</li>
+        </ul>
+        <p>除上述一項外，先前規劃階段回報的五個未解問題（標的建議取得方式、開放套內容、繁中 grep 範圍、run 詳情頁處置、跨工作包註記）皆已裁決並落入 <code>spec.md</code>，不再是待決事項。</p>
+
+        <h3>下一步選擇</h3>
+        <div class="核准列">
+          <div class="核准項目">核准實作</div>
+          <div class="核准項目">修改規劃</div>
+          <div class="核准項目">暫停</div>
+        </div>
+        <p>核准後才會產生唯一的執行 Task 交接內容，並把八張 Tickets 由「草稿」更新為「已核准」。目前八張 Tickets 全部維持草稿狀態，尚未開始實作。</p>
+      </section>
+    </main>
+
+    <p class="report-colophon">Spec：hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/spec.md　｜　工作識別碼：wp-20260809-125056-b3e957c6　｜　顯示名稱：前端重設計與七席換套　｜　產生時間：2026-08-09（規劃階段）</p>
+  </div>
+</body>
+</html>

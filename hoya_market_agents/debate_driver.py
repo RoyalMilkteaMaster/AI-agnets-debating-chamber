@@ -88,18 +88,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .clock import iso_utc
-from .contract_validator import CONTRACT_VERSION
+from .contract_validator import CONTRACT_VERSION, RUN_RULES_FIELD, run_rules_record
+from .debate_rules import debate_rules
 from .debate_state_machine import (
-    DEBATE_START_MS,
-    FINAL_ROUND_END_MS,
-    FINAL_ROUND_START_MS,
-    FORCE_STOP_MS,
-    ROUND_ONE_WINDOW_MS,
     DebateError,
     DebateStateMachine,
     LateMessageError,
 )
 from .prompt_builder import build_seat_prompt, elapsed_label, load_research_snapshot
+from .question import ASSET_CLASS_OPEN
 from .real_provider import (
     DEBATE_FAILURE_MESSAGE,
     DEBATE_RESULT_MESSAGE,
@@ -115,6 +112,7 @@ from .report_renderer import (
 )
 from .report_workflow import HARD_DEADLINE_MS, run_report_workflow
 from .research_scheduler import research_deadlines
+from .run_index import index_finalized_run
 from .run_store import RunStoreError
 from .seats import CODE_ROOT, SEAT_IDS, load_roster
 from .system_preflight import load_frozen_roster
@@ -136,8 +134,6 @@ RELAY_MARGIN_MS = 5_000
 # 去，所以等待一席慢的，不再讓其他六席跟著空等。封存晚 30 秒的比較題，這段
 # 預算跟著平移，r1 之後的絕對牆一律不動。
 OPENING_COLLECT_BUDGET_MS = 120_000
-ROUND_TWO_COLLECT_UNTIL_MS = FINAL_ROUND_START_MS - RELAY_MARGIN_MS
-ROUND_THREE_COLLECT_UNTIL_MS = FINAL_ROUND_END_MS - RELAY_MARGIN_MS
 
 # 主迴圈最多晚一個 poll 才看到 T+10；停在 600_137ms 會讓這次強制停止對不上它自己
 # 執行的規則，也過不了 run_verifier 的 stop 語意檢查。
@@ -356,8 +352,12 @@ class DebateTurn:
     relay_from_ms: int
 
 
-def build_turns(stances, debate_start_ms=DEBATE_START_MS):
+def build_turns(stances, debate_start_ms=None, rules=None):
     """Return the four turns of one debate, keyed by slug."""
+    rules = rules or debate_rules()
+    if debate_start_ms is None:
+        debate_start_ms = rules.debate_start_ms
+    round_one_window_ms = rules.round_one_window_ms
     return {
         "opening": DebateTurn(
             slug="opening",
@@ -374,7 +374,7 @@ def build_turns(stances, debate_start_ms=DEBATE_START_MS):
             label="第一輪反方挑戰與首次投票",
             schema=round_one_schema(stances),
             validator=validate_round_one_shape,
-            collect_until_ms=debate_start_ms + ROUND_ONE_WINDOW_MS - RELAY_MARGIN_MS,
+            collect_until_ms=debate_start_ms + round_one_window_ms - RELAY_MARGIN_MS,
             relay_from_ms=debate_start_ms,
         ),
         "r2": DebateTurn(
@@ -383,8 +383,8 @@ def build_turns(stances, debate_start_ms=DEBATE_START_MS):
             label="第二輪投票",
             schema=revote_schema(stances),
             validator=validate_revote_shape,
-            collect_until_ms=ROUND_TWO_COLLECT_UNTIL_MS,
-            relay_from_ms=debate_start_ms + ROUND_ONE_WINDOW_MS + 1,
+            collect_until_ms=rules.final_round_start_ms - RELAY_MARGIN_MS,
+            relay_from_ms=debate_start_ms + round_one_window_ms + 1,
         ),
         "r3": DebateTurn(
             slug="r3",
@@ -392,8 +392,8 @@ def build_turns(stances, debate_start_ms=DEBATE_START_MS):
             label="最後一輪投票",
             schema=revote_schema(stances),
             validator=validate_revote_shape,
-            collect_until_ms=ROUND_THREE_COLLECT_UNTIL_MS,
-            relay_from_ms=FINAL_ROUND_START_MS,
+            collect_until_ms=rules.final_round_end_ms - RELAY_MARGIN_MS,
+            relay_from_ms=rules.final_round_start_ms,
         ),
     }
 
@@ -408,10 +408,13 @@ class DeadlineAlignedClock:
     worth of lateness — a driver that really was late stays visibly late.
     """
 
-    def __init__(self, clock, start_monotonic_ms, snap_ms=FORCE_STOP_SNAP_MS):
+    def __init__(
+        self, clock, start_monotonic_ms, snap_ms=FORCE_STOP_SNAP_MS, rules=None
+    ):
         self.clock = clock
         self.start_monotonic_ms = start_monotonic_ms
         self.snap_ms = snap_ms
+        self.force_stop_ms = (rules or debate_rules()).force_stop_ms
 
     def utc_now(self):
         return self.clock.utc_now()
@@ -419,8 +422,8 @@ class DeadlineAlignedClock:
     def monotonic_ms(self):
         raw = self.clock.monotonic_ms()
         elapsed = raw - self.start_monotonic_ms
-        if FORCE_STOP_MS <= elapsed <= FORCE_STOP_MS + self.snap_ms:
-            return self.start_monotonic_ms + FORCE_STOP_MS
+        if self.force_stop_ms <= elapsed <= self.force_stop_ms + self.snap_ms:
+            return self.start_monotonic_ms + self.force_stop_ms
         return raw
 
 
@@ -520,9 +523,13 @@ class DebateDriver:
         started_at_utc,
         sleeper,
         err,
+        rules=None,
     ):
         self.run = run
-        self.clock = DeadlineAlignedClock(clock, start_monotonic_ms)
+        # 規則物件由呼叫端注入或取自唯一權威；driver 的時鐘、狀態機與回合表
+        # 必須是同一份，否則「門檻降階」在三處會各走各的。
+        self.rules = rules or debate_rules()
+        self.clock = DeadlineAlignedClock(clock, start_monotonic_ms, rules=self.rules)
         self.runner = runner
         self.results_queue = results_queue
         self.package = package
@@ -542,10 +549,13 @@ class DebateDriver:
             start_monotonic_ms=start_monotonic_ms,
             started_at_utc=started_at_utc,
             debate_start_ms=self.deadlines.seal_ms,
+            rules=self.rules,
         )
         self.snapshot_sha256 = snapshot_sha256
         self.start_monotonic_ms = start_monotonic_ms
-        self.turns = build_turns(self.machine.stances, self.deadlines.seal_ms)
+        self.turns = build_turns(
+            self.machine.stances, self.deadlines.seal_ms, self.rules
+        )
         # 立場詞彙只有一個權威：題型 → 狀態機的 stance 映射；標籤以題目包記下的
         # 為準，缺席時才由題型與資產推導，避免舊 run 或半落地的欄位讓辯論失語。
         self.stance_labels = resolve_stance_labels(
@@ -576,11 +586,17 @@ class DebateDriver:
     def run_debate(self):
         """Return the persisted ``votes.json`` content for this run."""
         self._opening_wave()
-        self._first_round()
-        for round_number in (2, 3):
-            if self.machine.stopped:
-                break
-            self._revote(self.turns["r{}".format(round_number)])
+        # 開場收齊時房間就可能已經定案——盲投直過（architecture §11.3）是唯一
+        # 會這樣結束的正常路徑。已經停止就不再派任何辯論輪：那些呼叫的內容一
+        # 律會被狀態機當成 late message 丟掉，派出去只是白花一次 provider 呼叫
+        # 與一段等待。判準寫成「停了就不派」而不是「直過就不派」，因為強制停
+        # 止若在開場期間發生，該做的事情是同一件。
+        if not self.machine.stopped:
+            self._first_round()
+            for round_number in (2, 3):
+                if self.machine.stopped:
+                    break
+                self._revote(self.turns["r{}".format(round_number)])
         return self._settle()
 
     @property
@@ -870,6 +886,13 @@ class DebateDriver:
         """
         if self._relay(self._position_message(seat_id)) is not None:
             self.published += (seat_id,)
+        # 停止就發生在上面那一則 relay 裡：盲投直過在「最後一則開場進入公開
+        # 紀錄」的那一刻成立，而這裡正是那一刻。``run_debate`` 的守衛要等整個
+        # 開場波收完才輪到，對這一層來說太晚——r1 早就派出去了。門檻可設定，
+        # 所以觸發它的不一定是第七席：把 unanimous_blind_pass 設成 6，6/1 的
+        # 房間會在第六則開場就停，後面兩席仍會各自走到這一行。
+        if self.machine.stopped:
+            return
         self._call_first_round()
 
     def _relay_first_round(self):
@@ -1028,7 +1051,7 @@ class DebateDriver:
             self.sleeper(POLL_SECONDS)
 
     def _settle(self):
-        self._wait_until(FORCE_STOP_MS)
+        self._wait_until(self.rules.force_stop_ms)
         self.machine.tick()
         votes = self.machine.persist()
         for dispatch_id in self.dispatched:
@@ -1060,6 +1083,17 @@ class DebateDriver:
         "- public_reason 的第一句必須是 30-60 字的核心結論（先立場與理由），之後才展開論據。"
     )
 
+    # architecture §11.3：辯論輪存在的目的要講明白——用證據移動票數，不是各說
+    # 各話等時間到。門檻是設定驅動的當下值，不是寫死的六票；一致的房間沒有對
+    # 立席位，同一條紀律就轉向自己，所以這句話一句到底，不分岔。
+    #
+    # 開場不掛這句：那一輪是互不可見的盲投，場上還沒有任何立場可以被說服。
+    PERSUASION_RULE = (
+        "- 你的目標是以證據說服對立席位改票，使己方達到當前門檻（{votes} 票）；"
+        "場上沒有對立席位時，同一條紀律轉向自己：找得出足以推翻己方的證據就誠實"
+        "改票。被說服時必須改票並寫出改票原因。"
+    )
+
     def _opening_prompt(self, seat_id):
         turn = self.turns["opening"]
         lines = self._proposition_lines() + [
@@ -1080,7 +1114,7 @@ class DebateDriver:
         lines = self._proposition_lines() + [
             "## 本回合：{}（round 1，最晚 {}）".format(
                 turn.label,
-                elapsed_label(self.deadlines.seal_ms + ROUND_ONE_WINDOW_MS),
+                elapsed_label(self.machine.challenge_deadline_ms),
             ),
             "- 你目前的公開立場是 {}。".format(self._stance_text(stance)),
             *self._challenge_instruction(seat_id, assignment),
@@ -1102,9 +1136,23 @@ class DebateDriver:
             "- final_vote 是本次第一張正式有效票；維持立場時 stance_change_reason 填 null，"
             "改票時必須寫非空的繁體中文原因。",
             "- 主席排定的挑戰對象由七席自己公布的立場推導，內容全部由你自己撰寫。",
+            self._persuasion_rule(turn),
             self.CONCLUSION_FIRST_RULE,
         ]
         return self._prompt(seat_id, lines, self._public_positions())
+
+    def _persuasion_rule(self, turn):
+        """State the round's purpose against the threshold its votes will face.
+
+        用的是「這一輪的票真正被計入時」的門檻，不是派工那一刻的門檻：改票輪
+        要等自己的視窗打開才 relay（``relay_from_ms``），最後一輪固定落在門檻
+        降階之後。告訴席位一個它的票永遠碰不到的數字，等於要它去湊一個不存在
+        的目標。
+        """
+        counted_at_ms = max(self.elapsed_ms, turn.relay_from_ms)
+        return self.PERSUASION_RULE.format(
+            votes=self.rules.required_votes_at(counted_at_ms)
+        )
 
     def _challenge_instruction(self, seat_id, assignment):
         """Name this seat's targets and the standard it must challenge them by."""
@@ -1126,6 +1174,7 @@ class DebateDriver:
             "- 讀完上方完整公開辯論原文後，確認或改變這一票。",
             "- 維持立場時 stance_change_reason 填 null；改票必須寫非空的繁體中文原因。",
             "- 不再開放新的挑戰；本回合只輸出你的投票內容。",
+            self._persuasion_rule(turn),
             self.CONCLUSION_FIRST_RULE,
         ]
         return self._prompt(seat_id, lines, self._public_transcript())
@@ -1296,8 +1345,13 @@ def validate_core_narrative(value):
     return value
 
 
-def confidence_ceiling(sources, generated_at_utc):
-    """Objective upper bound on the confidence light, from votes and evidence."""
+def confidence_ceiling(sources, generated_at_utc, rules=None):
+    """Objective upper bound on the confidence light, from votes and evidence.
+
+    ``rules`` 是呼叫端的 :class:`~.debate_rules.DebateRules` 快照。這個上限會被
+    寫進 Core 的 prompt，然後同一份報告要拿上限來驗收；兩處若各讀各的規則，Core
+    依 A 寫出合法燈號、卻被 B 判成「信心高於資料上限」。省略時現讀。
+    """
     votes = sources["votes"]
     skeleton = {
         "process_failure": False,
@@ -1305,13 +1359,28 @@ def confidence_ceiling(sources, generated_at_utc):
         "adopted_stance": votes.get("adopted_stance"),
         "generated_at_utc": generated_at_utc,
     }
-    return confidence_cap(skeleton, sources)
+    return confidence_cap(
+        skeleton, sources, rules=rules.confidence if rules is not None else None
+    )
 
 
 def assemble_market_report(
-    narrative, sources, *, generated_at_utc, assets, period_days
+    narrative,
+    sources,
+    *,
+    generated_at_utc,
+    assets,
+    period_days,
+    asset_class=ASSET_CLASS_OPEN,
 ):
-    """Merge Core's prose with the mechanical lineage Python must not invent."""
+    """Merge Core's prose with the mechanical lineage Python must not invent.
+
+    ``asset_class`` is the run's own market, taken from its question package. It
+    reaches the report because the seat names shown on the offline report are the
+    profile set that market uses (ADR 0006), and a renderer must never guess a
+    run's market from its prose. A caller that states no market gets the open
+    set, which is the same answer ``seats.profile_set_for`` gives everyone else.
+    """
     votes = sources["votes"]
     evidence_by_id = {card["evidence_id"]: card for card in sources["evidence"]}
     adopted = votes.get("adopted_stance")
@@ -1322,6 +1391,7 @@ def assemble_market_report(
         "generated_at_utc": generated_at_utc,
         "market_status": narrative["market_status"],
         "assets": list(assets),
+        "asset_class": asset_class,
         "period": {
             "label": narrative["period_label"],
             "start_utc": iso_utc(end - timedelta(days=period_days)),
@@ -1382,12 +1452,16 @@ def _report_seat(vote, evidence_by_id):
 class CodexCoreAuthor:
     """Ask Core for the report narrative through one fresh ``codex exec`` call."""
 
-    def __init__(self, adapter, work_root, *, sources, package, generated_at_utc):
+    def __init__(
+        self, adapter, work_root, *, sources, package, generated_at_utc, rules=None
+    ):
         self.adapter = adapter
         self.work_root = Path(work_root)
         self.sources = sources
         self.package = package
         self.generated_at_utc = generated_at_utc
+        # 撰稿時告知 Core 的信心上限，必須與事後驗收它的那一份規則相同。
+        self.rules = rules
 
     def __call__(self, attempt, errors):
         # 報告寫在 T+4 封存之後：只能依正式 artifacts，搜尋能力必須是關的。
@@ -1404,6 +1478,7 @@ class CodexCoreAuthor:
             generated_at_utc=self.generated_at_utc,
             assets=self.package.assets,
             period_days=self.package.period_days,
+            asset_class=self.package.asset_class,
         )
 
     def _prompt(self, errors):
@@ -1481,7 +1556,7 @@ class CodexCoreAuthor:
             "  confidence_level、confidence_text、limitations、invalidation_conditions。",
             "- 全部使用繁體中文；evidence ID、資產代號與 enum 維持原格式。",
             "- confidence_level 的客觀上限是 {}；不得高於它。".format(
-                confidence_ceiling(self.sources, self.generated_at_utc)
+                confidence_ceiling(self.sources, self.generated_at_utc, self.rules)
             ),
             "- 未達共識、有效票不足或流程失敗時，不得寫出任何方向判斷。",
             "- 不得引用不在上方快照內的 evidence ID，也不得改寫少數意見。",
@@ -1554,8 +1629,23 @@ class RejectedDraftLog:
         )
 
 
-def run_core_report(*, run, clock, sources, core_author, run_start_monotonic_ms):
-    """Run the timed Core workflow and publish whatever it honestly produced."""
+def run_core_report(
+    *,
+    run,
+    clock,
+    sources,
+    core_author,
+    run_start_monotonic_ms,
+    rules=None,
+    asset_class=ASSET_CLASS_OPEN,
+):
+    """Run the timed Core workflow and publish whatever it honestly produced.
+
+    ``rules`` 是呼叫端的規則快照，往下傳給整條驗證鏈；省略時每處現讀。
+
+    ``asset_class`` 同樣往下傳：Core 兩稿都沒過驗證時，發佈出去的是紅字稽核骨架，
+    那份報告也要說出這場 run 的市場，否則離線 renderer 會落到 open 套。
+    """
     rejected = RejectedDraftLog(clock)
 
     def render(report):
@@ -1568,6 +1658,8 @@ def run_core_report(*, run, clock, sources, core_author, run_start_monotonic_ms)
         rejected.wrap(core_author),
         render,
         run_start_monotonic_ms=run_start_monotonic_ms,
+        rules=rules,
+        asset_class=asset_class,
     )
     if rejected.close(outcome):
         run.write_json(
@@ -1665,7 +1757,14 @@ def build_manifest(
     provider_lineage,
     started_at_utc,
     report_completed_ms,
+    rules,
 ):
+    """Build the final record of one fast-path run, rules included.
+
+    ``rules`` 是 :func:`run_after_seal` 那一份快照，沒有預設值。這裡自己現讀的
+    話，寫下的規則會是「manifest 寫出去那一刻的設定」，而不是這場 run 實際遵守
+    的那一份；兩者在辯論途中被 reload 過就會不同，事後驗證會照錯的那一份判。
+    """
     return {
         "schema_version": CONTRACT_VERSION,
         "run_id": run.run_id,
@@ -1691,6 +1790,7 @@ def build_manifest(
         "provider_lineage_fast": provider_lineage,
         "artifacts": run.artifact_index(),
         "limitations": [FAST_PATH_LIMITATION],
+        RUN_RULES_FIELD: run_rules_record(rules),
     }
 
 
@@ -1730,7 +1830,14 @@ def run_after_seal(
     err,
     core_author=None,
 ):
-    """Drive debate, votes, Core report and finalize; return the handshake."""
+    """Drive debate, votes, Core report and finalize; return the handshake.
+
+    整趟封存後流程共用**一份**規則快照：辯論、Core 撰稿時被告知的信心上限、初稿
+    驗證、correction 驗證與 red-audit 自驗證全部依同一份設定。分開讀的話，Core
+    依規則 A 寫出合法的燈號、卻被規則 B 判成「信心高於資料上限」而錯拒，一份完
+    全合法的報告變成 red_audit，而且輸出裡沒有欄位記得是哪一份規則做的判斷。
+    """
+    rules = debate_rules()
     driver = DebateDriver(
         run=run,
         clock=clock,
@@ -1743,6 +1850,7 @@ def run_after_seal(
         started_at_utc=started_at_utc,
         sleeper=sleeper,
         err=err,
+        rules=rules,
     )
     votes = driver.run_debate()
     sources = {
@@ -1761,6 +1869,7 @@ def run_after_seal(
         sources=sources,
         package=package,
         generated_at_utc=generated_at_utc,
+        rules=rules,
     )
     outcome = run_core_report(
         run=run,
@@ -1768,6 +1877,8 @@ def run_after_seal(
         sources=sources,
         core_author=author,
         run_start_monotonic_ms=start_monotonic_ms,
+        rules=rules,
+        asset_class=package.asset_class,
     )
     completion_ms = seat_completion_ms(research_events)
     seats = manifest_seats(driver.lineage, completion_ms)
@@ -1788,9 +1899,17 @@ def run_after_seal(
         provider_lineage=build_provider_lineage(certificate, seats),
         started_at_utc=started_at_utc,
         report_completed_ms=report_completed_ms,
+        rules=rules,
     )
-    run.write_json("manifest.json", manifest, source="fast-path competition manifest")
+    # manifest 必須是這一段最後寫下的東西。它是磁碟上「這場 run 完成了」的
+    # 唯一標記（run_index.FINALIZED_MARKER_NAME），而標記只有在它之前的每一步
+    # 都成功時才寫得下去，這件事才成立——latest.json 若排在它後面失敗，磁碟上
+    # 會留下一個沒有回傳 FINALIZED 卻帶著完整 manifest 的 run。
     store.point_latest_at(run)
+    run.write_json("manifest.json", manifest, source="fast-path competition manifest")
+    # 到這裡 run 的紀錄已經全部落地，FINALIZED 已經成立。索引是可重建的衍生
+    # 資料，寫不進去只留警告——它不得改變這次 run 的結果。
+    index_finalized_run(store.data_root, run.path, err=err)
     return finalized_handshake(run, votes, outcome)
 
 

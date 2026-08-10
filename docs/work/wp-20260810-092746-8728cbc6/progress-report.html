@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-Hant" data-report-profile="progress" data-report-status="in-progress">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>前端白話化與 Google 風重設計｜工作進度</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --背景: #f3f6f4;
+      --卡片: #ffffff;
+      --文字: #17332d;
+      --次要: #64756f;
+      --主色: #176b55;
+      --主色淡: #dff3eb;
+      --警示: #9a5a10;
+      --警示淡: #fff0d6;
+      --錯誤: #9d2c2c;
+      --錯誤淡: #fde5e5;
+      --邊線: #d9e2de;
+      --陰影: 0 12px 30px rgba(23, 51, 45, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--文字); background: var(--背景); font-family: "Microsoft JhengHei", system-ui, sans-serif; line-height: 1.6; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 28px auto 60px; }
+    header, section { background: var(--卡片); border: 1px solid var(--邊線); border-radius: 18px; box-shadow: var(--陰影); }
+    header { padding: 28px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.8rem, 4vw, 3rem); }
+    h2 { margin-bottom: 18px; font-size: 1.25rem; }
+    h3 { margin-bottom: 6px; font-size: 1.05rem; }
+    .眉題 { margin-bottom: 6px; color: var(--主色); font-weight: 800; letter-spacing: .08em; }
+    .識別 { margin: 0; color: var(--次要); word-break: break-all; }
+    .連線 { display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; padding: 6px 12px; border-radius: 999px; background: var(--主色淡); color: var(--主色); font-weight: 700; }
+    .連線::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+    .連線.離線 { background: #ecefed; color: var(--次要); }
+    .摘要 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 24px; }
+    .摘要 article { padding: 16px; border-radius: 14px; background: #f7faf8; border: 1px solid var(--邊線); }
+    .摘要 small { display: block; color: var(--次要); }
+    .摘要 strong { display: block; margin-top: 5px; font-size: 1.15rem; overflow-wrap: anywhere; }
+    section { margin-top: 20px; padding: 24px; }
+    .進度條 { height: 12px; overflow: hidden; border-radius: 999px; background: #e6ece9; }
+    .進度條 span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--主色); transition: width .25s ease; }
+    .票卡列表 { display: grid; gap: 14px; }
+    .票卡 { padding: 18px; border: 1px solid var(--邊線); border-radius: 14px; }
+    .票卡標頭 { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+    .狀態 { flex: 0 0 auto; padding: 4px 10px; border-radius: 999px; background: #edf2f0; color: var(--次要); font-size: .9rem; font-weight: 800; }
+    .狀態.完成 { background: var(--主色淡); color: var(--主色); }
+    .狀態.阻擋 { background: var(--錯誤淡); color: var(--錯誤); }
+    .狀態.執行中, .狀態.Review中, .狀態.修正中 { background: var(--警示淡); color: var(--警示); }
+    .欄位 { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; margin-top: 12px; }
+    .欄位 dt { color: var(--次要); font-weight: 700; }
+    .欄位 dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .阻擋區[hidden], .歷史區[hidden] { display: none; }
+    .阻擋卡 { padding: 18px; border-left: 5px solid var(--錯誤); border-radius: 12px; background: var(--錯誤淡); white-space: pre-wrap; }
+    .歷史列表 { margin: 0; padding-left: 1.3rem; }
+    .歷史列表 li + li { margin-top: 8px; }
+    a { color: var(--主色); font-weight: 700; }
+    .空白 { margin: 0; color: var(--次要); }
+    @media (max-width: 780px) {
+      .摘要 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .欄位 { grid-template-columns: 1fr; }
+      .欄位 dt { margin-top: 7px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="眉題">非同步工作進度</p>
+      <h1 id="顯示名稱"></h1>
+      <p class="識別">工作識別碼：<span id="工作識別碼"></span></p>
+      <div id="連線狀態" class="連線 離線" role="status" aria-live="polite">載入本機進度快照</div>
+      <div class="摘要" aria-label="工作摘要">
+        <article><small>總進度</small><strong id="總進度"></strong></article>
+        <article><small>目前 Ticket</small><strong id="目前工作"></strong></article>
+        <article><small>目前階段</small><strong id="目前階段"></strong></article>
+        <article><small>最後更新</small><strong id="最後更新"></strong></article>
+      </div>
+    </header>
+
+    <section aria-labelledby="進度標題">
+      <h2 id="進度標題">Ticket 進度</h2>
+      <div class="進度條" aria-hidden="true"><span id="進度條"></span></div>
+      <div id="票卡列表" class="票卡列表" style="margin-top:18px"></div>
+    </section>
+
+    <section id="阻擋區" class="阻擋區" aria-labelledby="阻擋標題" hidden>
+      <h2 id="阻擋標題">需要裁決的阻擋</h2>
+      <div id="阻擋列表"></div>
+    </section>
+
+    <section id="歷史區" class="歷史區" aria-labelledby="歷史標題" hidden>
+      <h2 id="歷史標題">過去的結案報告</h2>
+      <ul id="歷史列表" class="歷史列表"></ul>
+    </section>
+  </main>
+
+  <script>
+    const 初始資料 = {"報告狀態":"in-progress","顯示名稱":"前端白話化與 Google 風重設計","工作識別碼":"wp-20260810-092746-8728cbc6","完成數":4,"總數":9,"完成比例":44,"目前工作":"07｜離線報告伺服器側五導覽注入","目前階段":"修正中","最後更新":"2026-08-10 15:07:51 +0800","Tickets":[{"編號":"01","名稱":"設計 token 權威與白底單套 palette","狀態":"完成","原始需求":"R-004：全站重新設計：Google 風白底、紅藍綠黃彩色點綴、極簡留白、半透明毛玻璃；含離線兩頁換新裝（新 run 起生效）；深色模式退場只留白底一套；微軟正黑體優先；語意色保留語意只校準色階。","目標":"新建 `hoya_market_agents/design_tokens.py` 作為全站設計 token 的唯一權威：白底單套 palette（深色刪除）、Google 四色裝飾 token（與語意色分開命名）、毛玻璃 token（含合成後實色）、字體堆疊微軟正黑體優先；`webapp/pages.py` 改為從此模組取值；成品樣式表不再輸出 `@media (prefers-color-scheme: dark)`；`ContrastTest` 直接對 token 計算 WCAG AA（文字 4.5:1、線條 3.0:1，毛玻璃面用合成色）。","目前紀錄":"…`test_webapp.py:1600` 同步；`meets()` 與行內兩份寫法判定為不構成新 Finding——單行比較避免跨測試模組耦合）；F-B2 `closed`（docstring 分階段現況屬實、renderer 未越權）。無新 Finding。standards 軸結論：通過。報告：scratchpad `t01/reviewer-b-reverify-final.md`\n最終 Snapshot：`3caf0dc2f6f08ff355d871d0b7741f4bf9af0bd9`；首次完整驗收 2577 OK（skipped=1 基準既有）；Findings 後指定重驗 45 OK＋842 OK；共識：Developer 與兩位 Reviewer 均通過，無未解風險遺留（border 色階、renderer 遷移屬 T03/T06 既定範圍）\n前端實際操作驗收：本票不適用（判定依據見該節），操作欄位以不適用結案","驗收摘要":"…行比較避免跨測試模組耦合）；F-B2 `closed`（docstring 分階段現況屬實、renderer 未越權）。無新 Finding。standards 軸結論：通過。報告：scratchpad `t01/reviewer-b-reverify-final.md`\n最終 Snapshot：`3caf0dc2f6f08ff355d871d0b7741f4bf9af0bd9`；首次完整驗收 2577 OK（skipped=1 基準既有）；Findings 後指定重驗 45 OK＋842 OK；共識：Developer 與兩位 Reviewer 均通過，無未解風險遺留（border 色階、renderer 遷移屬 T03/T06 既定範圍）\n前端實際操作驗收：本票不適用（判定依據見該節），操作欄位以不適用結案\n前端操作：適用性：不適用\n判定依據：本票只產出資料層設計 token 與樣式表取值來源，不改變任何頁面版面；畫面驗證由 Ticket 03（webapp 換裝）與 Ticket 09（端到端驗收）承接。\n操作環境與實際網址：不適用\n使用的原生瀏覽器工具：不適用\n操作步驟與預期結果：不適用\n操作結果：不適用\n操作證據：不適用（判定依據：本票僅資料層 token，畫面驗證由 Ticket 03／09 承接）","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/01-design-tokens-light-palette.md"},{"編號":"02","名稱":"五導覽常駐與設定分離","狀態":"完成","原始需求":"R-002：五導覽全站常駐：即時辯論／歷史與命中率／市場報告／完整辯論／設定；市場報告與完整辯論在無特定 run 頁面指向最新有報告的 run、run 詳情頁指向自身 run、無報告時停用樣式；「伺服器已關閉」頁維持無導覽；離線兩頁經伺服器瀏覽時亦有五導覽，直接開檔／分享維持自足兩分頁導覽，run 檔案唯讀不回溯。\nR-003：設定獨立：「設定」與其他四個導覽分開，放「關閉伺服器」按鈕左邊。","目標":"重構全站 header：左起「即時辯論｜歷史與命中率｜市場報告｜完整辯論」，右側「設定」獨立且緊鄰「關閉伺服器」按鈕左邊；辯論室與 run 詳情頁的報告導覽指向該 run 自身，主頁初始／歷史／設定頁由 `views.py` 以既有 `run_index.query_runs` 在 Python 端解析「最新有報告的 run」（零 SQL）；全站無報告時沿用現行停用樣式（span、不進 tab order）；「伺服器已關閉」頁維持無導覽例外。","目前紀錄":"…-A02-2 `closed`（三個呼叫點傳入最新報告、雙向測試＋渲染證據）；500 頁裁決「不構成 Finding」（最後錯誤邊界不重讀可能故障的索引，避免遞迴失敗）。spec 軸：通過。報告：scratchpad `t02/reviewer-a-reverify-final.md`\nReviewer B：F-B02-1 `closed`、F-B02-2 `closed`，無新 Finding。standards 軸：通過。報告：scratchpad `t02/reviewer-b-reverify-final.md`\n建議級備考（不阻擋）：A 報告轉述 busy 409 測試可補報告導覽目標斷言（`test_webapp.py:4116`）；現行實作正確。\n最終 Snapshot：`6682b69363596a7808e1226520fba85033160728`；共識：Developer 與兩位 Reviewer 均通過。","驗收摘要":"…最後錯誤邊界不重讀可能故障的索引，避免遞迴失敗）。spec 軸：通過。報告：scratchpad `t02/reviewer-a-reverify-final.md`\nReviewer B：F-B02-1 `closed`、F-B02-2 `closed`，無新 Finding。standards 軸：通過。報告：scratchpad `t02/reviewer-b-reverify-final.md`\n建議級備考（不阻擋）：A 報告轉述 busy 409 測試可補報告導覽目標斷言（`test_webapp.py:4116`）；現行實作正確。\n最終 Snapshot：`6682b69363596a7808e1226520fba85033160728`；共識：Developer 與兩位 Reviewer 均通過。\n前端操作：…視。\n操作環境與實際網址：執行階段填寫\n使用的原生瀏覽器工具：執行階段填寫\n操作步驟與預期結果：\n1. 逐一開啟即時辯論、歷史與命中率、設定、run 詳情頁：header 皆出現五導覽，左起「即時辯論｜歷史與命中率｜市場報告｜完整辯論」，「設定」在右側且緊鄰「關閉伺服器」左邊。\n2. 於主頁初始、歷史、設定頁點「市場報告」與「完整辯論」：指向最新有報告的 run。\n3. 於 run 詳情頁點「市場報告」與「完整辯論」：指向該 run 自身。\n4. 在無任何報告的狀態下檢視：兩個報告導覽為停用樣式且無法以 Tab 聚焦。\n5. 開啟「伺服器已關閉」頁：確認維持無導覽。\n操作結果：執行階段填寫\n操作證據：執行階段填寫\n環境註記：環境無瀏覽器時，依 Spec 測試決策以渲染後 HTML 存檔＋關鍵元素斷言為操作證據。","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/02-five-nav-and-settings-split.md"},{"編號":"03","名稱":"全站 Google 風極簡毛玻璃換裝","狀態":"完成","原始需求":"R-004：全站重新設計：Google 風白底、紅藍綠黃彩色點綴、極簡留白、半透明毛玻璃；含離線兩頁換新裝（新 run 起生效）；深色模式退場只留白底一套；微軟正黑體優先；語意色保留語意只校準色階。","目標":"把 webapp 全部頁面（即時辯論、歷史與命中率、設定、run 詳情、錯誤頁、關閉頁）換成 Google 風白底極簡版面：大量留白、半透明毛玻璃面、紅藍綠黃四色點綴，色值一律取自 design_tokens；保護區（聊天室、燈位、三種票數）只換外衣——內容、位置、語意色與行為不動。","目前紀錄":"…）\n指定重驗：`tests.test_webapp` 621 OK 零 skip、RESULT_EXIT=0；compileall exit 0。B 首輪零 Finding 且本輪無產品變更，Coordinator 判定無需 B 重審。\n### 定向複驗與完成（2026-08-10）\nReviewer A：F-A03-1 `closed`（獨立以 Windows fallback 重放三態：PLAIN_EXIT=0、WRAPPER_EXIT=0、PAINTED_EXIT=1，painted 精準失敗於合成底色錯誤）。spec 軸：通過、未關閉 Findings 0。報告：scratchpad `t03/reviewer-a-reverify-final.md`\n最終 Snapshot：`1a88fec6d480e952d85d780f4c7c683bd029e8ce`；共識：Developer 與兩位 Reviewer 均通過。","驗收摘要":"…skip、RESULT_EXIT=0；compileall exit 0。B 首輪零 Finding 且本輪無產品變更，Coordinator 判定無需 B 重審。\nReviewer A：F-A03-1 `closed`（獨立以 Windows fallback 重放三態：PLAIN_EXIT=0、WRAPPER_EXIT=0、PAINTED_EXIT=1，painted 精準失敗於合成底色錯誤）。spec 軸：通過、未關閉 Findings 0。報告：scratchpad `t03/reviewer-a-reverify-final.md`\n最終 Snapshot：`1a88fec6d480e952d85d780f4c7c683bd029e8ce`；共識：Developer 與兩位 Reviewer 均通過。\n前端操作：適用性：適用\n判定依據：R-004 是純使用者介面需求，必須實際檢視每一類頁面的版面與保護區呈現。\n操作環境與實際網址：執行階段填寫\n使用的原生瀏覽器工具：執行階段填寫\n操作步驟與預期結果：\n1. 逐一開啟即時辯論、歷史與命中率、設定、run 詳情、錯誤頁、關閉頁：皆為白底極簡版面，含留白、毛玻璃面與四色點綴。\n2. 將作業系統切為深色後重新整理：頁面仍為同一套白底。\n3. 檢視即時辯論頁保護區：聊天室、燈位、三種票數的內容、位置與語意色與改版前一致。\n4. 檢查頁面無外部資源請求（字型與毛玻璃皆為原生）。\n操作結果：執行階段填寫\n操作證據：執行階段填寫\n環境註記：環境無瀏覽器時，依 Spec 測試決策以渲染後 HTML 存檔＋關鍵元素斷言為操作證據。","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/03-google-style-restyle.md"},{"編號":"04","名稱":"設定頁白話中文","狀態":"執行中","原始需求":"R-001：設定頁白話中文：每個規則項顯示中文標籤＋一句白話說明，分組標題中文化；規則檔新增而未翻譯的鍵顯示原鍵名＋「尚未翻譯」標註、照常可編輯（不 fail-closed）。","目標":"在 `webapp/settings.py` 建立標籤表（key-path → 中文標籤＋一句白話說明）與分組標題中文化；未涵蓋的鍵顯示原鍵名＋「尚未翻譯」標註且照常可編輯（不 fail-closed）；`_about` 註解顯示照舊；`pages.py` 的設定欄位渲染加上白話說明行。","目前紀錄":"…、model `claude-opus-5`；票面偏好 `claude-sonnet-5`/`high` 不採用之原因：平台派發工具無 reasoning effort 欄位，無法保證「Sonnet 不得低於 high」硬性下限，依規則改用後端已驗證預設\n確切寫入範圍：`hoya_market_agents/webapp/settings.py`、`hoya_market_agents/webapp/pages.py`（設定欄位渲染區）、對應測試\n資源鎖：`pages.py` 熱點鏈（本批次獨占）；全套測試執行權（`.locks/full-suite` 目錄鎖）\n必跑指令：迭代 `PYTHONPATH=tests python3 -m unittest tests.test_webapp -v`；Ready for Review `python3 -m unittest discover -s tests`（WSL，取鎖後執行）","驗收摘要":"…eview／修正回合並行；寫入範圍互斥——本票不碰 server.py 與 test_webapp_nav_injection.py）\n確切寫入範圍：`hoya_market_agents/webapp/settings.py`、`hoya_market_agents/webapp/pages.py`（設定欄位渲染區）、對應測試\n資源鎖：`pages.py` 熱點鏈（本批次獨占）；全套測試執行權（`.locks/full-suite` 目錄鎖）\n必跑指令：迭代 `PYTHONPATH=tests python3 -m unittest tests.test_webapp -v`；Ready for Review `python3 -m unittest discover -s tests`（WSL，取鎖後執行）\n前端操作：適用性：適用\n判定依據：R-001 規範設定頁畫面上每個規則項的呈現，必須實際開頁核對逐鍵標籤與說明。\n操作環境與實際網址：執行階段填寫\n使用的原生瀏覽器工具：執行階段填寫\n操作步驟與預期結果：\n1. 開啟設定頁：逐項核對每個規則鍵的中文標籤與白話說明與上表逐字一致。\n2. 核對分組標題（fieldset legend）皆為中文，且與上列對應表一致。\n3. 以測試設定檔加入一個未知鍵後重新整理：該項顯示原鍵名＋「尚未翻譯」標註，且欄位仍可輸入與儲存。\n4. 核對 `_about` 註解顯示與改版前相同。\n操作結果：執行階段填寫\n操作證據：執行階段填寫\n環境註記：環境無瀏覽器時，依 Spec 測試決策以渲染後 HTML 存檔＋關鍵元素斷言為操作證據。","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"Developer 繼續實作與快速檢查","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/04-settings-plain-labels.md"},{"編號":"05","名稱":"席位定案名與白話說明","狀態":"已核准","原始需求":"R-005：席位名稱與白話說明：股票套與幣圈套顯示名稱換為使用者定案名；即時辯論頁席位卡新增白話說明（僅顯示用，`focus` 權威不動）。","目標":"把 `config/agent_roster.json` 中股票套與幣圈套的 `display_name` 換成使用者定案名，三套 profile 各補上不可缺漏的 `blurb` 欄位；`seats.py` 的 fail-closed 驗證擴充為缺 `blurb` 即拒絕啟動，讀取口回傳 `blurb`；賽前預檢與測試 fixtures 同步升版；即時辯論頁席位卡顯示 blurb；離線報告席名隨 roster 自動一致。`seat_id`／`output_dir`／提供者／`focus` 不動。","目前紀錄":"Developer 結論：執行階段填寫\nReviewer 模式：執行階段填寫\nReviewer A 結論：執行階段填寫\nReviewer B 結論：執行階段填寫\n未關閉阻擋或重要 Findings：執行階段填寫\nTicket 最終驗收：執行階段填寫","驗收摘要":"Reviewer 模式：執行階段填寫\nReviewer A 結論：執行階段填寫\nReviewer B 結論：執行階段填寫\n未關閉阻擋或重要 Findings：執行階段填寫\nTicket 最終驗收：執行階段填寫\n前端操作：適用性：適用\n判定依據：R-005 規範即時辯論頁席位卡的顯示名稱與白話說明，必須實際開頁核對。\n操作環境與實際網址：執行階段填寫\n使用的原生瀏覽器工具：執行階段填寫\n操作步驟與預期結果：\n1. 開啟台股題的即時辯論頁：七張席位卡顯示股票套定案名，卡片下方顯示對應 blurb。\n2. 開啟幣題的即時辯論頁：七張席位卡顯示幣圈套定案名與對應 blurb。\n3. 開啟同一 run 的離線報告：席名與 webapp 顯示一致。\n4. 以缺 `blurb` 的 roster 啟動：載入即失敗並顯示可讀錯誤訊息。\n操作結果：執行階段填寫\n操作證據：執行階段填寫\n環境註記：環境無瀏覽器時，依 Spec 測試決策以渲染後 HTML 存檔＋關鍵元素斷言為操作證據。","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"等待進入 Ready Queue","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/05-seat-rename-blurbs.md"},{"編號":"06","名稱":"離線報告換新裝","狀態":"完成","原始需求":"R-004：全站重新設計：Google 風白底、紅藍綠黃彩色點綴、極簡留白、半透明毛玻璃；含離線兩頁換新裝（新 run 起生效）；深色模式退場只留白底一套；微軟正黑體優先；語意色保留語意只校準色階。","目標":"把 `report_renderer.py` 與 `report_audit_renderer.py` 的 CSS 改為由 design_tokens 產生，刪除 renderer 內寫死的 palette 與燈色 hex；DOM 章節結構維持不變；新 run 起生效、舊 run 檔案與 PDF 不回溯；`run_verifier.py` 不動，既有相對連結檢查不得破壞。","目前紀錄":"…ll/preflight、webapp 零命中；原實驗只證明「跨 build 逐位元重繪不穩定」，未證明 T06 破壞受維護的公開行為。spec 軸檢核第 4 條改判通過；spec 軸最終結論：通過、未關閉 Findings 無。報告：scratchpad `t06/reviewer-a-reverify-final.md`\n工作包已知風險（帶入結案報告，交使用者決定是否另開票）：封存 run 的跨版本 `verify_run` 驗證在多個工作包前即已不成立（run 目錄佈局變更、roster/provider 變更、本次視覺變更皆會使重繪偏離封存位元組）；如需「跨版本可驗」需 presentation-version 相容渲染或等效驗證路徑，屬規格層級決策。\n最終 Snapshot：`76a8977e726b73932fc92794cbaab049458595e1`；共識：Developer 與兩位 Reviewer 均通過。","驗收摘要":"…y`／`run_verifier.py` diff exit 0（僅 roster/provider 對調）；BASE 不含 T06 修改即以相同錯誤拒絕舊 bundle；`verify_run` 呼叫面限 CLI/drill/preflight、webapp 零命中；原實驗只證明「跨 build 逐位元重繪不穩定」，未證明 T06 破壞受維護的公開行為。spec 軸檢核第 4 條改判通過；spec 軸最終結論：通過、未關閉 Findings 無。報告：scratchpad `t06/reviewer-a-reverify-final.md`\n最終 Snapshot：`76a8977e726b73932fc92794cbaab049458595e1`；共識：Developer 與兩位 Reviewer 均通過。\n前端操作：適用性：適用\n判定依據：R-004 涵蓋離線兩頁的視覺，必須實際開啟新產出的離線頁核對新裝。\n操作環境與實際網址：執行階段填寫\n使用的原生瀏覽器工具：執行階段填寫\n操作步驟與預期結果：\n1. 產生一個新 run，直接開啟其 `report.html`：呈現白底新設計，含留白、毛玻璃面與四色點綴。\n2. 直接開啟同一 run 的 `debate.html`：同樣為新裝，且維持離線自足兩分頁導覽。\n3. 將作業系統切為深色後重新開啟：仍為同一套白底。\n4. 開啟舊 run 的離線頁：確認未被回溯改動。\n操作結果：執行階段填寫\n操作證據：執行階段填寫\n環境註記：環境無瀏覽器時，依 Spec 測試決策以渲染後 HTML 存檔＋關鍵元素斷言為操作證據。","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/06-offline-renderer-reskin.md"},{"編號":"07","名稱":"離線報告伺服器側五導覽注入","狀態":"修正中","原始需求":"R-002：五導覽全站常駐：即時辯論／歷史與命中率／市場報告／完整辯論／設定；市場報告與完整辯論在無特定 run 頁面指向最新有報告的 run、run 詳情頁指向自身 run、無報告時停用樣式；「伺服器已關閉」頁維持無導覽；離線兩頁經伺服器瀏覽時亦有五導覽，直接開檔／分享維持自足兩分頁導覽，run 檔案唯讀不回溯。","目標":"在 `server.py` 新增回應注入器：僅對 run artifact 中 `report.html`／`debate.html` 的 text/html 回應，在 `\u003cbody\u003e` 標籤後插入五導覽列（純 HTML、零 script、樣式走站內樣式表 route、導覽目標沿用 pages 的導覽資料）；找不到插入點時原樣送出；磁碟上的檔案位元組不變（ADR 0007）。","目前紀錄":"…、CSP 沿用」明文禁止——條文在錯誤前提下寫成，不可能照字面滿足。\n裁決依據（Spec 文本）：①已核准代價明寫「舊 run 紙白頁上浮**新設計風**注入導覽列」→ 注入導覽在舊 run 也必須呈現新設計風樣式（Developer 現行作法舊 run 無樣式，不滿足）；②artifact CSP `style-src 'unsafe-inline'` 允許行內樣式，Spec 硬約束為零 inline **script**；③色值唯一權威 design_tokens。\n裁決：注入內容自帶 scoped `\u003cstyle\u003e` 區塊（值於注入時取自 design_tokens、選擇器限定注入導覽自身、不得影響 artifact 原有樣式；新 run 亦以注入樣式呈現避免雙重來源歧義）；不新增端點、不改 CSP、磁碟不動。此為滿足全部明文約束的唯一機制，屬核准方案內實作決策；「是否要真正的樣式表 route」列入結案報告交使用者複核。","驗收摘要":"…性；導覽產生失敗 fail-open 回原始位元組。\nF-B07-3【重要｜Owner: Reviewer B｜未關閉】完整回應含兩個同名 `aria-label=\"主要頁面\"` landmark（primary_labels=2）；建議注入版本用唯一名稱＋回應層 landmark 唯一性測試；定位在本票注入整合點。\nF-B07-4【建議｜Owner: Reviewer B｜未關閉】新測試模組 `from test_webapp import ...` 依賴 6500 行跨票檔案；建議最小自足 fixture。\n驗證：Windows fcntl shim 重跑 16 tests OK；反例探針與 landmark 計數 exit 0。報告：scratchpad `t07/reviewer-b-final.md`\n前端操作：…服器瀏覽時亦有五導覽、直接開檔維持自足，兩種情境都必須實際操作比對。\n操作環境與實際網址：執行階段填寫\n使用的原生瀏覽器工具：執行階段填寫\n操作步驟與預期結果：\n1. 經伺服器開啟某 run 的 `report.html`：頁面頂端出現五導覽，點擊可回到站內頁面。\n2. 經伺服器開啟同一 run 的 `debate.html`：同樣出現五導覽。\n3. 直接以檔案路徑開啟同一份 `report.html`：沒有五導覽，維持自足兩分頁導覽。\n4. 比對注入前後磁碟檔案位元組：完全相同。\n5. 以缺少 `\u003cbody\u003e` 的 HTML 經伺服器取用：內容原樣送出、未被破壞。\n操作結果：執行階段填寫\n操作證據：執行階段填寫\n環境註記：環境無瀏覽器時，依 Spec 測試決策以渲染後 HTML 存檔＋關鍵元素斷言為操作證據。","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"Developer 處理已確認的 Finding","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/07-artifact-nav-injection.md"},{"編號":"08","名稱":"發問選單移除開放題","狀態":"已核准","原始需求":"R-006：開放題下架：發問選單只留台股／美股／幣；開放套留舊值當內部填充（fail-closed 檢查仍過）；後端 open 能力不刪；歷史開放題 run 照舊可回看。","目標":"把發問選單的資產類別選項改由 `config/market_scopes.json` 的三市場（台股／美股／幣）產生，選單不再出現「開放題」；launcher 介面、後端 open 路徑與套組選擇規則全部保留；歷史開放題 run 照舊可回看。","目前紀錄":"Developer 結論：執行階段填寫\nReviewer 模式：執行階段填寫\nReviewer A 結論：執行階段填寫\nReviewer B 結論：執行階段填寫\n未關閉阻擋或重要 Findings：執行階段填寫\nTicket 最終驗收：執行階段填寫","驗收摘要":"Reviewer 模式：執行階段填寫\nReviewer A 結論：執行階段填寫\nReviewer B 結論：執行階段填寫\n未關閉阻擋或重要 Findings：執行階段填寫\nTicket 最終驗收：執行階段填寫\n前端操作：適用性：適用\n判定依據：R-006 直接規範發問選單的可見選項，必須實際開頁確認。\n操作環境與實際網址：執行階段填寫\n使用的原生瀏覽器工具：執行階段填寫\n操作步驟與預期結果：\n1. 開啟發問頁：資產類別選單只有台股、美股、幣三個選項，無「開放題」。\n2. 逐一選取三個選項發問：流程正常、套組選擇結果與改版前一致。\n3. 開啟一個歷史開放題 run 的詳情頁與報告：仍可正常回看。\n操作結果：執行階段填寫\n操作證據：執行階段填寫\n環境註記：環境無瀏覽器時，依 Spec 測試決策以渲染後 HTML 存檔＋關鍵元素斷言為操作證據。","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"等待進入 Ready Queue","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/08-asset-menu-remove-open.md"},{"編號":"09","名稱":"端到端驗收與證據","狀態":"已核准","原始需求":"…論／設定；市場報告與完整辯論在無特定 run 頁面指向最新有報告的 run、run 詳情頁指向自身 run、無報告時停用樣式；「伺服器已關閉」頁維持無導覽；離線兩頁經伺服器瀏覽時亦有五導覽，直接開檔／分享維持自足兩分頁導覽，run 檔案唯讀不回溯。\nR-003：設定獨立：「設定」與其他四個導覽分開，放「關閉伺服器」按鈕左邊。\nR-004：全站重新設計：Google 風白底、紅藍綠黃彩色點綴、極簡留白、半透明毛玻璃；含離線兩頁換新裝（新 run 起生效）；深色模式退場只留白底一套；微軟正黑體優先；語意色保留語意只校準色階。\nR-005：席位名稱與白話說明：股票套與幣圈套顯示名稱換為使用者定案名；即時辯論頁席位卡新增白話說明（僅顯示用，`focus` 權威不動）。\nR-006：開放題下架：發問選單只留台股／美股／幣；開放套留舊值當內部填充（fail-closed 檢查仍過）；後端 open 能力不刪；歷史開放題 run 照舊可回看。","目標":"對整包改動做一次端到端驗收並留存證據：渲染台股／幣圈題的全部 webapp 頁面與離線兩頁樣本存檔、A5 標準渲染後繁中 grep、對比度實測表、保護區行為回歸、發問選單斷言、導覽注入器實測、既有測試全綠；所有證據存入 `docs/work/wp-20260810-092746-8728cbc6/acceptance/`。","目前紀錄":"Developer 結論：執行階段填寫\nReviewer 模式：執行階段填寫\nReviewer A 結論：執行階段填寫\nReviewer B 結論：執行階段填寫\n未關閉阻擋或重要 Findings：執行階段填寫\nTicket 最終驗收：執行階段填寫","驗收摘要":"Reviewer 模式：執行階段填寫\nReviewer A 結論：執行階段填寫\nReviewer B 結論：執行階段填寫\n未關閉阻擋或重要 Findings：執行階段填寫\nTicket 最終驗收：執行階段填寫\n前端操作：…新設計，header 五導覽與設定位置正確。\n2. 全站走查幣圈題：席位卡顯示幣圈套定案名與 blurb，其餘同上。\n3. 開啟設定頁核對逐鍵中文標籤與白話說明，並以未知鍵驗證「尚未翻譯」fallback 可編輯。\n4. 經伺服器開啟新 run 的 `report.html`／`debate.html`：出現五導覽可回站內；直接開檔則維持自足兩分頁導覽。\n5. 開啟發問頁確認只有台股／美股／幣三個選項，並開啟歷史開放題 run 確認可回看。\n6. 檢視即時辯論頁保護區：聊天室、燈位、三種票數與改版前一致。\n7. 將作業系統切為深色後重走 1、4：畫面仍為同一套白底。\n操作結果：執行階段填寫\n操作證據：執行階段填寫\n環境註記：環境無瀏覽器時，依 Spec 測試決策以渲染後 HTML 存檔＋關鍵元素斷言為操作證據。","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"等待進入 Ready Queue","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260810-092746-8728cbc6/tickets/09-end-to-end-acceptance.md"}],"阻擋":[],"歷史報告":[{"名稱":"wp-20260809-125056-b3e957c6｜結案報告","連結":"/history/wp-20260809-125056-b3e957c6","本機連結":"file:///mnt/d/workstationD/hoya%20bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/completion-report.html"}]};
+
+    function 設定文字(識別, 內容) {
+      document.getElementById(識別).textContent = 內容 || "—";
+    }
+
+    function 建立欄位(名稱, 內容) {
+      const 標題 = document.createElement("dt");
+      標題.textContent = 名稱;
+      const 值 = document.createElement("dd");
+      值.textContent = 內容 || "—";
+      return [標題, 值];
+    }
+
+    function 更新頁面(資料) {
+      document.documentElement.dataset.reportStatus = 資料.報告狀態 || "in-progress";
+      document.title = `${資料.顯示名稱 || "未命名工作"}｜工作進度`;
+      設定文字("顯示名稱", 資料.顯示名稱);
+      設定文字("工作識別碼", 資料.工作識別碼);
+      設定文字("總進度", `${資料.完成數 || 0}／${資料.總數 || 0} Tickets 完成`);
+      設定文字("目前工作", 資料.目前工作);
+      設定文字("目前階段", 資料.目前階段);
+      設定文字("最後更新", 資料.最後更新);
+      document.getElementById("進度條").style.width = `${資料.完成比例 || 0}%`;
+
+      const 票卡列表 = document.getElementById("票卡列表");
+      票卡列表.replaceChildren();
+      if (!資料.Tickets || 資料.Tickets.length === 0) {
+        const 空白 = document.createElement("p");
+        空白.className = "空白";
+        空白.textContent = "目前沒有可讀取的 Ticket。";
+        票卡列表.appendChild(空白);
+      } else {
+        for (const Ticket of 資料.Tickets) {
+          const 卡片 = document.createElement("article");
+          卡片.className = "票卡";
+          const 標頭 = document.createElement("div");
+          標頭.className = "票卡標頭";
+          const 標題 = document.createElement("h3");
+          標題.textContent = `${Ticket.編號}｜${Ticket.名稱}`;
+          const 狀態 = document.createElement("span");
+          狀態.className = `狀態 ${String(Ticket.狀態 || "").replaceAll(" ", "")}`;
+          狀態.textContent = Ticket.狀態 || "未知";
+          標頭.append(標題, 狀態);
+          const 欄位 = document.createElement("dl");
+          欄位.className = "欄位";
+          for (const [名稱, 內容] of [
+            ["對應原始需求", Ticket.原始需求],
+            ["Ticket 目的", Ticket.目標],
+            ["目前紀錄", Ticket.目前紀錄],
+            ["測試與 Review", Ticket.驗收摘要],
+            ["品味評分", Ticket.品味評分],
+            ["範圍與複雜度", Ticket.範圍警示],
+            ["下一步", Ticket.下一步],
+          ]) {
+            欄位.append(...建立欄位(名稱, 內容));
+          }
+          卡片.append(標頭, 欄位);
+          票卡列表.appendChild(卡片);
+        }
+      }
+
+      const 阻擋區 = document.getElementById("阻擋區");
+      const 阻擋列表 = document.getElementById("阻擋列表");
+      阻擋列表.replaceChildren();
+      阻擋區.hidden = !資料.阻擋 || 資料.阻擋.length === 0;
+      for (const 內容 of 資料.阻擋 || []) {
+        const 卡片 = document.createElement("div");
+        卡片.className = "阻擋卡";
+        卡片.textContent = 內容;
+        阻擋列表.appendChild(卡片);
+      }
+
+      const 歷史區 = document.getElementById("歷史區");
+      const 歷史列表 = document.getElementById("歷史列表");
+      歷史列表.replaceChildren();
+      歷史區.hidden = !資料.歷史報告 || 資料.歷史報告.length === 0;
+      for (const 報告 of 資料.歷史報告 || []) {
+        const 項目 = document.createElement("li");
+        const 連結 = document.createElement("a");
+        連結.href = location.protocol === "file:" ? 報告.本機連結 : 報告.連結;
+        連結.textContent = 報告.名稱;
+        項目.appendChild(連結);
+        歷史列表.appendChild(項目);
+      }
+    }
+
+    更新頁面(初始資料);
+
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      const 連線狀態 = document.getElementById("連線狀態");
+      const 事件來源 = new EventSource("/events");
+      事件來源.addEventListener("progress", (事件) => 更新頁面(JSON.parse(事件.data)));
+      事件來源.onopen = () => {
+        連線狀態.className = "連線";
+        連線狀態.textContent = "已連線，進度會非同步更新";
+      };
+      事件來源.onerror = () => {
+        連線狀態.className = "連線 離線";
+        連線狀態.textContent = "連線中斷，畫面保留最後進度";
+      };
+    }
+  </script>
+</body>
+</html>

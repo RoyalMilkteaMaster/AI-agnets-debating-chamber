@@ -15,7 +15,7 @@ from hoya_market_agents.report_renderer import (
     render_market_markdown,
 )
 import hoya_market_agents.report_renderer as report_renderer_module
-from hoya_market_agents.seats import SEAT_IDS
+from hoya_market_agents.seats import SEAT_IDS, seat_profiles
 
 
 def _validated(case="consensus-6-1"):
@@ -103,7 +103,7 @@ class HtmlSafetyTests(unittest.TestCase):
                 self.assertIn(href, allowed)
             else:
                 self.assertTrue(
-                    href in ("live.html", "report.html", "debate.html")
+                    href in ("report.html", "debate.html")
                     or href.startswith("#evidence-"),
                     href,
                 )
@@ -179,14 +179,19 @@ class TraditionalChineseAuditViewTests(unittest.TestCase):
         self.sources = self.bundle["sources"]
         self.html = render_market_html(self.report, self.sources)
 
-    def test_first_page_has_the_shared_three_page_navigation(self):
-        for target in ("live.html", "report.html", "debate.html"):
+    def test_first_page_navigates_to_every_page_the_bundle_carries(self):
+        for target in ("report.html", "debate.html"):
             self.assertIn('href="{}"'.format(target), self.html)
         self.assertIn('href="report.html" aria-current="page"', self.html)
+        # ``live.html`` 不在 bundle 裡，所以也不該在導覽裡。
+        self.assertNotIn('href="live.html"', self.html)
 
     def test_seat_and_stance_labels_are_traditional_chinese(self):
-        self.assertIn("現貨技術席", self.html)
-        self.assertIn("衍生品席", self.html)
+        # 席名的權威是 roster profiles（ADR 0006），依這份報告的資產類別選套；
+        # 渲染成 seat_id 這種英文原值就會紅。
+        names = seat_profiles(self.report.get("asset_class"))
+        self.assertIn(names["spot-technical"].display_name, self.html)
+        self.assertIn(names["derivatives"].display_name, self.html)
         self.assertIn("偏多：6", self.html)
         self.assertIn("偏空：1", self.html)
         self.assertNotIn("bullish：", self.html)

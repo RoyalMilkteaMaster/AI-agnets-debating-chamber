@@ -1,0 +1,129 @@
+Ticket 09 驗收條件 2：五導覽、設定位置與報告導覽指向
+========================================================================
+
+tw_stock（run_id=20260314T015926Z-2330-aaa111）
+  home-waiting
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html'}
+    期望                  ：/run/20260314T015926Z-2330-aaa111/report.html / /run/20260314T015926Z-2330-aaa111/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  room
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html'}
+    期望                  ：/run/20260314T015926Z-2330-aaa111/report.html / /run/20260314T015926Z-2330-aaa111/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  history
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html'}
+    期望                  ：/run/20260314T015926Z-2330-aaa111/report.html / /run/20260314T015926Z-2330-aaa111/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  settings
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html'}
+    期望                  ：/run/20260314T015926Z-2330-aaa111/report.html / /run/20260314T015926Z-2330-aaa111/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  run_detail
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html'}
+    期望                  ：/run/20260314T015926Z-2330-aaa111/report.html / /run/20260314T015926Z-2330-aaa111/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  not_found
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html'}
+    期望                  ：/run/20260314T015926Z-2330-aaa111/report.html / /run/20260314T015926Z-2330-aaa111/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  launch_problem
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html'}
+    期望                  ：/run/20260314T015926Z-2330-aaa111/report.html / /run/20260314T015926Z-2330-aaa111/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  error_500
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': None, '完整辯論': None}
+    期望                  ：停用樣式（role=link, aria-disabled=true, 無 href）
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  closed（伺服器已關閉頁）
+    header 控制            ：（無）
+    判定                  ：無導覽、無關閉鈕 PASS
+
+crypto（run_id=20260315T015926Z-btc-bbb222）
+  home-waiting
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html'}
+    期望                  ：/run/20260315T015926Z-btc-bbb222/report.html / /run/20260315T015926Z-btc-bbb222/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  room
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html'}
+    期望                  ：/run/20260315T015926Z-btc-bbb222/report.html / /run/20260315T015926Z-btc-bbb222/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  history
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html'}
+    期望                  ：/run/20260315T015926Z-btc-bbb222/report.html / /run/20260315T015926Z-btc-bbb222/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  settings
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html'}
+    期望                  ：/run/20260315T015926Z-btc-bbb222/report.html / /run/20260315T015926Z-btc-bbb222/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  run_detail
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html'}
+    期望                  ：/run/20260315T015926Z-btc-bbb222/report.html / /run/20260315T015926Z-btc-bbb222/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  not_found
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html'}
+    期望                  ：/run/20260315T015926Z-btc-bbb222/report.html / /run/20260315T015926Z-btc-bbb222/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  launch_problem
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html'}
+    期望                  ：/run/20260315T015926Z-btc-bbb222/report.html / /run/20260315T015926Z-btc-bbb222/debate.html
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  error_500
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': None, '完整辯論': None}
+    期望                  ：停用樣式（role=link, aria-disabled=true, 無 href）
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  closed（伺服器已關閉頁）
+    header 控制            ：（無）
+    判定                  ：無導覽、無關閉鈕 PASS
+
+empty（同一份程式、Data Root 沒有任何 run）
+  home
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': None, '完整辯論': None}
+    期望                  ：停用樣式（role=link, aria-disabled=true, 無 href）
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  history
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': None, '完整辯論': None}
+    期望                  ：停用樣式（role=link, aria-disabled=true, 無 href）
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+  settings
+    五導覽（依序）        ：即時辯論 ｜ 歷史與命中率 ｜ 市場報告 ｜ 完整辯論 ｜ 設定
+    header 控制順序        ：即時辯論 → 歷史與命中率 → 市場報告 → 完整辯論 → 設定 → 關閉伺服器
+    報告導覽指向          ：{'市場報告': None, '完整辯論': None}
+    期望                  ：停用樣式（role=link, aria-disabled=true, 無 href）
+    判定                  ：五導覽 PASS／設定在關閉伺服器左邊 PASS／指向 PASS
+

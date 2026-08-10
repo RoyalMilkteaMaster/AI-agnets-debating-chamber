@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-Hant" data-report-profile="implement" data-report-status="pass" data-work-id="wp-20260809-125056-b3e957c6">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>前端重設計與七席換套｜功能實作結案報告</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --背景: #f3f6f4;
+      --卡片: #ffffff;
+      --文字: #17332d;
+      --次要: #62736d;
+      --主色: #176b55;
+      --主色淡: #dff3eb;
+      --輔色: #173f69;
+      --警示: #9a5a10;
+      --邊線: #d9e2de;
+      --陰影: 0 14px 34px rgba(23, 51, 45, .09);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--文字); background: var(--背景); font-family: "Microsoft JhengHei", system-ui, sans-serif; line-height: 1.65; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 28px auto 64px; }
+    header, section { background: var(--卡片); border: 1px solid var(--邊線); border-radius: 18px; box-shadow: var(--陰影); }
+    header { padding: 30px; }
+    section { margin-top: 20px; padding: 26px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.9rem, 4vw, 3.2rem); line-height: 1.2; }
+    h2 { margin-bottom: 18px; font-size: 1.3rem; }
+    .眉題 { margin-bottom: 7px; color: var(--主色); font-weight: 800; letter-spacing: .08em; }
+    .識別 { margin: 0; color: var(--次要); overflow-wrap: anywhere; }
+    .通過 { display: inline-flex; margin-top: 18px; padding: 7px 13px; border-radius: 999px; background: var(--主色淡); color: var(--主色); font-weight: 900; }
+    .摘要 { margin-top: 22px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .摘要 article { padding: 16px; border-radius: 14px; border: 1px solid var(--邊線); background: #f8faf9; }
+    .摘要 small { display: block; color: var(--次要); }
+    .摘要 strong { display: block; margin-top: 5px; font-size: 1.15rem; overflow-wrap: anywhere; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 12px; border-bottom: 1px solid var(--邊線); text-align: left; vertical-align: top; }
+    th { color: var(--次要); font-size: .92rem; }
+    .證據 { margin-top: 16px; }
+    .動態文字 { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; color: inherit; }
+    .驗收狀態 { margin-bottom: 14px; padding: 10px 13px; border-radius: 12px; background: var(--主色淡); color: var(--主色); font-weight: 800; }
+    details { border: 1px solid var(--邊線); border-radius: 12px; padding: 12px 15px; }
+    summary { cursor: pointer; color: var(--輔色); font-weight: 800; }
+    .確認摘要 { margin-bottom: 14px; color: var(--次要); }
+    .確認清單 { display: grid; gap: 10px; }
+    .確認項目 { display: flex; align-items: flex-start; gap: 10px; padding: 13px; border: 1px solid var(--邊線); border-radius: 12px; }
+    .確認項目 input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--主色); }
+    .確認項目 label { flex: 1; }
+    #design-assist { margin-top: 24px; color: var(--次要); font-size: .9rem; }
+    a { color: var(--輔色); }
+    code { overflow-wrap: anywhere; }
+    @media (max-width: 760px) {
+      .摘要 { grid-template-columns: 1fr; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header id="結論">
+      <p class="眉題">不可變結案紀錄</p>
+      <h1>前端重設計與七席換套</h1>
+      <p class="識別">工作識別碼：wp-20260809-125056-b3e957c6｜功能實作結案報告</p>
+      <div class="通過">最終驗收通過</div>
+      <div class="摘要">
+        <article><small>原始需求</small><strong>8／8 完成</strong></article>
+        <article><small>Tickets</small><strong>8／8 完成</strong></article>
+        <article><small>原生瀏覽器驗收</small><strong>不適用：使用者本人目視驗收</strong></article>
+      </div>
+      <pre class="動態文字" data-dynamic-text="結論內容">八張核准 Tickets 全部完成。每張票由一位 Claude Developer 與兩位獨立 Codex Reviewer（spec 軸＋standards 軸）以證據達成三方共識；共 18 項 Review Findings 與 1 項跨票缺陷（D-1）全部由原 Owner 定向複驗關閉或撤回。
+全站測試最終 2556 項全數通過（exit 0，含 T08 攔截器防止真實 codex 呼叫）；Spec 驗收 A1–A5 共二十一條逐條驗證通過（acceptance/a1-a5-matrix.md）。
+原生瀏覽器代驗因平台無 Claude／Codex 瀏覽器工具而不適用，由使用者本人於 2026-08-10 親自實機操作驗收（開啟捷徑、切換頁面、開啟市場報告）並明示「結案」授權。
+全程未執行任何 git commit 或 push；工作樹變更（含前一工作包成果）維持未提交，由使用者決定提交時機。</pre>
+    </header>
+
+    <section id="原始需求">
+      <h2>原始需求逐項結果（R-001 至 R-008）</h2>
+      <pre class="動態文字" data-dynamic-text="原始需求內容">R-001（完成）
+原文：頁面清單重整：即時辯論主頁、歷史與命中率合併頁、設定、run 詳情（功能保留、版面套新系統）、市場報告與完整辯論（內容不碰、右上角必可點）
+完成。/history 合併頁（上方統計卡、下方 run 列表帶命中結果、手動記錄表單）、/stats 302 轉跳、run 詳情套新版面、右上角市場報告與完整辯論連結可點且未產生時停用。負責票：03、04、06。證據：tickets/03、04 執行紀錄；acceptance/rendered。
+
+R-002（完成）
+原文：保護區功能凍結：動態聊天室、燈位、正方／反方／無法判斷票數的內容、位置、語意色不動，僅外衣可隨新設計系統統一
+完成。動態聊天室、燈位、三種票數的 DOM、內容、位置、語意色與行為經逐位元比對與行為測試確認不變；僅外衣隨新設計系統統一（Review 曾抓到死規則復活的顏色變化並已修正回改版前呈現）。負責票：03、08。證據：tickets/03（A-1 關閉紀錄）；acceptance/a1-a5-matrix.md A4-1。
+
+R-003（完成）
+原文：全部網頁頁面套同一套新設計系統：語意色保留只校準色階、系統字型堆疊、零外部資源
+完成。設計 token（THEMES＋SCALE）單一來源、全站單一樣式表、語意色僅校準色階、系統字型堆疊、零外部資源、零 inline script；對比度 50 對實測全逾 WCAG AA 門檻。負責票：03。證據：acceptance/contrast-table.txt。
+
+R-004（完成）
+原文：入口動線改造：刪除辯論室預覽.html 與開啟辯論室.bat、桌面捷徑隱藏啟動、頁面「關閉伺服器」按鈕與備援關閉捷徑
+完成。辯論室預覽.html 與開啟辯論室.bat 已刪除（刪除前備份並三方雜湊驗證）；桌面捷徑隱藏視窗啟動、已在跑只開瀏覽器；頁面右上角「關閉伺服器」先回應後優雅停機並照常寫 server_stop；備援「關閉辯論室」捷徑就位。負責票：07。證據：tickets/07；備份 backups/wp-b3e957c6-t07-entry-files-20260810。
+
+R-005（完成）
+原文：七席換套：股票／幣圈／開放三套依資產類別自動切換名稱與方向，seat_id 與 output_dir 永不改，含分工細表與提供者對調
+完成。roster 2.0.0 每席三套 profiles（股票／幣圈／開放）依 run 資產類別自動換套，fail-closed 載入；seat_id 與 output_dir 逐席比對不變；分工細表逐字落地；提供者對調（onchain→claude、news→codex）維持 3／3／1，四份程式常數與 roster 一致性測試釘住；退化路徑缺陷 D-1 已修復關閉。負責票：01、02。證據：tickets/01、02；acceptance/seat-label-comparison.md。
+
+R-006（完成）
+原文：標的選單發問：資產類別選單＋標的輸入框，接 T05 的 assets／asset_class 接縫，建議清單來自過往 run 標的
+完成。主頁發問區為資產類別選單＋標的輸入框＋格式提示＋建議清單（query_runs 去重、零 SQL）；送出經 assets／asset_class 接縫，webapp 端零純文字資產解析（AST 掃描釘住）；「題目文字與選單不一致以選單為準」有真參數證據。負責票：05。證據：tickets/05。
+
+R-007（完成）
+原文：全繁體中文：webapp 畫面不得出現英文資料原值，標籤從既有權威帶出
+完成。webapp 12 份渲染輸出以 32 個權威推導枚舉值掃描全零命中（標的代號、run_id、seat_id、evidence ID 依 Spec 豁免且確認在場）；席位標籤、資產類別、燈號、立場、命中結果均由既有權威帶出。負責票：03、04、05、08。證據：acceptance/a5-grep.txt。
+
+R-008（完成）
+原文：PDF 手動匯出：報告頁按鈕以 Edge 無頭模式轉出 report.pdf 與 debate.pdf 存入該 run 資料夾
+完成。報告頁「匯出 PDF」按鈕經 POST /run/id/export-pdf 以可注入轉換器（預設 Edge 無頭＋wslpath）產出 report.pdf 與 debate.pdf；只新增 .pdf、已存在即拒絕、失敗零殘留（per-run 鎖＋no-clobber＋inode 回滾三層防禦）；真實 Edge 於拋棄式 Data Root 實測通過、run_verifier 匯出後仍 VERIFIED。負責票：06。證據：tickets/06。</pre>
+    </section>
+
+    <section id="Ticket成果">
+      <h2>Ticket 成果與 Review</h2>
+      <pre class="動態文字" data-dynamic-text="Ticket成果內容">01 席位方向套組單一權威：roster 升 2.0.0（七席×三套 profiles）、fail-closed 載入器、兩個離線 renderer 標籤改走單一讀取口、prompt 依市場換 focus；Review 兩輪＋D-1 回修一輪（Reviewer B 抓到載入器五個結構驗證洞、T08 發現退化路徑缺 asset_class 欄位，均修復關閉）。A 通過／B 通過。
+
+02 提供者對調：onchain→claude、news→codex，維持 3／3／1；四份程式常數與 roster 一致性測試釘住；修正輪補齊票面漏列的 claude_adapter session 表（否則正式 run 丟失一席）與五個測試檔、三份比賽操作文件（裁定四）。A 通過／B 通過（雙雙一輪過）。
+
+03 全站設計系統核心：設計 token 單一來源、單一樣式表、保護區僅換外衣（DOM 逐位元不變）、對比度由 token 計算；設計參考 skill 已 clone 並記 SHA。Review 兩輪（A 裁定保護區立場色活化超出 R2、已修回改版前呈現）。A 通過／B 通過。
+
+04 歷史與命中率合併頁：/history 單頁（統計卡＋列表帶命中結果＋手動記錄表單、會寫檔頁尾）、/stats 302、枚舉全繁中；Review 三輪（B 抓到索引三讀非一致快照，以版本戳夾讀＋重試＋誠實降級修正）。A 通過／B 通過。
+
+05 標的選單發問：資產類別選單＋每類別標的框＋格式提示＋去重建議清單；launcher 實收選單參數、webapp 零文字解析；開放題標的必填為票面字面取捨（裁定七，經 Reviewer A 確認與 Spec 相容）。A 通過／B 通過。
+
+06 離線報告 PDF 手動匯出：可注入轉換器（預設 Edge 無頭）、per-run 鎖＋os.link no-clobber＋inode 回滾三層防禦；真實 Edge 實測通過並修掉一個會劫持使用者瀏覽器 session 的真 bug。Review 三輪（雙 Reviewer 並行探針各自逼出 TOCTOU 根因）。A 通過／B 通過。
+
+07 關閉伺服器與入口動線：POST /shutdown 先回應後優雅停機、scripts/ 承載啟停邏輯、兩個隱藏視窗捷徑、三個舊入口檔備份後刪除（裁定九）；Review 兩輪（B 抓到停機失敗二次回應與單引號路徑炸命令，均修復）。A 通過／B 通過。
+
+08 端到端驗收：A1–A5 二十一條逐條矩陣、兩組 fixture 端到端、34 條跨票回歸測試；發現並轉介 D-1（退回 01 修復）；Review 三輪（A 抓到 A5 掃描集合不完整、B 抓到 DOM 耦合與票數總和斷言漏洞，均修復關閉）。A 通過／B 通過。
+
+超出範圍事項：無未經記錄的擴張——十次 Coordinator 裁定（寫入所有權與最小範圍擴充）全部記錄於各票「執行與 Review 紀錄」。</pre>
+    </section>
+
+    <section id="實際驗收" data-evidence="browser-acceptance">
+      <h2>實際驗收與證據</h2>
+      <div class="驗收狀態" data-evidence="final-acceptance" data-result="通過">最終總驗收：通過</div>
+      <pre class="動態文字" data-dynamic-text="實際驗收內容">必跑指令（WSL Ubuntu-24.04，退出碼以腳本檔取得）：
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/tmp/t08-intercept python3 -m unittest discover -s tests
+最終結果：Ran 2556 tests，OK（skipped=1，為基準即存在的檔案系統大小寫條件跳過），exit 0。
+測試數由工作前基準 2200 增至 2556（+356，全為本工作包新增；每票結案時各跑一次全套，歷次皆綠）。
+T08 攔截器全程生效：39 次 codex CLI 呼叫全數被攔截，未消耗任何訂閱額度。
+
+原生瀏覽器驗收：八張票均為不適用。依據：平台無任何 Claude／Codex 原生瀏覽器工具（已於 2026-08-10 如實回報阻擋），由使用者本人於 2026-08-10 以本機瀏覽器親自實機操作（開啟捷徑、切換頁面、開啟市場報告）驗收，並於同日明示「結案」授權；輔以各票渲染後 HTML 存檔＋關鍵元素斷言、Ticket 07 的實機程序驗證與 Ticket 06 的真實 Edge 轉檔實測。
+
+Findings 關閉情況：阻擋 2、重要 9、建議 7，共 18 項，加上跨票缺陷 D-1——全部由提出者本人定向複驗後 closed（其中 1 項建議級經反證 withdrawn），零未關閉。</pre>
+      <div class="證據"><pre class="動態文字" data-dynamic-text="詳細證據">驗收證據目錄：docs/work/wp-20260809-125056-b3e957c6/acceptance/（23 檔）——a1-a5-matrix.md（二十一條逐條對照）、seat-label-comparison.md（席位標籤四方比對）、a5-grep.txt（32 值×12 頁）、contrast-table.txt（50 對實測數字）、full-suite.txt（最終全套輸出）、public-behaviour-to-tests.md（公開行為八項對照）、end-to-end-runs.md、rendered/（16 份渲染存檔）。
+各票最終 Snapshot（blob 雜湊）與基準樹雜湊逐一記錄於各票「執行與 Review 紀錄」；各票基準樹：f1ccf61d（T01，後經更正）、5c74fd8b（T02）、60f4e47c（T03）、24278938（T04）、674b21aa（T05）、23109528（T06）、d0df5fb9（T07）、6daa2e45（T08）。
+Ticket 07 刪除檔備份：D:\workstationD\hoya bit\backups\wp-b3e957c6-t07-entry-files-20260810\（三檔 SHA-256 對照於票面）。
+設計參考：taste-skill @ e988add2、ui-ux-pro-max-skill @ abb7f2fd（clone 於工作區，未進 Code Root）。
+Reviewer 配置：全程 reviewer_mode=both，Reviewer A＝spec 軸、Reviewer B＝standards 軸，皆為獨立 codex CLI 0.146.0 實例（gpt-5.6-sol／high），與 Developer（claude-opus-5）跨後端互審。</pre></div>
+    </section>
+
+    <section id="風險與回復">
+      <h2>未解風險與回復方式</h2>
+      <pre class="動態文字" data-dynamic-text="風險與回復內容">未解風險（均已記錄於票面、不阻擋交付；建議依序處理）：
+1. report_contract 未對 asset_class 做必填與值層驗證——D-1 類缺陷的根本防線，兩位 Reviewer 一致建議優先排入後續工作包。
+2. cli.py render-fixture 的紅字稽核路徑未帶市場（潛伏、今日無可見症狀；一行修法已記錄於 Ticket 01）。
+3. report_renderer.py 第 38 行死別名（零引用）；CATEGORY_LABELS 證據分類仍為幣圈語彙（非席名，台股報告會出現）；tracer 與 manifest 仍用通用 focus——三者皆屬核准範圍外的既有現況。
+4. 啟動捷徑以「埠有人監聽」判斷已在跑，其他程式占用 8765 埠時會誤判（已明文揭露於 scripts 註解）。
+5. 開放題自 webapp 發問需填標的（裁定七的票面字面取捨；CLI 不受影響）。
+6. 小型殘餘：live-tally／live-feed id 未匯出常數、webapp 無 PowerShell 自動化測試層、_red_outcome 參數數量。
+
+回復方式：本工作包全部變更均未 commit。整包或單票回復＝依票面記錄的基準樹雜湊，以 git show 基準樹:路徑 取回修改前內容逐檔還原（git 物件庫保有全部基準樹）；工作區根目錄被刪的三個入口檔可自 backups/wp-b3e957c6-t07-entry-files-20260810 原樣還原（SHA-256 已驗證）。
+回復後驗證：重跑全套測試（應回到還原點對應的綠燈基準）並比對該票驗收矩陣。
+觸發條件：任何一項未解風險實際發生、或使用者要放棄部分變更時。</pre>
+    </section>
+
+    <section id="使用者確認" data-user-checklist>
+      <h2>使用者逐項確認清單</h2>
+      <p id="確認進度" class="確認摘要" role="status" aria-live="polite"></p>
+      <div class="確認清單"><div class="確認項目"><input type="checkbox" id="R-001" data-requirement-id="R-001"><label for="R-001">R-001：頁面清單重整：即時辯論主頁、歷史與命中率合併頁、設定、run 詳情（功能保留、版面套新系統）、市場報告與完整辯論（內容不碰、右上角必可點）</label></div><div class="確認項目"><input type="checkbox" id="R-002" data-requirement-id="R-002"><label for="R-002">R-002：保護區功能凍結：動態聊天室、燈位、正方／反方／無法判斷票數的內容、位置、語意色不動，僅外衣可隨新設計系統統一</label></div><div class="確認項目"><input type="checkbox" id="R-003" data-requirement-id="R-003"><label for="R-003">R-003：全部網頁頁面套同一套新設計系統：語意色保留只校準色階、系統字型堆疊、零外部資源</label></div><div class="確認項目"><input type="checkbox" id="R-004" data-requirement-id="R-004"><label for="R-004">R-004：入口動線改造：刪除辯論室預覽.html 與開啟辯論室.bat、桌面捷徑隱藏啟動、頁面「關閉伺服器」按鈕與備援關閉捷徑</label></div><div class="確認項目"><input type="checkbox" id="R-005" data-requirement-id="R-005"><label for="R-005">R-005：七席換套：股票／幣圈／開放三套依資產類別自動切換名稱與方向，seat_id 與 output_dir 永不改，含分工細表與提供者對調</label></div><div class="確認項目"><input type="checkbox" id="R-006" data-requirement-id="R-006"><label for="R-006">R-006：標的選單發問：資產類別選單＋標的輸入框，接 T05 的 assets／asset_class 接縫，建議清單來自過往 run 標的</label></div><div class="確認項目"><input type="checkbox" id="R-007" data-requirement-id="R-007"><label for="R-007">R-007：全繁體中文：webapp 畫面不得出現英文資料原值，標籤從既有權威帶出</label></div><div class="確認項目"><input type="checkbox" id="R-008" data-requirement-id="R-008"><label for="R-008">R-008：PDF 手動匯出：報告頁按鈕以 Edge 無頭模式轉出 report.pdf 與 debate.pdf 存入該 run 資料夾</label></div></div>
+    </section>
+
+    <div id="design-assist">內建模板</div>
+  </main>
+  <script>
+    const 工作識別碼 = document.documentElement.dataset.workId;
+    const 儲存鍵 = `milktea-completion-checklist:${工作識別碼}`;
+    const 項目 = [...document.querySelectorAll("input[type='checkbox'][data-requirement-id]")];
+    let 已保存 = {};
+    try { 已保存 = JSON.parse(localStorage.getItem(儲存鍵) || "{}"); } catch (_) { 已保存 = {}; }
+    for (const 方框 of 項目) {
+      方框.checked = Boolean(已保存[方框.dataset.requirementId]);
+      方框.addEventListener("change", 更新確認);
+    }
+    function 更新確認() {
+      const 狀態 = Object.fromEntries(項目.map((方框) => [方框.dataset.requirementId, 方框.checked]));
+      try { localStorage.setItem(儲存鍵, JSON.stringify(狀態)); } catch (_) { /* 本機瀏覽器可能停用儲存 */ }
+      const 已確認 = 項目.filter((方框) => 方框.checked).length;
+      document.getElementById("確認進度").textContent = `已確認 ${已確認}／${項目.length} 項；此清單供使用者清點，不會改寫結案證據。`;
+    }
+    更新確認();
+  </script>
+</body>
+</html>

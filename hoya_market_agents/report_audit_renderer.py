@@ -1,8 +1,19 @@
 """Traditional-Chinese audit view of the shared debate room (Ticket #12).
 
 ``render_debate_html`` renders the full public debate record as a seven-seat
-group chat.  Its shared page tabs link to the live dashboard, market report and
-this audit view, with the current page marked for assistive technology.
+group chat.  Its shared page tabs are exactly the pages the run bundle carries
+— ``report.html`` and this audit view — with the current page marked for
+assistive technology.  Every tab is a relative link to a file that ships in the
+same run directory, which is the only kind of link a sealed offline bundle can
+honour.
+
+The tabs deliberately do not offer the live debate room.  That room is a served
+page with a different lifetime, so a bundle can neither carry it as a file nor
+reach it once archived; linking to it produced a tab that always 404'd, and
+pointing the tab at the server route instead would only trade a dead link for
+one that breaks whenever the server is not running.  Nothing is lost by its
+absence: the live room's content *is* the debate, and this page is that debate,
+transcribed verbatim.
 
 The renderer never authors, ranks or summarises a market judgement.  It shows
 the seats' own public messages in the exact order the run recorded them, plus
@@ -22,26 +33,37 @@ authority for machine-level cross-referencing.
 The output is one self-contained offline HTML document: inline styles only, no
 scripts and no runtime network dependency.  Evidence links are the only
 outbound URLs and only ``http``/``https`` ones ever become clickable.
+
+No colour is decided here either: the sheet is assembled by
+:func:`~hoya_market_agents.report_renderer.stylesheet` from
+:mod:`~hoya_market_agents.design_tokens`, so this page and the market report are
+painted from one table (Spec R-004).
 """
 
 import html
 from datetime import datetime, timedelta, timezone
 
+from . import design_tokens
 from .report_contract import is_safe_source_url
-from .live_dashboard import AGENT_PROFILES
+from .seats import SEAT_AVATARS, SEAT_IDS, seat_display_names, seat_identities
 from .report_renderer import (
     CONSENSUS_LABELS,
-    SEAT_LABELS,
     SOURCE_TIER_LABELS,
     STANCE_LABELS,
+    decorative_hairline,
     resolve_stance_labels,
+    stylesheet,
 )
 
 MISSING = "未提供"
 
 # 本模組單一寫入者（launcher）每個 run 只 render 一次；標籤在 render 開頭
-# 依該 run 的題型票面解析一次，之後所有 helper 共用。預設 market 詞彙。
+# 依該 run 的題型票面與資產類別解析一次，之後所有 helper 共用。
 _ACTIVE_STANCE_LABELS = dict(STANCE_LABELS)
+# 席位名稱依 run 的資產類別選套（ADR 0006），所以它不是模組常數：台股場的逐字稿
+# 不得印出幣圈席名。權威是 roster，本模組不自己拼任何一個名字。
+_ACTIVE_SEAT_LABELS = {}
+_ACTIVE_SEAT_CHAT_NAMES = {}
 
 
 def _activate_stance_labels(report):
@@ -57,19 +79,26 @@ def _activate_stance_labels(report):
         resolve_stance_labels(stances, report.get("assets") or (), provided)
     )
 
-# Reuse the live room's names and avatars so the same Agent is recognisable on
-# all three pages.
-SEAT_AVATARS = {seat_id: profile[2] for seat_id, profile in AGENT_PROFILES.items()}
-SEAT_CHAT_NAMES = {
-    seat_id: "{}（{}）".format(profile[0], profile[1])
-    for seat_id, profile in AGENT_PROFILES.items()
-}
+
+def _activate_seat_names(report):
+    """Resolve this run's seat names from the roster before any lookup."""
+    asset_class = report.get("asset_class")
+    _ACTIVE_SEAT_LABELS.clear()
+    _ACTIVE_SEAT_LABELS.update(seat_display_names(asset_class))
+    _ACTIVE_SEAT_CHAT_NAMES.clear()
+    _ACTIVE_SEAT_CHAT_NAMES.update(
+        {
+            seat_id: "{}（{}）".format(identity.display_name, identity.agent_number)
+            for seat_id, identity in seat_identities(asset_class).items()
+        }
+    )
+
 
 UNKNOWN_AVATAR = "❔"
 UNKNOWN_SEAT = "{}（無法對應的研究席）".format(MISSING)
 
 # Colour tone per seat so the chat stays readable without naming the seat id.
-_SEAT_TONES = {seat_id: index + 1 for index, seat_id in enumerate(SEAT_LABELS)}
+_SEAT_TONES = {seat_id: index + 1 for index, seat_id in enumerate(SEAT_IDS)}
 
 MESSAGE_KIND_LABELS = {
     "position": "初始立場",
@@ -111,6 +140,7 @@ def render_debate_html(report, sources):
     # 標籤解析必須在 fail-closed 驗證之後：結構不可用的輸入要走原本的
     # 拒絕路徑，不能先在這裡炸出 AttributeError。
     _activate_stance_labels(report)
+    _activate_seat_names(report)
     cards = {card["evidence_id"]: card for card in evidence}
 
     parts = [
@@ -120,14 +150,14 @@ def render_debate_html(report, sources):
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         "<title>完整辯論室 — Hoya Bit 可稽核市場研究</title>",
-        "<style>{}</style>".format(_CSS),
+        "<style>{}</style>".format(stylesheet(_CSS)),
         "</head>",
         "<body>",
         "<main>",
         '<header class="page-header">',
         '<div><p class="eyebrow">Hoya Bit 可稽核市場研究</p><h1>完整辯論室</h1></div>',
+        # 只列這份 bundle 真的帶著的頁面；理由見模組 docstring。
         '<nav class="page-tabs" aria-label="主要頁面">'
-        '<a href="live.html">即時辯論</a>'
         '<a href="report.html">市場報告</a>'
         '<a href="debate.html" aria-current="page">完整辯論</a></nav>',
         "</header>",
@@ -474,8 +504,8 @@ def _label(value, mapping, noun):
 
 def _seat_name(value):
     """Name a seat in Traditional Chinese, never exposing its internal id."""
-    if isinstance(value, str) and value in SEAT_CHAT_NAMES:
-        return SEAT_CHAT_NAMES[value]
+    if isinstance(value, str) and value in _ACTIVE_SEAT_CHAT_NAMES:
+        return _ACTIVE_SEAT_CHAT_NAMES[value]
     if value is None or (isinstance(value, str) and not value.strip()):
         return MISSING
     return UNKNOWN_SEAT
@@ -492,8 +522,8 @@ def _tone(value):
 
 
 def _category_label(value):
-    if isinstance(value, str) and value in SEAT_LABELS:
-        return SEAT_LABELS[value]
+    if isinstance(value, str) and value in _ACTIVE_SEAT_LABELS:
+        return _ACTIVE_SEAT_LABELS[value]
     return _text(value)
 
 
@@ -548,67 +578,125 @@ def _e(value):
     return html.escape("" if value is None else str(value), quote=True)
 
 
-_CSS = (
-    ":root{--ink:#172033;--muted:#5d687b;--line:#d8dee9;--paper:#fff;--wash:#f3f6fb;"
-    "--brand:#173b70;--brand-2:#2d5f9d;--brand-soft:#eaf1fb;--warn:#8a3b00;--tone:#173b70}"
-    "*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);"
-    "font-family:system-ui,'Noto Sans TC',sans-serif;line-height:1.6}"
-    "main{max-width:76rem;margin:auto;padding:1.5rem}"
-    ".page-header{display:flex;justify-content:space-between;align-items:center;gap:1rem;margin:0 0 1rem}"
-    ".eyebrow{margin:0;color:var(--brand);font-size:.78rem;font-weight:800;letter-spacing:.08em}"
-    "h1{font-size:2rem;margin:.1rem 0}h2{margin:.2rem 0 .8rem}"
-    "h3{font-size:1rem;margin:0}h4{font-size:.8rem;margin:.55rem 0 .1rem;color:var(--muted)}"
-    ".page-tabs{display:flex;gap:.25rem;padding:.3rem;background:var(--brand-soft);border:1px solid var(--line);"
-    "border-radius:.65rem}.page-tabs a{color:var(--brand);text-decoration:none;font-weight:800;"
-    "padding:.55rem .75rem;border-radius:.4rem;white-space:nowrap}.page-tabs a[aria-current=page]{"
-    "background:var(--brand);color:#fff}"
-    "a:focus-visible,summary:focus-visible{outline:3px solid #f0b429;outline-offset:2px}"
-    "section,.page-footer{background:var(--paper);border:1px solid var(--line);border-radius:.7rem;"
-    "padding:1.1rem;margin:0 0 1rem}"
-    ".run-summary{background:linear-gradient(120deg,var(--brand),var(--brand-2));color:#fff;box-shadow:0 8px 24px rgba(23,59,112,.18)}"
-    ".run-summary .eyebrow{color:#cbdcf2}.summary-main{display:flex;align-items:center;justify-content:space-between;gap:1.5rem}"
-    ".summary-main h2{font-size:1.65rem;margin:.1rem 0}.summary-tally{margin:.2rem 0;font-weight:750;opacity:.9}"
-    ".primary-action{flex:none;background:#fff;color:var(--brand);font-weight:850;text-decoration:none;padding:.75rem 1rem;border-radius:.55rem}"
-    ".summary-meta{grid-template-columns:7rem 1fr;max-width:36rem;margin-top:1rem;padding-top:.8rem;border-top:1px solid rgba(255,255,255,.2)}"
-    ".summary-meta dt{color:#dbe8f8}"
-    "dl{display:grid;grid-template-columns:10rem 1fr;gap:.4rem 1rem;margin:0}"
-    "dt{font-weight:750;color:var(--muted)}dd{margin:0}"
-    ".chat{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:.7rem}"
-    ".round-mark{display:flex;align-items:center;gap:.6rem;color:var(--muted);font-size:.8rem;"
-    "font-weight:800;margin:.35rem 0}"
-    ".round-mark span{background:var(--brand-soft);border-radius:1rem;padding:.15rem .7rem}"
-    ".turn{display:flex;gap:.6rem;align-items:flex-start}"
-    ".avatar{flex:none;width:2.6rem;height:2.6rem;border-radius:50%;display:grid;place-items:center;"
-    "font-size:1.4rem;background:var(--brand-soft);border:1px solid var(--line)}"
-    ".bubble{flex:1;min-width:0;background:#fbfcfe;border:1px solid var(--line);"
-    "border-left:4px solid var(--tone);border-radius:.25rem .8rem .8rem .8rem;padding:.8rem .9rem}"
-    ".tone-1{--tone:#1f6f4a}.tone-2{--tone:#8a5a13}.tone-3{--tone:#2f5ea8}.tone-4{--tone:#7357b4}"
-    ".tone-5{--tone:#0f7488}.tone-6{--tone:#a3486b}.tone-7{--tone:#8a3b00}.tone-0{--tone:#5d687b}"
-    ".speaker{font-size:1.02rem;font-weight:850;color:var(--tone)}"
-    ".meta{display:flex;flex-wrap:wrap;gap:.4rem .7rem;margin:.2rem 0 .1rem;font-size:.82rem;color:var(--muted)}"
-    ".meta .clock{font-variant-numeric:tabular-nums}"
-    ".meta .stance{font-weight:800;color:var(--ink)}"
-    ".says p,.change,.change-note,.cites{margin:.15rem 0}"
-    ".says p{white-space:pre-wrap}"
-    ".change{font-size:.88rem}.change.changed{border:1px dashed var(--tone);border-radius:.45rem;"
-    "padding:.4rem .6rem;margin:.5rem 0;background:#fff}"
-    ".change-note{font-size:.85rem;color:var(--muted)}"
-    ".cites{font-size:.85rem;margin-top:.5rem}"
-    ".evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(20rem,1fr));gap:.8rem;"
-    "align-items:start}"
-    ".evidence-card{border:1px solid var(--line);border-radius:.55rem;background:#fbfcfe}"
-    ".evidence-card summary{cursor:pointer;padding:.75rem .9rem;display:flex;flex-wrap:wrap;gap:.35rem .6rem;"
-    "align-items:center;font-weight:750;border-radius:.55rem}"
-    ".evidence-card .hint{color:var(--muted);font-size:.78rem;font-weight:600}"
-    ".evidence-body{padding:0 .9rem .9rem}"
-    ".evidence-meta{grid-template-columns:7rem 1fr;font-size:.85rem}"
-    ".tier{font-size:.75rem;font-weight:750;color:var(--brand)}"
-    ".unsafe-url,.unknown{color:var(--warn);font-weight:700;overflow-wrap:anywhere}"
-    "a{color:#064f9e;overflow-wrap:anywhere}code{font-weight:700}"
-    "@media(max-width:60rem){.page-header,.summary-main{flex-direction:column;align-items:flex-start}"
-    ".page-tabs{width:100%}.page-tabs a{flex:1;text-align:center}dl,.evidence-meta{grid-template-columns:1fr}}"
-    "@media print{body{background:#fff}main{max-width:none;padding:0}.page-tabs{display:none}"
-    ".evidence-card .hint{display:none}"
-    ".run-summary{background:#fff;color:#000}.run-summary .eyebrow,.summary-meta dt{color:#000}.primary-action{display:none}"
-    "section,.turn,.evidence-card{break-inside:avoid;box-shadow:none}a{color:#000}}"
-)
+def _tone_rules():
+    """One stripe colour per seat, cycled over the four decorative hues.
+
+    The stripe is what lets a reader see at a glance that two bubbles are the
+    same speaker; it has never been the only signal, because every bubble is
+    signed with the seat's name in words. So seven seats over four hues — two
+    seats sharing a stripe — loses nothing a reader was relying on, and it keeps
+    the page inside the decorative vocabulary R-004 approved instead of inventing
+    three more colours of its own.
+
+    Generated from :data:`~hoya_market_agents.design_tokens.DECOR_TOKENS` and
+    :data:`~hoya_market_agents.seats.SEAT_IDS`, so an eighth seat gets a stripe
+    and a fifth hue joins the rotation without either being written out here.
+    """
+    hues = design_tokens.DECOR_TOKENS
+    return "".join(
+        ".tone-{}{{--tone:var(--{});}}".format(
+            number, hues[(number - 1) % len(hues)].replace("_", "-")
+        )
+        for number in range(1, len(SEAT_IDS) + 1)
+    )
+
+
+# The debate room's rules. Same reading as the market report: white cards on the
+# grey canvas, the frosted panel for the one summary at the top, hairlines and
+# space instead of fills.
+#
+# **A decorative hue is a stripe, never a word.** ``DECOR_INK`` guarantees that
+# text placed *on* one of the four fills can be read; a brand yellow used as text
+# on white is 1.7:1 and is not AA at any size. So ``--tone`` reaches a border and
+# an avatar's ring, and the speaker's name is plain ``--text``.
+_CSS = """
+*{box-sizing:border-box;}
+body{margin:0;background:var(--page);color:var(--text);font-family:var(--font-sans);
+ font-size:var(--size-md);line-height:var(--line-base);}
+main{max-width:var(--shell);margin:auto;padding:var(--space-6);}
+h1,h2,h3,h4{line-height:var(--line-tight);}
+h1{font-size:var(--size-xl);margin:var(--space-1) 0;}
+h2{margin:var(--space-1) 0 var(--space-4);font-size:var(--size-lg);}
+h3{margin:0;font-size:var(--size-md);}
+h4{margin:var(--space-3) 0 var(--space-1);color:var(--muted);font-size:var(--size-xs);}
+a{color:var(--link);overflow-wrap:anywhere;}
+code{font-family:var(--font-mono);font-size:var(--size-sm);}
+a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px;}
+.page-header{display:flex;justify-content:space-between;align-items:center;
+ gap:var(--space-5);margin:0 0 var(--space-5);}
+.eyebrow{margin:0;color:var(--muted);font-size:var(--size-2xs);font-weight:700;
+ letter-spacing:.08em;text-transform:uppercase;}
+.page-tabs{display:flex;gap:var(--space-1);padding:var(--space-1);
+ background-color:var(--glass-surface);border:1px solid var(--border);
+ border-radius:var(--radius-pill);
+ -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));}
+.page-tabs a{color:var(--link);text-decoration:none;font-weight:700;
+ padding:var(--space-3) var(--space-4);border-radius:var(--radius-pill);white-space:nowrap;}
+.page-tabs a[aria-current=page]{background:var(--accent);color:var(--accent-text);}
+section,.page-footer{background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-lg);padding:var(--space-6);margin:0 0 var(--space-5);}
+.run-summary{padding-top:var(--space-7);background-color:var(--glass-surface);
+ -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));}
+.run-summary .eyebrow{color:var(--accent);}
+.summary-main{display:flex;align-items:center;justify-content:space-between;
+ gap:var(--space-6);}
+.summary-main h2{margin:var(--space-1) 0;font-size:var(--size-xl);}
+.summary-tally{margin:var(--space-1) 0;color:var(--muted);font-weight:700;}
+.primary-action{flex:none;background:var(--accent);color:var(--accent-text);
+ font-weight:700;text-decoration:none;padding:var(--space-4) var(--space-5);
+ border-radius:var(--radius-md);}
+.summary-meta{grid-template-columns:7rem 1fr;max-width:36rem;
+ margin-top:var(--space-5);padding-top:var(--space-4);
+ border-top:1px solid var(--border);}
+dl{display:grid;grid-template-columns:10rem 1fr;gap:var(--space-2) var(--space-5);margin:0;}
+dt{font-weight:700;color:var(--muted);}
+dd{margin:0;}
+.chat{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;
+ gap:var(--space-4);}
+.round-mark{display:flex;align-items:center;gap:var(--space-3);color:var(--muted);
+ font-size:var(--size-xs);font-weight:700;margin:var(--space-2) 0;}
+.round-mark span{background:var(--page);border:1px solid var(--border);
+ border-radius:var(--radius-pill);padding:var(--space-1) var(--space-4);}
+.turn{display:flex;gap:var(--space-3);align-items:flex-start;--tone:var(--border);}
+.avatar{flex:none;width:2.6rem;height:2.6rem;border-radius:50%;display:grid;
+ place-items:center;font-size:var(--size-lg);background:var(--page);
+ border:1px solid var(--tone);}
+.bubble{flex:1;min-width:0;background:var(--surface);border:1px solid var(--border);
+ border-left:4px solid var(--tone);padding:var(--space-4) var(--space-5);
+ border-radius:var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg);}
+.speaker{color:var(--text);font-size:var(--size-md);font-weight:700;}
+.meta{display:flex;flex-wrap:wrap;gap:var(--space-1) var(--space-4);
+ margin:var(--space-1) 0;font-size:var(--size-xs);color:var(--muted);}
+.meta .clock{font-variant-numeric:tabular-nums;}
+.meta .stance{font-weight:700;color:var(--text);}
+.says p,.change,.change-note,.cites{margin:var(--space-1) 0;}
+.says p{white-space:pre-wrap;}
+.change{font-size:var(--size-sm);}
+.change.changed{border:1px dashed var(--tone);border-radius:var(--radius-sm);
+ padding:var(--space-2) var(--space-3);margin:var(--space-3) 0;background:var(--page);}
+.change-note{font-size:var(--size-sm);color:var(--muted);}
+.cites{font-size:var(--size-sm);margin-top:var(--space-3);}
+.evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(20rem,1fr));
+ gap:var(--space-4);align-items:start;}
+.evidence-card{background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-md);}
+.evidence-card summary{cursor:pointer;padding:var(--space-4) var(--space-5);
+ display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-3);align-items:center;
+ font-weight:700;border-radius:var(--radius-md);}
+.evidence-card .hint{color:var(--muted);font-size:var(--size-2xs);font-weight:400;}
+.evidence-body{padding:0 var(--space-5) var(--space-5);}
+.evidence-meta{grid-template-columns:7rem 1fr;font-size:var(--size-sm);}
+.tier{color:var(--accent);font-size:var(--size-2xs);font-weight:700;}
+.unsafe-url,.unknown{color:var(--danger);font-weight:700;overflow-wrap:anywhere;}
+@media(max-width:60rem){.page-header,.summary-main{flex-direction:column;
+ align-items:flex-start;}
+ .page-tabs{width:100%;}
+ .page-tabs a{flex:1;text-align:center;}
+ dl,.evidence-meta{grid-template-columns:1fr;}}
+@media print{body{background:var(--surface);}
+ main{max-width:none;padding:0;}
+ .page-tabs,.primary-action{display:none;}
+ .evidence-card .hint{display:none;}
+ section,.turn,.evidence-card{break-inside:avoid;}
+ a{color:var(--text);}}
+""" + decorative_hairline(".run-summary") + _tone_rules()

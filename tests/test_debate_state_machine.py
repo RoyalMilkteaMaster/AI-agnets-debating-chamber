@@ -3,12 +3,11 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+from hoya_market_agents.debate_rules import debate_rules
 from hoya_market_agents.debate_state_machine import (
-    DEBATE_START_MS,
-    FINAL_ROUND_END_MS,
-    FORCE_STOP_MS,
     CoreOverrideError,
     DebateError,
     DebateLifecycleError,
@@ -27,6 +26,14 @@ from hoya_market_agents.run_store import RunStore
 from hoya_market_agents.seats import SEAT_IDS
 from tests.fakes import FixedClock
 
+# 取值來源改成 config/debate_rules.json 的載入器；斷言值刻意不動。
+RULES = debate_rules()
+DEBATE_START_MS = RULES.debate_start_ms
+CHALLENGE_DEADLINE_MS = RULES.challenge_deadline_ms()
+FINAL_ROUND_END_MS = RULES.final_round_end_ms
+FORCE_STOP_MS = RULES.force_stop_ms
+BLIND_PASS_VOTES = RULES.unanimous_blind_pass_votes
+
 
 RUN_ID = "20260801T073000Z-btc-debate"
 
@@ -34,7 +41,13 @@ RUN_ID = "20260801T073000Z-btc-debate"
 class DebateHarness:
     """Small deterministic fixture shared with the threshold tests."""
 
-    def __init__(self, test_case, question_type="single_asset_market_state", run_id=RUN_ID):
+    def __init__(
+        self,
+        test_case,
+        question_type="single_asset_market_state",
+        run_id=RUN_ID,
+        rules=None,
+    ):
         self.test_case = test_case
         self.temp = tempfile.TemporaryDirectory()
         test_case.addCleanup(self.temp.cleanup)
@@ -61,6 +74,7 @@ class DebateHarness:
             evidence_records=self.evidence,
             evidence_snapshot_sha256=self.snapshot_sha,
             start_monotonic_ms=0,
+            rules=rules,
         )
 
     def advance_to(self, elapsed_ms):
@@ -92,11 +106,20 @@ class DebateHarness:
                 )
             )
 
+    def speaking_seats(self, stances):
+        """The seats this scenario gave a stance to; a shorter list means fewer.
+
+        Ticket 03 之後「七席全部公開開場」本身就是盲投直過的觸發條件，所以要
+        測辯論輪的房間必須說得出「只有前 n 席發言」——否則場景在第七則開場那
+        一刻就結束了。
+        """
+        return list(SEAT_IDS)[: len(stances)]
+
     def challenges_and_responses(self, stances):
         challenges, incoming = self.challenge_plan(stances)
         for challenge in challenges:
             self.machine.relay(challenge)
-        for index, seat_id in enumerate(SEAT_IDS):
+        for index, seat_id in enumerate(self.speaking_seats(stances)):
             challenge = incoming[seat_id][0]
             self.machine.relay(
                 self.message(
@@ -113,12 +136,13 @@ class DebateHarness:
         """Pair opposing seats, or rotate the roster when the room agrees."""
         if len(set(stances)) == 1:
             return self.rotation_plan(stances)
+        seats = self.speaking_seats(stances)
         challenges = []
-        incoming = {seat_id: [] for seat_id in SEAT_IDS}
-        for index, seat_id in enumerate(SEAT_IDS):
+        incoming = {seat_id: [] for seat_id in seats}
+        for index, seat_id in enumerate(seats):
             target_index = next(
                 other
-                for other in range(len(SEAT_IDS))
+                for other in range(len(seats))
                 if other != index and stances[other] != stances[index]
             )
             target = SEAT_IDS[target_index]
@@ -132,12 +156,12 @@ class DebateHarness:
             )
             challenges.append(challenge)
             incoming[target].append(challenge)
-        for target_index, target in enumerate(SEAT_IDS):
+        for target_index, target in enumerate(seats):
             if incoming[target]:
                 continue
             author_index = next(
                 other
-                for other in range(len(SEAT_IDS))
+                for other in range(len(seats))
                 if other != target_index and stances[other] != stances[target_index]
             )
             author = SEAT_IDS[author_index]
@@ -155,10 +179,11 @@ class DebateHarness:
 
     def rotation_plan(self, stances):
         """The devil's-advocate round: each seat challenges the next in roster order."""
+        seats = self.speaking_seats(stances)
         challenges = []
-        incoming = {seat_id: [] for seat_id in SEAT_IDS}
-        for index, seat_id in enumerate(SEAT_IDS):
-            target = SEAT_IDS[(index + 1) % len(SEAT_IDS)]
+        incoming = {seat_id: [] for seat_id in seats}
+        for index, seat_id in enumerate(seats):
+            target = seats[(index + 1) % len(seats)]
             challenge = self.message(
                 seat_id,
                 "challenge",
@@ -218,7 +243,7 @@ class DebateHarness:
         ]
         challenges, incoming = self.challenge_plan(stances)
         messages.extend(challenges)
-        for index, seat_id in enumerate(SEAT_IDS):
+        for index, seat_id in enumerate(self.speaking_seats(stances)):
             challenge = incoming[seat_id][0]
             messages.append(
                 self.message(
@@ -242,6 +267,194 @@ class DebateHarness:
                 )
             )
         return messages
+
+
+class UnanimousBlindPassTest(unittest.TestCase):
+    """Ticket 03：opening 盲投收齊後 7/7 同立場即停止，開場票就是最終票。
+
+    這一輪席位互不可見（driver 的 opening 波傳空 transcript），所以七席各自
+    獨立得出同一個結論就是本系統能拿到的最強共識；architecture §11.3 因此讓它
+    取代 §5.4「即使全票仍須一輪反方挑戰」。門檻與時點都來自
+    ``config/debate_rules.json``，不是程式裡的字面值。
+    """
+
+    def test_seven_agreeing_blind_openings_stop_the_debate_at_once(self):
+        harness = DebateHarness(self)
+
+        harness.positions(["bullish"] * 7)
+
+        summary = harness.machine.summary()
+        self.assertTrue(harness.machine.stopped)
+        self.assertEqual("unanimous_blind_pass", harness.machine.stop_reason)
+        self.assertEqual("consensus", summary["consensus_status"])
+        self.assertEqual("bullish", summary["adopted_stance"])
+        self.assertEqual(7, summary["valid_vote_count"])
+        self.assertEqual(7, summary["threshold_required"])
+        self.assertEqual({"bullish": 7, "bearish": 0, "neutral": 0}, summary["tally"])
+        self.assertEqual([], summary["dissent"])
+        self.assertTrue(summary["market_conclusion_allowed"])
+        self.assertFalse(summary["red_no_conclusion"])
+        # 直過就是沒有挑戰輪；votes.json 必須照實說，不得謊報已完成質詢。
+        self.assertFalse(summary["challenge_completed"])
+
+    def test_the_blind_openings_become_the_seven_final_votes(self):
+        # 直過＝開場即定案：每一席的最終票就是它自己那則開場原文，逐欄相等。
+        harness = DebateHarness(self)
+
+        harness.positions(["bullish"] * 7)
+
+        for row in harness.machine.vote_table():
+            with self.subTest(seat_id=row["seat_id"]):
+                self.assertEqual("valid", row["state"])
+                self.assertEqual("bullish", row["initial_stance"])
+                self.assertEqual("bullish", row["final_stance"])
+                self.assertEqual(
+                    row["initial_public_reason"], row["final_public_reason"]
+                )
+                self.assertEqual(
+                    row["initial_evidence_ids"], row["final_evidence_ids"]
+                )
+                self.assertFalse(row["stance_changed"])
+                self.assertIsNone(row["stance_change_reason"])
+                # 沒有人改票，vote_changes 就必須是空的；也只講過一句話。
+                self.assertEqual([], row["vote_changes"])
+                self.assertEqual(
+                    ["{}-position".format(row["seat_id"])], row["message_ids"]
+                )
+
+    def test_the_persisted_record_holds_only_the_seven_openings(self):
+        harness = DebateHarness(self)
+
+        harness.positions(["bullish"] * 7)
+        summary = harness.machine.persist()
+
+        debate = [
+            json.loads(line)
+            for line in (harness.run.path / "debate.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        seat_messages = [
+            entry for entry in debate if entry["event"] == "seat_message"
+        ]
+        self.assertEqual({"position"}, {entry["kind"] for entry in seat_messages})
+        self.assertEqual(len(SEAT_IDS), len(seat_messages))
+        self.assertEqual(
+            set(SEAT_IDS), {entry["seat_id"] for entry in seat_messages}
+        )
+        votes = json.loads(
+            (harness.run.path / "votes.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(summary, votes)
+        self.assertEqual("unanimous_blind_pass", votes["stop_reason"])
+        self.assertTrue(harness.machine.verify_public_history())
+
+    def test_a_message_arriving_after_a_blind_pass_is_rejected_as_late(self):
+        harness = DebateHarness(self)
+        harness.positions(["bullish"] * 7)
+
+        with self.assertRaises(LateMessageError):
+            harness.machine.relay(
+                harness.message(
+                    SEAT_IDS[0],
+                    "challenge",
+                    "after-blind-pass",
+                    stance="bullish",
+                    target_seat_id=SEAT_IDS[1],
+                    target_claim="{}-position".format(SEAT_IDS[1]),
+                )
+            )
+
+    def test_a_six_one_blind_opening_keeps_the_ordinary_debate_rules(self):
+        """驗收條件二在狀態機這一層：6/1 盲投照常進辯論，行為與現制一致。"""
+        harness = DebateHarness(self)
+        stances = ["bullish"] * 6 + ["bearish"]
+
+        harness.positions(stances)
+
+        self.assertFalse(harness.machine.stopped)
+        self.assertIsNone(harness.machine.stop_reason)
+        self.assertEqual(0, len(harness.machine.valid_votes()))
+
+        harness.challenges_and_responses(stances)
+        harness.finals(stances, count=6)
+
+        self.assertEqual("consensus_6_votes", harness.machine.stop_reason)
+        self.assertEqual(6, harness.machine.summary()["threshold_required"])
+
+    def test_a_room_still_missing_one_opening_does_not_pass_blind(self):
+        # 「全席發布後」是硬條件：六席一致但第七席沒交卷，不算盲投直過。
+        harness = DebateHarness(self)
+
+        harness.positions(["bullish"] * 6)
+
+        self.assertEqual({"bullish"}, harness.machine.opening_stances())
+        self.assertFalse(harness.machine.stopped)
+
+    def test_the_first_round_wall_is_the_last_instant_a_blind_pass_may_fire(self):
+        # 時點來自設定檔的第一輪牆。牆上仍算開場階段，牆後就是辯論場了。
+        on_time = DebateHarness(self, run_id="{}-on-the-wall".format(RUN_ID))
+        on_time.advance_to(CHALLENGE_DEADLINE_MS)
+        on_time.positions(["bullish"] * 7)
+
+        self.assertEqual("unanimous_blind_pass", on_time.machine.stop_reason)
+        self.assertEqual(CHALLENGE_DEADLINE_MS, on_time.machine.stop_elapsed_ms)
+
+        late = DebateHarness(self, run_id="{}-past-the-wall".format(RUN_ID))
+        late.advance_to(CHALLENGE_DEADLINE_MS + 1)
+        late.positions(["bullish"] * 7)
+
+        self.assertFalse(late.machine.stopped)
+        self.assertIsNone(late.machine.stop_reason)
+
+    def test_a_room_that_already_debated_can_no_longer_pass_blind(self):
+        """盲的定義：只要有人講過開場以外的話，這一場就不再是盲投。"""
+        harness = DebateHarness(self)
+        harness.positions(["bullish"] * 6)
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[0],
+                "challenge",
+                "scrutiny",
+                stance="bullish",
+                target_seat_id=SEAT_IDS[1],
+                target_claim="{}-position".format(SEAT_IDS[1]),
+            )
+        )
+        self.assertTrue(harness.machine.debate_rounds_started)
+
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[6], "position", "position", stance="bullish", round=0
+            )
+        )
+
+        # 七席開場全數就位、而且全部同立場——唯一擋下直過的就是那則挑戰。
+        self.assertEqual(
+            {"bullish": 7, "bearish": 0, "neutral": 0},
+            harness.machine.opening_tally(),
+        )
+        self.assertFalse(harness.machine.stopped)
+
+    def test_the_threshold_comes_from_the_configuration_not_the_seat_count(self):
+        # 門檻是設定值：填 6 就代表 6/1 的開場也直過，程式不得寫死 len(SEAT_IDS)。
+        rules = replace(debate_rules(), unanimous_blind_pass_votes=6)
+        harness = DebateHarness(self, rules=rules)
+
+        harness.positions(["bullish"] * 6 + ["bearish"])
+
+        summary = harness.machine.summary()
+        self.assertEqual("unanimous_blind_pass", harness.machine.stop_reason)
+        self.assertEqual("bullish", summary["adopted_stance"])
+        self.assertEqual(6, summary["threshold_required"])
+        self.assertEqual({"bullish": 6, "bearish": 1, "neutral": 0}, summary["tally"])
+        # 反對的那一席仍然是有效票，也仍然被記成異議，不會被抹掉。
+        self.assertEqual(7, summary["valid_vote_count"])
+        self.assertEqual(
+            [{"seat_id": SEAT_IDS[6], "stance": "bearish",
+              "public_reason": "public reason from counter-evidence"}],
+            summary["dissent"],
+        )
 
 
 class DebateStateMachineTest(unittest.TestCase):
@@ -575,9 +788,14 @@ class DebateStateMachineTest(unittest.TestCase):
         self.assertTrue(harness.machine.verify_public_history())
 
     def test_a_unanimous_room_may_scrutinise_any_other_seat(self):
-        """Ticket R8: 全場一致是最強共識，不是流局；第一輪改判證據品質。"""
+        """Ticket R8: 全場一致是最強共識，不是流局；第一輪改判證據品質。
+
+        Ticket 03 之後，七席全部發布開場會先觸發盲投直過，所以魔鬼代言人輪的
+        場景是「還有一席沒發言」的一致房間——那正是 6 票以下維持原規則的情形。
+        """
         harness = DebateHarness(self, "two_asset_comparison")
-        harness.positions(["asset_a_stronger"] * 7)
+        harness.positions(["asset_a_stronger"] * 6)
+        self.assertFalse(harness.machine.stopped)
 
         entry = harness.machine.relay(
             harness.message(
@@ -594,9 +812,12 @@ class DebateStateMachineTest(unittest.TestCase):
 
     def test_a_unanimous_room_still_refuses_a_seat_challenging_itself(self):
         harness = DebateHarness(self, "two_asset_comparison")
-        harness.positions(["asset_a_stronger"] * 7)
+        harness.positions(["asset_a_stronger"] * 6)
+        self.assertFalse(harness.machine.stopped)
 
-        with self.assertRaises(DebateError):
+        # 指名錯誤原因：LateMessageError 也是 DebateError，只斷言基底類別的話，
+        # 「房間早就停了」會冒充成「自我挑戰被擋下」。
+        with self.assertRaisesRegex(DebateError, "第一輪挑戰必須針對相反立場"):
             harness.machine.relay(
                 harness.message(
                     SEAT_IDS[0],
@@ -637,9 +858,10 @@ class DebateStateMachineTest(unittest.TestCase):
         self.assertEqual("opposing", entry["challenge_mode"])
 
     def test_a_unanimous_room_completes_its_round_and_reaches_six_votes(self):
+        # 六席一致、第七席沒發言：直過不成立（未全席發布），照常跑挑戰輪。
         harness = DebateHarness(self, "two_asset_comparison")
 
-        harness.complete_round(["asset_a_stronger"] * 7, count=6)
+        harness.complete_round(["asset_a_stronger"] * 6, count=6)
 
         self.assertEqual("consensus_6_votes", harness.machine.stop_reason)
         self.assertEqual(6, len(harness.machine.valid_votes()))

@@ -6,6 +6,8 @@ must never be presented as current market research.
 
 from copy import deepcopy
 
+from .question import ASSET_CLASS_CRYPTO
+from .report_contract import validate_market_report
 from .seats import SEAT_IDS
 
 FIXTURE_CASES = (
@@ -29,15 +31,71 @@ _CATEGORIES = (
 )
 
 
-def load_fixture(case):
-    """Return an independent copy of one named fixture."""
+def load_fixture(case, asset_class=ASSET_CLASS_CRYPTO):
+    """Return an independent copy of one named fixture.
+
+    ``asset_class`` is the market the fixture run belongs to. It reaches the
+    report contract unchanged, which is what lets a renderer test prove the same
+    ballot is shown under the seat names that market actually uses (ADR 0006).
+    The default keeps the historical fixture a crypto run.
+    """
     if case not in FIXTURE_CASES:
         raise KeyError("unknown report fixture: {}".format(case))
-    fixture = _fixture(case)
+    fixture = _fixture(case, asset_class)
     return deepcopy(fixture)
 
 
-def _fixture(case):
+def build_fixture(*args, **kwargs):
+    """Build one fixture from a ballot and **prove** it passes the report contract.
+
+    七席的立場（``None`` 代表沒投到票）決定 tally、有效票數、逐席報告列與證據
+    引用，全部由同一份資料推導；接著把成品送進 :func:`validate_market_report`，
+    通過才回傳。所以這個保證不是「作者相信它一致」，而是每次呼叫都實際驗過的：
+    **回傳值必然通過完整報告契約，矛盾的參數在呼叫點就拋 ReportContractError。**
+
+    有這個入口，測試就不必自己去改 ``sources.votes`` 的一半再假裝那是合法報告
+    ——半套修改做出來的 fixture 走不到它宣稱要測的那條路徑。
+
+    保證的**邊界**（誠實標示，不要讀成更多）：它保證的是「通過報告契約」，不是
+    「票面在語意上合理」。契約比對的是報告與正式票數是否一致，不判斷議場該不
+    該採納那個立場，所以例如「六票偏多、卻宣告採納偏空」仍然建得出來——那一層
+    由 ``run_verifier`` 的停止語意攔下，屬縱深防禦。要刻意造壞掉的形狀請改用
+    :func:`build_forged_fixture`，讓「我要合法的」與「我要壞掉的」在呼叫點就能
+    一眼分辨。
+    """
+    fixture = build_forged_fixture(*args, **kwargs)
+    validate_market_report(fixture["report"], fixture["sources"])
+    return fixture
+
+
+def build_forged_fixture(
+    stances,
+    consensus_status,
+    adopted_stance,
+    confidence,
+    market_status="固定測試市場狀態，僅用於驗證契約。",
+    judgement="固定測試判斷，僅用於驗證契約。",
+    process_failure=False,
+    asset_class=ASSET_CLASS_CRYPTO,
+):
+    """Same ballot → fixture, **without** the contract check.
+
+    只給「偽造形狀本身就是被測對象」的測試用——例如票面說未達共識卻同時填了採
+    納立場。名字要吵，這樣半套 bundle 不會再偽裝成合法報告混進來。
+    """
+    return _build_case(
+        stances=tuple(stances),
+        consensus_status=consensus_status,
+        adopted_stance=adopted_stance,
+        market_status=market_status,
+        judgement=judgement,
+        confidence=confidence,
+        process_failure=process_failure,
+        asset_class=asset_class,
+    )
+
+
+def _fixture(case, asset_class=ASSET_CLASS_CRYPTO):
     if case == "consensus-6-1":
         return _build_case(
             stances=("bullish",) * 6 + ("bearish",),
@@ -45,7 +103,8 @@ def _fixture(case):
             adopted_stance="bullish",
             market_status="短期偏多，但存在過熱風險",
             judgement="目前較適合描述為偏多但不穩定。",
-            confidence=("yellow_green", "🟡🟢", "六票共識且有多類獨立證據。"),
+            confidence=("green", "🟢", "六票採納，引用來源涵蓋多個獨立網域。"),
+            asset_class=asset_class,
         )
     if case == "no-consensus-3-3-1":
         return _build_case(
@@ -54,7 +113,8 @@ def _fixture(case):
             adopted_stance=None,
             market_status="高波動且方向不明",
             judgement="票數未達絕對門檻，因此目前無方向判斷。",
-            confidence=("orange", "🟠", "多方與空方票數相同，僅能保留分歧。"),
+            confidence=("red", "🔴", "多方與空方票數相同，沒有採納立場可報告共識強度。"),
+            asset_class=asset_class,
         )
     if case == "insufficient-votes-3":
         return _build_case(
@@ -65,6 +125,7 @@ def _fixture(case):
             judgement="少於四張有效票，未形成市場結論。",
             confidence=("red", "🔴", "只有三張有效票。"),
             process_failure=True,
+            asset_class=asset_class,
         )
     if case == "insufficient-data":
         return _build_case(
@@ -74,6 +135,7 @@ def _fixture(case):
             market_status="資料不足",
             judgement="可追溯資料不足，目前無方向判斷。",
             confidence=("red", "🔴", "資料不足，不能形成方向性結論。"),
+            asset_class=asset_class,
         )
     fixture = _build_case(
         stances=("bullish",) * 6 + ("bearish",),
@@ -81,7 +143,8 @@ def _fixture(case):
         adopted_stance="bullish",
         market_status="短期偏多，但存在過熱風險",
         judgement="目前較適合描述為偏多但不穩定。",
-        confidence=("yellow_green", "🟡🟢", "六票共識且有多類獨立證據。"),
+        confidence=("green", "🟢", "六票採納，引用來源涵蓋多個獨立網域。"),
+        asset_class=asset_class,
     )
     fixture["report"]["seats"][0]["support_evidence_ids"] = ["unknown-evidence"]
     return fixture
@@ -95,6 +158,7 @@ def _build_case(
     judgement,
     confidence,
     process_failure=False,
+    asset_class=ASSET_CLASS_CRYPTO,
 ):
     evidence = [_evidence(index, seat_id) for index, seat_id in enumerate(SEAT_IDS)]
     vote_rows = [_vote(index, seat_id, stances[index]) for index, seat_id in enumerate(SEAT_IDS)]
@@ -128,6 +192,7 @@ def _build_case(
         "schema_version": "1.0.0",
         "run_id": _RUN_ID,
         "generated_at_utc": _GENERATED_AT,
+        "asset_class": asset_class,
         "market_status": market_status,
         "period": {
             "label": "過去 14 日",

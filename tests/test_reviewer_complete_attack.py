@@ -18,9 +18,9 @@ from hoya_market_agents.system_preflight import REQUIRED_CHECK_IDS, build_prefli
 ACTUAL_MODELS = {
     "spot-technical": "gpt-5.6-sol",
     "derivatives": "gpt-5.6-sol",
-    "onchain": "gpt-5.6-sol",
+    "onchain": "claude-opus-5",
     "official-events": "claude-opus-5",
-    "news": "claude-opus-5",
+    "news": "gpt-5.6-sol",
     "social-macro": "claude-opus-5",
     "counter-evidence": "gemini-3.1-pro-high",
 }
@@ -78,11 +78,22 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
         votes = self._sanitize(self._read_json(run_dir / "votes.json"))
         report = self._sanitize(self._read_json(run_dir / "report.json"))
 
+        # 對齊時用正式 attempt 命名（狀態機 _validate_lineage 只產生
+        # "{seat_id}-a{n}"）。原本一律改寫成 "-receipt-attempt-99" 是這個
+        # helper 自己造出來的合成形狀，不是任何 producer 的輸出；本測試驗的是
+        # receipt↔adopted attempt 的一致性，與 attempt 叫什麼名字無關。
+        #
+        # 不對齊時**維持**原本的合成名稱：那正是 unadopted 案例要製造的
+        # receipt↔evidence 不一致，換成 canonical 會讓那個負向測試失去效力。
+        attempts = {
+            seat_id: (
+                "{}-a1".format(seat_id)
+                if align_formal_attempts
+                else "{}-receipt-attempt-99".format(seat_id)
+            )
+            for seat_id in SEAT_IDS
+        }
         if align_formal_attempts:
-            attempts = {
-                seat_id: "{}-receipt-attempt-99".format(seat_id)
-                for seat_id in SEAT_IDS
-            }
             for record in evidence:
                 record["attempt_id"] = attempts[record["seat_id"]]
             for record in debate:
@@ -206,7 +217,7 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
         for seat in manifest["seats"]:
             seat_id = seat["seat_id"]
             seat["actual_model"] = ACTUAL_MODELS[seat_id]
-            attempt_id = "{}-receipt-attempt-99".format(seat_id)
+            attempt_id = attempts[seat_id]
             seat["attempt_id"] = attempt_id
             completion_ms = manifest["competition_timeline"]["seat_completion_ms"][seat_id]
             search_ms = completion_ms - 100

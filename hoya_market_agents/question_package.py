@@ -1,23 +1,26 @@
 """Versioned normalization of a live question into one votable package.
 
 The four approved question types keep their exact classification order and
-vocabulary. A question drawn on the spot need not match any of them: anything
-that still names an approved asset becomes ``open_proposition`` — a single
-affirmative/negative/undecided ballot — instead of a refusal. Only a question
-with no approved asset at all fails closed, because the competition scope is
-the five approved assets.
+vocabulary. A question drawn on the spot need not match any of them, and its
+target need not be a cryptocurrency: anything unmatched becomes
+``open_proposition`` — a single affirmative/negative/undecided ballot — whether
+or not it names a tradable asset at all. Nothing here refuses a question; the
+intake gate's two refusals (empty text, unparseable period) are the only ones
+left.
 
-``stance_labels`` is the Traditional Chinese wording of the ballot, and
-``proposition`` is the one votable sentence written for an open question. Both
-travel with the package so prompts, audits and the vote table read the same
-words.
+``asset_class`` says which market the question belongs to, ``stance_labels`` is
+the Traditional Chinese wording of the ballot, and ``proposition`` is the one
+votable sentence written for the question. All three travel with the package so
+prompts, audits and the vote table read the same words.
 """
 
-import re
 from dataclasses import asdict, dataclass, field, replace
 
-from .question import SUPPORTED_ASSETS, UnsupportedQuestionError, inspect_question
-from .question import UnknownAssetError
+from .question import ASSET_CLASS_OPEN, asset_slug_for, inspect_question
+
+# 這兩個例外由 intake gate 拋出，但長年是從本模組被 import 的；
+# 白名單移除後 UnknownAssetError 已無人拋出，名稱仍為既有呼叫端保留。
+from .question import UnknownAssetError, UnsupportedQuestionError  # noqa: F401
 
 QUESTION_PACKAGE_VERSION = "1.0.0"
 MARKET_STANCES = ("bullish", "bearish", "neutral")
@@ -41,10 +44,6 @@ OPEN_STANCE_LABELS = {
 }
 NO_CLEAR_DIFFERENCE_LABEL = "無明顯差異"
 
-_SUPPORTED_ASSET_PATTERN = re.compile(
-    r"(?<![A-Za-z])({})(?![A-Za-z])".format("|".join(SUPPORTED_ASSETS)),
-    re.IGNORECASE,
-)
 _STANCE_LABELS_BY_STANCES = {
     MARKET_STANCES: MARKET_STANCE_LABELS,
     EVENT_STANCES: EVENT_STANCE_LABELS,
@@ -65,10 +64,11 @@ class QuestionPackage:
     stance_options: tuple
     stance_labels: dict = field(default_factory=dict)
     proposition: str = None
+    asset_class: str = ASSET_CLASS_OPEN
 
     @property
     def asset_slug(self):
-        return "-".join(asset.lower() for asset in self.assets) or "overall-market"
+        return asset_slug_for(self.assets)
 
     def with_proposition(self, proposition):
         """Return the same package carrying the written votable proposition."""
@@ -82,60 +82,60 @@ class QuestionPackage:
         return value
 
 
-def build_question_package(question):
-    """Return a normalized package, opening a proposition before refusing."""
-    try:
-        scope = inspect_question(question)
-    except UnknownAssetError as unknown:
-        # An unknown token is not a reason to refuse a live question; it only
-        # means no approved type can claim it. The token never becomes an asset,
-        # and a question made only of unknown tokens still fails closed with the
-        # intake gate's own reason.
-        relaxed = inspect_question(question, allow_unknown_assets=True)
-        return _open_proposition(relaxed, unknown)
+def build_question_package(question, assets=None, asset_class=None):
+    """Return a normalized package; every readable question gets one.
+
+    ``assets`` and ``asset_class`` are passed straight to
+    :func:`inspect_question`: where the caller states them, the question's
+    wording has no say in them. A menu-driven caller knows which row was
+    clicked and which market it came from, and that answer beats anything a
+    parser can infer from prose. Left at ``None``, the reading is unchanged.
+    """
+    scope = inspect_question(question, assets=assets, asset_class=asset_class)
     return _approved_type(scope) or _open_proposition(scope)
 
 
 def _approved_type(scope):
-    """Classify the four approved types in their frozen order, or return None."""
-    if len(scope.assets) == 2 and _is_comparison(scope.question):
-        return _package(
-            scope,
-            "two_asset_comparison",
-            COMPARISON_STANCES,
-            _asset_order(scope.question),
-        )
-    if _is_event(scope.question) and (scope.assets or _is_overall_market(scope.question)):
+    """Classify the four approved types in their frozen order, or return None.
+
+    Every wording question is asked of ``scope.reading``, the same width-folded
+    view the intake gate named the targets from. Asking one of them a different
+    view is how ``ＢＴＣ ｖｓ ＥＴＨ 過去七天`` came to have two targets and
+    still not be a comparison. The package keeps ``scope.question`` verbatim —
+    prompts and artifacts must quote the user — but nothing *decides* from it.
+    """
+    reading = scope.reading
+    if len(scope.assets) == 2 and _is_comparison(reading):
+        return _package(scope, "two_asset_comparison", COMPARISON_STANCES)
+    if _is_event(reading) and (scope.assets or _is_overall_market(reading)):
         return _package(scope, "event_impact", EVENT_STANCES)
-    if not scope.assets and _is_overall_market(scope.question):
+    if not scope.assets and _is_overall_market(reading):
         return _package(scope, "overall_market_state", MARKET_STANCES)
-    if len(scope.assets) != 1 or not _is_market_state(scope.question):
+    if len(scope.assets) != 1 or not _is_market_state(reading):
         return None
     return _package(scope, "single_asset_market_state", MARKET_STANCES)
 
 
-def _open_proposition(scope, unknown=None):
-    """Turn an unmatched question into a votable proposition, or fail closed."""
-    if scope.assets:
-        return _package(scope, OPEN_QUESTION_TYPE, OPEN_STANCES)
-    if unknown is not None:
-        raise unknown
-    raise UnsupportedQuestionError(
-        "題目未指名任何已核准資產（{}）；fail closed。".format(", ".join(SUPPORTED_ASSETS))
-    )
+def _open_proposition(scope):
+    """Turn an unmatched question into a votable proposition.
+
+    A question naming no tradable target is the ordinary open case, not a
+    refusal: the ballot is still affirmative/negative/undecided.
+    """
+    return _package(scope, OPEN_QUESTION_TYPE, OPEN_STANCES)
 
 
-def _package(scope, question_type, stance_options, assets=None):
-    assets = assets or scope.assets
+def _package(scope, question_type, stance_options):
     return QuestionPackage(
         schema_version=QUESTION_PACKAGE_VERSION,
         question_type=question_type,
         question=scope.question,
-        assets=assets,
+        assets=scope.assets,
         period_days=scope.period_days,
         period_stated=scope.period_stated,
         stance_options=stance_options,
-        stance_labels=_stance_labels(stance_options, assets),
+        stance_labels=_stance_labels(stance_options, scope.assets),
+        asset_class=scope.asset_class,
     )
 
 
@@ -178,12 +178,3 @@ def _is_event(question):
         term in question.lower()
         for term in ("事件", "影響", "公告", "監管", "升級", "impact")
     )
-
-
-def _asset_order(question):
-    ordered = []
-    for match in _SUPPORTED_ASSET_PATTERN.finditer(question):
-        asset = match.group(1).upper()
-        if asset not in ordered:
-            ordered.append(asset)
-    return tuple(ordered)

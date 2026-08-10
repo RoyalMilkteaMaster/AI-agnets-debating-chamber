@@ -1,0 +1,75 @@
+Ticket 09 驗收條件 4：白底單一設計、無深色 media query、WCAG AA 實測
+========================================================================
+
+一、深色模式退場：成品樣式裡沒有 prefers-color-scheme
+  webapp 樣式表 pages.stylesheet()            PASS（0 命中）
+  離線市場報告 report.html                       PASS（0 命中）
+  離線完整辯論 debate.html                       PASS（0 命中）
+  注入導覽自帶 <style>                           PASS（0 命中）
+  全部已渲染 webapp 頁面：PASS（0 命中）
+
+二、單一白底 palette（design_tokens.PALETTE 只有一套）
+  page（畫布）  ：#f8f9fa
+  surface（卡片）：#ffffff
+  毛玻璃（原值） ：rgba(255,255,255,0.72)
+  毛玻璃（合成後）：#fdfdfe（rgba(255,255,255,0.72) 疊在 #f8f9fa 上）
+  畫布相對亮度 0.9461 > 0.5（白底而非深底）：PASS
+
+三、全站與新 run 離線頁同一套色（每個色值都由 design_tokens 擁有）
+  webapp 樣式表                     用到 16 個色值｜不屬於 design_tokens 的：（無）
+  離線市場報告 report.html             用到 16 個色值｜不屬於 design_tokens 的：（無）
+  離線完整辯論 debate.html             用到 16 個色值｜不屬於 design_tokens 的：（無）
+  注入導覽自帶 <style>                 用到 16 個色值｜不屬於 design_tokens 的：（無）
+  webapp 與離線兩頁用的是同一組色值：PASS
+  字體堆疊微軟正黑體優先且三處同一份：PASS
+  字體堆疊："Microsoft JhengHei",system-ui,-apple-system,"Segoe UI","PingFang TC","Noto Sans TC","Helvetica Neue",sans-serif
+  毛玻璃用原生 backdrop-filter，模糊值 12px；零外部資源（樣式裡沒有 @import／url()）：PASS
+
+四、對比度實測（WCAG 2.x 相對亮度公式，本檔獨立實作一次）
+
+  前景               背景                 前景色       背景色            實測      門檻  判定
+  text             page               #202124   #f8f9fa     15.27    4.50  PASS
+  text             surface            #202124   #ffffff     16.10    4.50  PASS
+  text             glass_surface      #202124   #fdfdfe     15.84    4.50  PASS
+  muted            page               #5f6368   #f8f9fa      5.74    4.50  PASS
+  muted            surface            #5f6368   #ffffff      6.05    4.50  PASS
+  muted            glass_surface      #5f6368   #fdfdfe      5.95    4.50  PASS
+  link             page               #1967d2   #f8f9fa      5.09    4.50  PASS
+  link             surface            #1967d2   #ffffff      5.37    4.50  PASS
+  link             glass_surface      #1967d2   #fdfdfe      5.28    4.50  PASS
+  accent           page               #1967d2   #f8f9fa      5.09    4.50  PASS
+  accent           surface            #1967d2   #ffffff      5.37    4.50  PASS
+  accent           glass_surface      #1967d2   #fdfdfe      5.28    4.50  PASS
+  affirm           page               #137333   #f8f9fa      5.65    4.50  PASS
+  affirm           surface            #137333   #ffffff      5.95    4.50  PASS
+  affirm           glass_surface      #137333   #fdfdfe      5.86    4.50  PASS
+  oppose           page               #c5221f   #f8f9fa      5.50    4.50  PASS
+  oppose           surface            #c5221f   #ffffff      5.80    4.50  PASS
+  oppose           glass_surface      #c5221f   #fdfdfe      5.70    4.50  PASS
+  abstain          page               #8a5000   #f8f9fa      6.17    4.50  PASS
+  abstain          surface            #8a5000   #ffffff      6.51    4.50  PASS
+  abstain          glass_surface      #8a5000   #fdfdfe      6.40    4.50  PASS
+  danger           page               #c5221f   #f8f9fa      5.50    4.50  PASS
+  danger           surface            #c5221f   #ffffff      5.80    4.50  PASS
+  danger           glass_surface      #c5221f   #fdfdfe      5.70    4.50  PASS
+  success          page               #137333   #f8f9fa      5.65    4.50  PASS
+  success          surface            #137333   #ffffff      5.95    4.50  PASS
+  success          glass_surface      #137333   #fdfdfe      5.86    4.50  PASS
+  border           page               #80868b   #f8f9fa      3.49    3.00  PASS
+  border           surface            #80868b   #ffffff      3.68    3.00  PASS
+  border           glass_surface      #80868b   #fdfdfe      3.62    3.00  PASS
+  provider_claude  page               #b06000   #f8f9fa      4.41    3.00  PASS
+  provider_claude  surface            #b06000   #ffffff      4.65    3.00  PASS
+  provider_claude  glass_surface      #b06000   #fdfdfe      4.57    3.00  PASS
+  provider_gemini  page               #6d28d9   #f8f9fa      6.74    3.00  PASS
+  provider_gemini  surface            #6d28d9   #ffffff      7.10    3.00  PASS
+  provider_gemini  glass_surface      #6d28d9   #fdfdfe      6.99    3.00  PASS
+  accent_text      accent             #ffffff   #1967d2      5.37    4.50  PASS
+  accent_text      google_blue        #ffffff   #186ede      4.86    4.50  PASS
+  accent_text      google_green       #ffffff   #188038      5.02    4.50  PASS
+  accent_text      google_red         #ffffff   #d93025      4.77    4.50  PASS
+  text             google_yellow      #202124   #fbbc04      9.43    4.50  PASS
+
+  共 41 組配對，全部達 WCAG AA：PASS
+  餘裕最小的一組：accent_text on google_red = 4.77（門檻 4.5，餘裕 +0.27）
+  毛玻璃列（glass_surface）用的是合成後實色 #fdfdfe，不是 rgba 本身。

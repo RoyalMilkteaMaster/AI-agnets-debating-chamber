@@ -6,10 +6,10 @@ cross-thread channel is ``results_queue``.
 
 Seat routing
 ------------
-* Claude 3 seats (``official-events`` / ``news`` / ``social-macro``) and the
+* Claude 3 seats (``onchain`` / ``official-events`` / ``social-macro``) and the
   Antigravity seat (``counter-evidence``) run locally in one shared thread pool
   and answer through ``results_queue``.
-* Codex 3 seats (``spot-technical`` / ``derivatives`` / ``onchain``) take one of
+* Codex 3 seats (``spot-technical`` / ``derivatives`` / ``news``) take one of
   two channels, chosen by ``codex_mode``:
 
   ``"cli"`` (default)
@@ -141,14 +141,16 @@ from .contract_validator import (
     validate_evidence_card,
 )
 from .prompt_builder import build_seat_prompt
-from .question import SUPPORTED_ASSETS
+from .question import normalize_asset
 from .research_scheduler import research_deadlines
 from .run_store import _remove_trailing_commas
 from .seats import load_roster
 from .system_preflight import load_frozen_roster
 
-CODEX_SEAT_IDS = ("spot-technical", "derivatives", "onchain")
-CLAUDE_SEAT_IDS = ("official-events", "news", "social-macro")
+# 三個分組是 roster ``provider`` 欄的投影，順序就是 roster 的席位順序；roster 是
+# 唯一權威，這裡改了對不上會被 tests/test_real_provider.py 的一致性斷言擋下來。
+CODEX_SEAT_IDS = ("spot-technical", "derivatives", "news")
+CLAUDE_SEAT_IDS = ("onchain", "official-events", "social-macro")
 ANTIGRAVITY_SEAT_IDS = ("counter-evidence",)
 
 # 研究收件牆在 T+3:50（230 秒），所以 Claude 的研究呼叫必須在那之前分出勝負，
@@ -179,9 +181,9 @@ PROVIDER_LINEAGE_MESSAGE = "provider_lineage"
 REPLACEMENT_MODELS = {
     "spot-technical": "replacement-unavailable:codex-second-model",
     "derivatives": "replacement-unavailable:codex-second-model",
-    "onchain": "replacement-unavailable:codex-second-model",
+    "onchain": "sonnet",
     "official-events": "sonnet",
-    "news": "sonnet",
+    "news": "replacement-unavailable:codex-second-model",
     "social-macro": "sonnet",
     "counter-evidence": "replacement-unavailable:antigravity-second-model",
 }
@@ -200,7 +202,10 @@ EVIDENCE_CARD_SCHEMA = {
             "description": "UTC ISO-8601，格式 YYYY-MM-DDTHH:MM:SSZ",
         },
         "elapsed_ms": {"type": "integer", "minimum": 0},
-        "asset": {"type": "string", "enum": list(SUPPORTED_ASSETS)},
+        "asset": {
+            "type": "string",
+            "description": "本題分析標的的代號或名稱，維持題目與來源的原格式",
+        },
         "category": {"type": "string"},
         "statement": {"type": "string", "description": "繁體中文的公開陳述"},
         "direction": {"type": "string", "enum": list(DIRECTIONS)},
@@ -334,15 +339,21 @@ class RealEvidenceGateway:
     The gateway is bound to one run and one question's assets: a card carrying
     another ``run_id`` or an asset this question never asked about is research
     from somewhere else, and must never enter this competition's snapshot.
+
+    An open proposition may name no target at all. There is nothing to bind the
+    asset to then, so only the run binding applies — the alternative would be
+    refusing every card of a question the intake gate just accepted. Matching
+    goes through ``normalize_asset``, because a target is now whatever the
+    question called it and a seat may spell it ``brk-b``, ``BRK.B`` or
+    ``2330.TW`` for the same listing.
     """
 
-    def __init__(self, run_id, allowed_assets):
+    def __init__(self, run_id, allowed_assets=()):
         if not isinstance(run_id, str) or not run_id.strip():
             raise RealProviderError("evidence gateway 必須綁定本次 run_id")
-        if not allowed_assets:
-            raise RealProviderError("evidence gateway 必須綁定至少一個允許資產")
         self.run_id = run_id
-        self.allowed_assets = tuple(allowed_assets)
+        self.allowed_assets = tuple(allowed_assets or ())
+        self._allowed_keys = {normalize_asset(asset) for asset in self.allowed_assets}
 
     def validate(self, attempt, raw_output):
         cards = _unwrap_envelope(json.loads(raw_output), attempt)
@@ -362,7 +373,9 @@ class RealEvidenceGateway:
                     self.run_id, card["run_id"]
                 )
             )
-        if card["asset"] in self.allowed_assets:
+        if not self.allowed_assets:
+            return
+        if normalize_asset(card["asset"]) in self._allowed_keys:
             return
         raise ValueError(
             "證據卡 asset 不在本題資產範圍：允許 {}，實際 {!r}".format(

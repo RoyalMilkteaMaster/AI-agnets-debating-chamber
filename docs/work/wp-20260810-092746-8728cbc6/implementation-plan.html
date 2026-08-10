@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-Hant" data-report-profile="grill-me" data-report-status="ready-for-approval" data-work-id="wp-20260810-092746-8728cbc6">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>前端白話化與 Google 風重設計｜實作藍圖核准報告</title>
+  <style>
+    :root {
+      --靛藍: #3432a8;
+      --深紫: #211d58;
+      --青色: #17a7b8;
+      --格線: rgba(75, 78, 170, .08);
+      --淡紫: #f1f0ff;
+      --白色: #ffffff;
+      --文字: #191b3a;
+      --淡字: #636786;
+      --線條: #d8d9ec;
+      --警示: #c16b1a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--文字);
+      background-color: #f7f7fc;
+      background-image:
+        linear-gradient(var(--格線) 1px, transparent 1px),
+        linear-gradient(90deg, var(--格線) 1px, transparent 1px);
+      background-size: 24px 24px;
+      font-family: "Microsoft JhengHei", system-ui, sans-serif;
+      line-height: 1.6;
+    }
+    .頁面 { width: min(1240px, calc(100% - 36px)); margin: 0 auto; padding: 30px 0 64px; }
+    .藍圖頁首 { position: relative; overflow: hidden; padding: 46px; border-radius: 24px; color: white; background: linear-gradient(120deg, var(--深紫), var(--靛藍) 62%, #177b9c); box-shadow: 0 20px 48px rgba(40, 36, 108, .2); }
+    .藍圖頁首::after { content: ""; position: absolute; right: -70px; top: -110px; width: 310px; height: 310px; border: 45px solid rgba(255,255,255,.08); border-radius: 50%; }
+    .眉題 { margin: 0 0 8px; color: #9ce5ee; font-weight: 800; letter-spacing: .15em; }
+    h1 { margin: 0; max-width: 850px; font-size: clamp(2rem, 5vw, 4rem); line-height: 1.08; }
+    .摘要 { max-width: 800px; color: #d9dcff; font-size: 1.08rem; }
+    .藍圖指標 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 26px; }
+    .藍圖指標 div { padding: 14px; border: 1px solid rgba(255,255,255,.18); border-radius: 12px; background: rgba(255,255,255,.09); backdrop-filter: blur(8px); }
+    .藍圖指標 small { display: block; color: #c4c7f6; }
+    .藍圖指標 strong { display: block; margin-top: 3px; }
+    main { display: grid; gap: 18px; margin-top: 20px; }
+    section { position: relative; padding: 30px; border: 1px solid var(--線條); border-radius: 16px; background: rgba(255,255,255,.96); box-shadow: 0 10px 25px rgba(39, 37, 91, .06); }
+    section::before { content: attr(data-step); position: absolute; right: 22px; top: 18px; color: #dbdcf1; font-size: 2.5rem; font-weight: 900; }
+    h2 { margin: 0 0 18px; color: var(--深紫); font-size: 1.55rem; }
+    .指標列, .雙欄, .泳道 { display: grid; gap: 14px; }
+    .指標列 { grid-template-columns: repeat(4, 1fr); }
+    .雙欄 { grid-template-columns: repeat(2, 1fr); }
+    .卡片 { padding: 17px; border: 1px solid var(--線條); border-radius: 12px; background: var(--白色); }
+    .卡片 strong { display: block; color: var(--靛藍); font-size: 1.2rem; }
+    .票券列 { display: flex; gap: 12px; overflow-x: auto; padding: 8px 2px 15px; }
+    .票券 { flex: 0 0 230px; min-height: 135px; padding: 16px; border-top: 5px solid var(--青色); border-radius: 12px; background: var(--淡紫); }
+    .票券 small { color: var(--淡字); }
+    .票券 strong { display: block; margin: 5px 0; }
+    .依賴線 { color: var(--靛藍); font-weight: 900; align-self: center; }
+    .矩陣 { overflow-x: auto; border: 1px solid var(--線條); border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 12px 14px; border-bottom: 1px solid var(--線條); text-align: left; vertical-align: top; }
+    th { color: var(--深紫); background: #eeeefd; }
+    .警示 { padding: 16px; border-left: 5px solid var(--警示); border-radius: 8px; background: #fff6e9; }
+    details { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--線條); }
+    summary { color: var(--靛藍); cursor: pointer; font-weight: 800; }
+    .核准列 { display: flex; flex-wrap: wrap; gap: 10px; }
+    .核准項目 { padding: 12px 17px; border: 2px solid var(--靛藍); border-radius: 9px; color: var(--靛藍); background: white; font-weight: 800; }
+    footer { padding: 22px 4px; color: var(--淡字); }
+    @media (max-width: 820px) { .藍圖指標, .指標列, .雙欄 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="頁面">
+    <header class="藍圖頁首">
+      <p class="眉題">實作藍圖｜核准前</p>
+      <h1>前端白話化與 Google 風重設計<br>實作藍圖核准報告</h1>
+      <p class="摘要">這次規劃做六件事：設定頁白話中文、五導覽常駐（含離線注入）、設定獨立、全站 Google 風白底重設計（含離線換裝與深色退場）、席位定案名＋白話說明、開放題下架。完成後將得到全站白底極簡毛玻璃新視覺、處處可達的五導覽、看得懂的設定頁與自取席名。共 9 張 Tickets；06 與 07 可與 pages.py 串行鏈（02→03→04→05→08）並行；最長依賴路徑 01→02→03→04→05→08→09（7 張）。所有規劃事項均已核准、無待決事項，建議開始實作。</p>
+      <div class="藍圖指標">
+        <div><small>需求數</small><strong>6 項（R-001～R-006）</strong></div>
+        <div><small>Ticket 數</small><strong>9 張（全部草稿）</strong></div>
+        <div><small>並行批次</small><strong>7 批（A～G）</strong></div>
+        <div><small>最大風險</small><strong>roster schema 升版（05）</strong></div>
+        <div><small>設計輔助</small><strong id="design-assist">內建模板（Claude Design 無法使用）</strong></div>
+      </div>
+    </header>
+
+    <main>
+      <section id="原始需求與範圍" data-step="01">
+        <h2>原始需求與規劃覆蓋</h2>
+        <p>以下 R-ID 與原文逐字取自已核准 Spec（工作識別碼 wp-20260810-092746-8728cbc6）：</p>
+        <ul>
+          <li>R-001：設定頁白話中文：每個規則項顯示中文標籤＋一句白話說明，分組標題中文化；規則檔新增而未翻譯的鍵顯示原鍵名＋「尚未翻譯」標註、照常可編輯（不 fail-closed）。</li>
+          <li>R-002：五導覽全站常駐：即時辯論／歷史與命中率／市場報告／完整辯論／設定；市場報告與完整辯論在無特定 run 頁面指向最新有報告的 run、run 詳情頁指向自身 run、無報告時停用樣式；「伺服器已關閉」頁維持無導覽；離線兩頁經伺服器瀏覽時亦有五導覽，直接開檔／分享維持自足兩分頁導覽，run 檔案唯讀不回溯。</li>
+          <li>R-003：設定獨立：「設定」與其他四個導覽分開，放「關閉伺服器」按鈕左邊。</li>
+          <li>R-004：全站重新設計：Google 風白底、紅藍綠黃彩色點綴、極簡留白、半透明毛玻璃；含離線兩頁換新裝（新 run 起生效）；深色模式退場只留白底一套；微軟正黑體優先；語意色保留語意只校準色階。</li>
+          <li>R-005：席位名稱與白話說明：股票套與幣圈套顯示名稱換為使用者定案名；即時辯論頁席位卡新增白話說明（僅顯示用，`focus` 權威不動）。</li>
+          <li>R-006：開放題下架：發問選單只留台股／美股／幣；開放套留舊值當內部填充（fail-closed 檢查仍過）；後端 open 能力不刪；歷史開放題 run 照舊可回看。</li>
+        </ul>
+        <h3>需求 → Ticket 覆蓋矩陣</h3>
+        <div class="矩陣">
+          <table>
+            <thead>
+              <tr><th>R-ID</th><th>白話重點</th><th>主要驗收（Spec 驗收條件）</th><th>負責 Ticket</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>R-001</td><td>設定頁白話中文</td><td>驗收 1：逐鍵中文標籤＋說明、未譯鍵 fallback 可編輯</td><td>04（實作）、09（總驗收）</td></tr>
+              <tr><td>R-002</td><td>五導覽全站常駐＋離線注入</td><td>驗收 2、3：header 五導覽指向規則、注入後磁碟位元組不變</td><td>02、07（實作）、09（總驗收）</td></tr>
+              <tr><td>R-003</td><td>設定獨立於關閉伺服器左邊</td><td>驗收 2：「設定」位於「關閉伺服器」左邊</td><td>02（實作）、09（總驗收）</td></tr>
+              <tr><td>R-004</td><td>全站白底重設計（含離線兩頁、深色退場）</td><td>驗收 4：白底單套、無深色 media query、對比 AA</td><td>01、03、06（實作）、09（總驗收）</td></tr>
+              <tr><td>R-005</td><td>席位定案名＋blurb</td><td>驗收 5：定案名與 blurb 正確、缺 blurb fail-closed</td><td>05（實作）、09（總驗收）</td></tr>
+              <tr><td>R-006</td><td>開放題下架</td><td>驗收 6：選單只留三市場、歷史開放題 run 可回看</td><td>08（實作）、09（總驗收）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>覆蓋檢核：六項需求全部有 Ticket 負責，無未覆蓋需求。Spec 驗收條件 7（保護區行為不變、既有測試全綠、渲染後繁中 grep）由 Ticket 09 統包端到端驗收。</p>
+        <h3>明確不處理</h3>
+        <ul>
+          <li>「Core 直答＋按需加派」開放題新流程（未來獨立工作包候選）。</li>
+          <li>保護區（聊天室、燈位、三種票數）任何行為改動；行動版佈局。</li>
+          <li>舊 run 檔案回溯重製；開放套重新命名；run_verifier.py 修改。</li>
+        </ul>
+      </section>
+
+      <section id="目標架構與資料流" data-step="02">
+        <h2>目標架構與資料流</h2>
+        <div class="雙欄">
+          <div class="卡片">
+            <strong>修改前（現況）</strong>
+            <p>深淺雙 palette 色值分散寫死在 pages.py 與兩個 renderer；「市場報告／完整辯論」只在辯論室出現、離線頁回不了站內；設定混在導覽裡；設定頁顯示英文規則鍵；席名為 AI 隨手取、辯論頁看不出分工；發問選單含開放題。</p>
+          </div>
+          <div class="卡片">
+            <strong>修改後（預計）</strong>
+            <p>design_tokens.py 成為唯一色值權威，pages.py 與兩個 renderer 一律取值；全站 header 五導覽、設定獨立；server.py 在 HTTP 回應層為離線兩頁注入導覽（檔案唯讀）；settings.py 標籤表白話化；roster 升版帶 blurb；發問選單由 market_scopes 三市場產生。</p>
+          </div>
+        </div>
+        <h3>模組責任（預計動作）</h3>
+        <div class="矩陣">
+          <table>
+            <thead>
+              <tr><th>模組</th><th>動作</th><th>責任</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>hoya_market_agents/design_tokens.py</td><td>新增</td><td>白底單套 palette、Google 四色裝飾、毛玻璃（含合成實色）、字體堆疊的唯一權威</td></tr>
+              <tr><td>webapp/pages.py</td><td>修改（熱點檔）</td><td>header 導覽、全站版面樣式、設定欄位渲染、席位卡 blurb、發問表單</td></tr>
+              <tr><td>webapp/views.py</td><td>修改</td><td>以既有 run_index.query_runs 於 Python 端解析「最新有報告的 run」（零 SQL）</td></tr>
+              <tr><td>webapp/settings.py</td><td>修改</td><td>規則標籤表（key-path → 中文標籤＋白話說明）與「尚未翻譯」fallback</td></tr>
+              <tr><td>webapp/server.py</td><td>修改</td><td>離線兩頁 text/html 回應的五導覽注入器，fail-open、磁碟位元組不變（ADR 0007）</td></tr>
+              <tr><td>seats.py</td><td>修改</td><td>fail-closed 驗證擴充 blurb；既有讀取口回傳 blurb</td></tr>
+              <tr><td>report_renderer.py／report_audit_renderer.py</td><td>修改</td><td>CSS 改取 design_tokens、刪除寫死 palette；DOM 章節結構不動</td></tr>
+              <tr><td>config/agent_roster.json</td><td>修改</td><td>席位名稱／blurb 唯一權威（schema 升版：每套必填 blurb）</td></tr>
+              <tr><td>run_verifier.py、保護區行為</td><td>不動</td><td>Spec 明列不在範圍內</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>資料所有權與資料流</h3>
+        <ul>
+          <li>色值：design_tokens.py → pages.py／兩個 renderer 取值；不得維護第二份色值。</li>
+          <li>規則標籤：settings.py 標籤表 → 設定頁渲染；未涵蓋鍵顯示原鍵名＋「尚未翻譯」，照常可編輯。</li>
+          <li>席名／blurb：agent_roster.json → seats.py 既有讀取口 → 席位卡與離線報告，自動一致、不另存副本。</li>
+          <li>最新有報告 run：views.py（Python 端解析）→ 各頁 header 報告導覽；有 run 脈絡頁面指向自身 run。</li>
+          <li>run artifact：唯讀；導覽注入只發生在 HTTP 回應層，磁碟檔案位元組不變。</li>
+        </ul>
+        <h3>相容性與 Migration</h3>
+        <ul>
+          <li>seat_id／output_dir／提供者／focus 永不改；歷史 run 沿用現行套組顯示。</li>
+          <li>roster schema 升版將與賽前預檢、測試 fixtures 同步；缺 blurb 載入即失敗並給可讀錯誤。</li>
+          <li>深色 palette 與 prefers-color-scheme 深色區塊刪除；新 run 起生效，舊 run 檔案與 PDF 不回溯。</li>
+          <li>無新端點、無 URL 變更；CSP、零 inline script、零 SQL 沿用。</li>
+        </ul>
+      </section>
+
+      <section id="Ticket執行藍圖" data-step="03">
+        <h2>Ticket 執行藍圖</h2>
+        <p>九張 Tickets 全部為草稿，規劃依下列順序派工；最長依賴路徑 01→02→03→04→05→08→09（7 張）。</p>
+        <div class="票券列">
+          <div class="票券"><small>Ticket 01｜serialized</small><strong>設計 token 權威與白底單套 palette</strong><p>預計新建 design_tokens.py 唯一權威、深色退場、對比 AA。</p><small>Blocked by：無</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 02｜serialized</small><strong>五導覽常駐與設定分離</strong><p>預計全站 header 重構＋最新有報告 run 解析。</p><small>Blocked by：01</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 03｜serialized</small><strong>全站 Google 風極簡毛玻璃換裝</strong><p>預計 webapp 全頁換裝、保護區只換外衣。</p><small>Blocked by：02</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 04｜serialized</small><strong>設定頁白話中文</strong><p>預計標籤表＋未譯鍵標註。</p><small>Blocked by：03</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 05｜serialized</small><strong>席位定案名與白話說明</strong><p>預計 roster 換名＋blurb schema 升版 fail-closed。</p><small>Blocked by：04</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 08｜serialized</small><strong>發問選單移除開放題</strong><p>預計選單改由 market_scopes 三市場產生。</p><small>Blocked by：05</small></div>
+          <div class="依賴線">→</div>
+          <div class="票券"><small>Ticket 09｜serialized</small><strong>端到端驗收與證據</strong><p>預計整包驗收與證據存 acceptance/。</p><small>Blocked by：03、04、05、06、07、08</small></div>
+        </div>
+        <div class="票券列">
+          <div class="票券"><small>Ticket 06｜parallel-safe</small><strong>離線報告換新裝</strong><p>預計兩個 renderer CSS 改取 token、DOM 不動。</p><small>Blocked by：01｜鎖：全套測試執行權</small></div>
+          <div class="票券"><small>Ticket 07｜parallel-safe</small><strong>離線報告伺服器側五導覽注入</strong><p>預計 server.py 回應注入、檔案位元組不變（ADR 0007）。</p><small>Blocked by：02｜鎖：全套測試執行權</small></div>
+        </div>
+        <h3>Ticket 藍圖總表</h3>
+        <div class="矩陣">
+          <table>
+            <thead>
+              <tr><th>編號</th><th>標題與目標</th><th>Blocked by</th><th>Dispatch</th><th>寫入所有權</th><th>Developer 配置</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>01</td><td>設計 token 權威與白底單套 palette｜新建 design_tokens.py 唯一權威、深色退場、對比 AA</td><td>無</td><td>serialized</td><td>design_tokens.py＋pages.py token 區＋test_design_tokens</td><td>opus-5／high</td></tr>
+              <tr><td>02</td><td>五導覽常駐與設定分離｜全站 header 重構＋最新有報告 run 解析</td><td>01</td><td>serialized</td><td>pages.py header 區＋views.py</td><td>opus-5／high</td></tr>
+              <tr><td>03</td><td>全站 Google 風極簡毛玻璃換裝｜webapp 全頁換裝、保護區只換外衣</td><td>02</td><td>serialized</td><td>pages.py 樣式版面區</td><td>opus-5／high</td></tr>
+              <tr><td>04</td><td>設定頁白話中文｜標籤表＋未譯鍵標註</td><td>03</td><td>serialized</td><td>settings.py＋pages.py 設定渲染區</td><td>sonnet-5／high（固定格式文案、局部低風險）</td></tr>
+              <tr><td>05</td><td>席位定案名與白話說明｜roster 換名＋blurb schema 升版 fail-closed</td><td>04</td><td>serialized</td><td>agent_roster.json＋seats.py＋pages.py 席位卡＋預檢 fixtures</td><td>opus-5／high</td></tr>
+              <tr><td>06</td><td>離線報告換新裝｜兩 renderer CSS 改取 token、DOM 不動</td><td>01</td><td>parallel-safe（鎖：全套測試執行權）</td><td>report_renderer.py＋report_audit_renderer.py</td><td>opus-5／high</td></tr>
+              <tr><td>07</td><td>離線報告伺服器側五導覽注入｜server.py 回應注入、檔案位元組不變（ADR 0007）</td><td>02</td><td>parallel-safe（鎖：全套測試執行權）</td><td>server.py</td><td>opus-5／high</td></tr>
+              <tr><td>08</td><td>發問選單移除開放題｜選單改由 market_scopes 三市場產生</td><td>05</td><td>serialized</td><td>pages.py 發問表單區</td><td>sonnet-5／high（固定格式文案、局部低風險）</td></tr>
+              <tr><td>09</td><td>端到端驗收與證據｜整包驗收與證據存 acceptance/</td><td>03、04、05、06、07、08</td><td>serialized</td><td>acceptance/ 目錄</td><td>opus-5／high</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>並行批次（規劃泳道）</h3>
+        <div class="矩陣">
+          <table>
+            <thead>
+              <tr><th>批次</th><th>內容</th><th>說明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>A</td><td>01</td><td>鏈頭：design_tokens 權威先立，其餘票才有取值來源</td></tr>
+              <tr><td>B</td><td>02＋06</td><td>02 走 pages.py 串行鏈；06 寫兩個 renderer，檔案不重疊可並行</td></tr>
+              <tr><td>C</td><td>03＋07</td><td>07 只寫 server.py；06 未完可續跑</td></tr>
+              <tr><td>D</td><td>04</td><td>pages.py 設定渲染區（sonnet-5／high）</td></tr>
+              <tr><td>E</td><td>05</td><td>roster schema 升版＋席位卡</td></tr>
+              <tr><td>F</td><td>08</td><td>pages.py 發問表單區（串行鏈鏈尾）</td></tr>
+              <tr><td>G</td><td>09</td><td>端到端驗收，需 03～08 全部完成</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>不能並行的實際原因：pages.py 為熱點檔，02→03→04→05→08 串行是為了避免同檔寫入衝突。06 與 07 寫入不同檔案故可並行，但 Ready for Review 的全套測試共用執行權互斥，屆時將依鎖序輪流執行。</p>
+      </section>
+
+      <section id="Agent與驗收設計" data-step="04">
+        <h2>Agent 分工與驗收關卡</h2>
+        <div class="雙欄">
+          <div class="卡片">
+            <strong>Developer 配置</strong>
+            <p>七張（01、02、03、05、06、07、09）規劃 opus-5／high：跨模組唯一權威、Schema 升版、唯讀注入契約、整包驗收等非局部小修。兩張（04、08）規劃 sonnet-5／high：固定格式文案與既有模式的局部低風險修改，可秒級驗證。升級路徑 opus-5／xhigh；max 需使用者明確核准。實際配置依執行 Task 最新使用者角色設定與後端可用性決定。</p>
+          </div>
+          <div class="卡片">
+            <strong>Reviewer 分工</strong>
+            <p>Reviewer A 負責 Spec Review（是否符合已核准需求）；Reviewer B 負責 Standards Review（工程標準與衍生風險）。預設 both，由執行 Task 的角色設定決定；每位 Reviewer 各自載入 code-review 技能，只執行 Coordinator 指定的 review axis。</p>
+          </div>
+        </div>
+        <h3>驗收關卡與 Findings 流程</h3>
+        <ul>
+          <li>每張 Ticket 皆有票面測試接縫；Ready for Review 一律為 WSL 執行 python3 -m unittest discover -s tests 全綠（首次準備 Review 前執行一次，與其他票的全套測試執行權互斥）。</li>
+          <li>Findings 交回原 Developer 修正，或由 Developer 以證據反駁；處理後交回原 Reviewer 定向複驗，不換人裁決。</li>
+          <li>每張 Ticket 的驗收結果、退出碼與必交證據將保存於該票「執行與 Review 紀錄」。</li>
+        </ul>
+        <details>
+          <summary>各票測試接縫（展開）</summary>
+          <ul>
+            <li>01：design_tokens → ContrastTest 資料驅動（WCAG AA，毛玻璃用合成實色；不斷言色碼字面值）。</li>
+            <li>02：latest-report 解析函式（有報告／無報告兩況）＋各頁 header 導覽項目與順序斷言。</li>
+            <li>03：保護區行為回歸＋渲染後 HTML 關鍵元素斷言＋對比實測。</li>
+            <li>04：標籤表 fallback（測試設定檔加入未知鍵，斷言原鍵名＋「尚未翻譯」且可編輯）。</li>
+            <li>05：roster 載入器 blurb fail-closed（缺 blurb／缺套組載入失敗並回傳可讀錯誤）。</li>
+            <li>06：兩個 renderer 渲染樣本（色值來源、無深色 media query、章節結構不變）＋run_verifier 既有檢查。</li>
+            <li>07：注入器插入／略過兩路徑＋注入前後檔案位元組比對（斷言連結目標與零 script）。</li>
+            <li>08：發問選單只列三市場＋套組選擇規則不變＋歷史開放題 run 可開啟。</li>
+            <li>09：整包七條驗收條件逐條驗證，證據存 acceptance/ 目錄。</li>
+          </ul>
+        </details>
+        <details>
+          <summary>完整初始執行配置摘要（展開）</summary>
+          <ul>
+            <li>Developer model：01、02、03、05、06、07、09 為 claude-opus-5；04、08 為 claude-sonnet-5；全數 model_reasoning_effort high。</li>
+            <li>升級路徑：Claude 偏好 claude-opus-5／xhigh；其他後端採該後端已驗證可用的升級設定；max 需使用者明確核准。</li>
+            <li>執行時覆寫：最新使用者角色設定優先；偏好後端不可用時回退到唯一可用平台並留下紀錄。</li>
+          </ul>
+        </details>
+      </section>
+
+      <section id="風險與核准" data-step="05">
+        <h2>風險與核准選項</h2>
+        <div class="矩陣">
+          <table>
+            <thead>
+              <tr><th>風險</th><th>影響</th><th>預防（規劃）</th><th>回復方案</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>① roster schema 升版（Ticket 05）</td><td>缺 blurb 將拒絕啟動；fixtures 未同步會連鎖測試失敗</td><td>預檢與 fixtures 同步升版；fail-closed 給可讀錯誤</td><td>還原 agent_roster.json 與 seats.py</td></tr>
+              <tr><td>② 注入器踩 artifact 唯讀（Ticket 07）</td><td>污染唯讀 run 檔案、違反 ADR 0007</td><td>只動 HTTP 回應層；測試斷言磁碟位元組不變</td><td>移除注入層，原樣送出</td></tr>
+              <tr><td>③ 深色退場（Ticket 01）</td><td>OS 深色使用者體驗改變（已核准代價）</td><td>白底單套以對比 AA 實測把關</td><td>還原 THEMES</td></tr>
+              <tr><td>④ 離線換裝回歸（Ticket 06）</td><td>破壞報告契約與相對連結</td><td>run_verifier 相對連結檢查全綠為閘門；DOM 不動</td><td>還原兩個 renderer</td></tr>
+              <tr><td>⑤ pages.py 熱點寫入衝突</td><td>並行寫壞同一檔案</td><td>02→03→04→05→08 串行鏈；06、07 只寫其他檔案</td><td>依票回退各自寫入範圍</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>待使用者決定事項：無（規劃內全部事項已核准）。</p>
+        <h3>請選擇下一步</h3>
+        <div class="核准列">
+          <div class="核准項目">核准實作</div>
+          <div class="核准項目">修改規劃</div>
+          <div class="核准項目">暫停</div>
+        </div>
+      </section>
+    </main>
+
+    <p>Spec：docs/work/wp-20260810-092746-8728cbc6/spec.md　｜　產生時間：2026-08-10（規劃階段）</p>
+  </div>
+</body>
+</html>

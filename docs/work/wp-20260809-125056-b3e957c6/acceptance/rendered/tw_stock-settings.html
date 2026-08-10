@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>辯論規則設定・Hoya Bit 市場七席</title>
+<style>:root{--abstain:#92400e;--accent:#1d4ed8;--accent-text:#ffffff;--affirm:#166534;--border:#64748b;--danger:#b91c1c;--link:#1d4ed8;--muted:#475569;--oppose:#b91c1c;--page:#f1f5f9;--provider-claude:#9a3412;--provider-gemini:#6d28d9;--success:#166534;--surface:#ffffff;--text:#0f172a;--dim:.55;--font-mono:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,"Liberation Mono",monospace;--font-sans:system-ui,-apple-system,"Segoe UI","Microsoft JhengHei","PingFang TC","Noto Sans TC","Helvetica Neue",sans-serif;--line-base:1.55;--line-tight:1.25;--motion-fast:.18s;--radius-lg:.75rem;--radius-md:.5rem;--radius-pill:999px;--radius-sm:.25rem;--shell:86rem;--size-2xl:2.25rem;--size-2xs:.75rem;--size-lg:1.15rem;--size-md:1rem;--size-sm:.88rem;--size-xl:1.5rem;--size-xs:.8rem;--space-1:.25rem;--space-2:.375rem;--space-3:.5rem;--space-4:.75rem;--space-5:1rem;--space-6:1.5rem;--space-7:2rem;}@media (prefers-color-scheme: dark){:root{--abstain:#fcd34d;--accent:#93c5fd;--accent-text:#0f172a;--affirm:#4ade80;--border:#64748b;--danger:#fca5a5;--link:#93c5fd;--muted:#94a3b8;--oppose:#fca5a5;--page:#020617;--provider-claude:#fdba74;--provider-gemini:#c4b5fd;--success:#4ade80;--surface:#0f172a;--text:#f8fafc;}}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--page);color:var(--text);font-family:var(--font-sans);
+ font-size:var(--size-md);line-height:var(--line-base);}
+h1,h2,h3{line-height:var(--line-tight);}
+h1{margin:0 0 var(--space-2);font-size:var(--size-xl);letter-spacing:.01em;}
+a{color:var(--link);}
+a:hover{text-decoration:none;}
+code{font-family:var(--font-mono);font-size:var(--size-sm);}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px;
+ border-radius:var(--radius-sm);}
+.skip-link{position:absolute;left:-999px;top:0;background:var(--accent);
+ color:var(--accent-text);padding:var(--space-4) var(--space-5);z-index:10;
+ border-radius:0 0 var(--radius-md) 0;}
+.skip-link:focus{left:0;}
+.site-header,.top{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:var(--space-6) clamp(var(--space-5),4vw,var(--space-7)) var(--space-5);}
+.header-top,.top{display:flex;justify-content:space-between;align-items:flex-start;
+ gap:var(--space-5);flex-wrap:wrap;}
+.site-note,.top p:last-child{margin:var(--space-1) 0;color:var(--muted);
+ font-size:var(--size-xs);word-break:break-all;}
+.eyebrow{margin:0;color:var(--accent);font-weight:700;font-size:var(--size-2xs);
+ letter-spacing:.08em;}
+.top-actions{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;
+ justify-content:flex-end;}
+.connection{background:var(--surface);border:1px solid var(--border);
+ color:var(--success);padding:var(--space-1) var(--space-4);
+ border-radius:var(--radius-pill);font-weight:700;font-size:var(--size-xs);}
+.stop-form{margin:0;}
+.stop-form button{font:inherit;font-weight:700;font-size:var(--size-sm);
+ padding:var(--space-3) var(--space-4);border:1px solid var(--border);
+ border-radius:var(--radius-sm);background:var(--surface);color:var(--link);
+ cursor:pointer;white-space:nowrap;}
+main{display:block;max-width:var(--shell);margin:0 auto;
+ padding:var(--space-6) clamp(var(--space-5),4vw,var(--space-7)) var(--space-7);}
+main:focus{outline:none;}
+.site-footer{max-width:var(--shell);margin:0 auto;
+ padding:0 clamp(var(--space-5),4vw,var(--space-7)) var(--space-7);
+ color:var(--muted);font-size:var(--size-xs);}
+.page-tabs{display:flex;gap:var(--space-1);padding:var(--space-1);
+ border:1px solid var(--border);border-radius:var(--radius-md);flex-wrap:wrap;
+ background:var(--surface);}
+.page-tabs a,.page-tabs [role=link]{color:var(--link);text-decoration:none;
+ font-size:var(--size-sm);padding:var(--space-3) var(--space-4);
+ border-radius:var(--radius-sm);font-weight:700;white-space:nowrap;}
+.page-tabs a[aria-current=page]{background:var(--accent);color:var(--accent-text);}
+.page-tabs [aria-disabled=true]{color:var(--muted);opacity:var(--dim);}
+.card,.panel,.metric,.detail-panel,fieldset.settings-group{background:var(--surface);
+ border:1px solid var(--border);border-radius:var(--radius-md);}
+.card{padding:var(--space-5) var(--space-6);margin:0 0 var(--space-5);}
+.panel{padding:var(--space-5);margin:0 0 var(--space-5);}
+.metric{padding:var(--space-4);}
+.detail-panel{padding:0;overflow:hidden;}
+.card h2,.panel h2{margin:0 0 var(--space-5);font-size:var(--size-lg);}
+.field-grid{display:grid;gap:var(--space-5);
+ grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));}
+.field{display:flex;flex-direction:column;gap:var(--space-2);}
+.field label{font-weight:600;font-size:var(--size-sm);}
+.field input,.run-bar select,.run-bar input{font:inherit;font-size:var(--size-sm);
+ padding:var(--space-3) var(--space-4);border:1px solid var(--border);
+ border-radius:var(--radius-sm);background:var(--surface);color:var(--text);
+ min-width:0;}
+.hint{margin:0;color:var(--muted);font-size:var(--size-xs);}
+.actions{display:flex;flex-wrap:wrap;gap:var(--space-4);align-items:center;
+ margin-top:var(--space-5);}
+button.primary,.focus-action,.feed-jump,.run-bar button{font:inherit;font-weight:700;
+ border:1px solid var(--accent);border-radius:var(--radius-sm);
+ background:var(--accent);color:var(--accent-text);cursor:pointer;
+ text-decoration:none;}
+button.primary{padding:var(--space-3) var(--space-6);}
+a.secondary{padding:var(--space-3) var(--space-4);border:1px solid var(--border);
+ border-radius:var(--radius-sm);text-decoration:none;}
+button.primary[disabled]{opacity:var(--dim);cursor:not-allowed;}
+.field input[disabled]{opacity:var(--dim);}
+.problems{border-color:var(--accent);}
+.problems ul,.notice ul{margin:var(--space-3) 0 0;padding-left:var(--space-6);}
+.empty p{margin:var(--space-3) 0;}
+pre{overflow-x:auto;background:var(--page);border:1px solid var(--border);
+ border-radius:var(--radius-sm);padding:var(--space-4);margin:var(--space-4) 0 0;}
+.table-scroll{overflow-x:auto;}
+table{border-collapse:collapse;width:100%;font-size:var(--size-sm);}
+caption{text-align:left;color:var(--muted);font-size:var(--size-xs);
+ padding-bottom:var(--space-3);}
+th,td{text-align:left;vertical-align:top;padding:var(--space-3) var(--space-4);
+ border-bottom:1px solid var(--border);}
+thead th{font-size:var(--size-xs);letter-spacing:.04em;color:var(--muted);
+ border-bottom:2px solid var(--border);white-space:nowrap;}
+tbody tr:last-child th,tbody tr:last-child td{border-bottom:none;}
+th[scope=row]{font-weight:600;white-space:nowrap;}
+th[scope=row] .hint{display:block;font-weight:400;}
+.nowrap{white-space:nowrap;font-variant-numeric:tabular-nums;}
+.light{white-space:nowrap;}
+.unchanged{color:var(--muted);}
+.changes{margin:0;padding-left:var(--space-5);}
+.verdict{margin:0 0 var(--space-5);font-size:var(--size-lg);font-weight:600;}
+dl.summary{display:grid;gap:var(--space-4) var(--space-6);margin:0;
+ grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));}
+dl.summary dt{color:var(--muted);font-size:var(--size-xs);}
+dl.summary dd{margin:var(--space-1) 0 0;word-break:break-all;}
+.report-frame{width:100%;height:min(75vh,46rem);border:1px solid var(--border);
+ border-radius:var(--radius-md);background:var(--surface);}
+ul.evidence{list-style:none;margin:0;padding:0;display:grid;gap:var(--space-5);
+ grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));}
+ul.evidence>li{border:1px solid var(--border);border-radius:var(--radius-sm);
+ padding:var(--space-4) var(--space-5);background:var(--page);}
+.evidence-id{margin:0 0 var(--space-3);font-weight:600;}
+.evidence-id .hint{display:inline;margin-left:var(--space-3);}
+blockquote{margin:var(--space-3) 0;padding-left:var(--space-4);
+ border-left:3px solid var(--border);color:var(--muted);}
+.source code{word-break:break-all;}
+.run-bar{display:flex;align-items:center;gap:var(--space-4);flex-wrap:wrap;
+ margin:var(--space-5) 0 0;padding:var(--space-3) var(--space-5);
+ background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-md);font-size:var(--size-sm);color:var(--muted);}
+.run-bar code{font-weight:700;color:var(--accent);}
+.run-bar select{max-width:26rem;}
+.run-bar input{flex:1;min-width:12rem;}
+.run-bar a{color:var(--link);font-weight:700;}
+.run-bar button{padding:var(--space-2) var(--space-5);}
+.ask{align-items:baseline;}
+.ask-target{display:flex;align-items:baseline;gap:var(--space-3);flex-wrap:wrap;
+ flex:1;min-width:14rem;}
+.ask-target .hint{flex-basis:100%;}
+.ask-target input[disabled],.ask select[disabled]{opacity:var(--dim);}
+.tally-note{margin:var(--space-4) 0 0;color:var(--muted);font-size:var(--size-sm);}
+.focus-bar{display:flex;align-items:center;justify-content:space-between;
+ gap:var(--space-6);margin:var(--space-5) 0;
+ padding:var(--space-5) var(--space-6);background:var(--surface);
+ border:1px solid var(--border);border-left:.35rem solid var(--accent);
+ border-radius:var(--radius-md);}
+.focus-bar p{margin:var(--space-1) 0;}
+.focus-asset{color:var(--muted);font-weight:700;letter-spacing:.08em;
+ font-size:var(--size-xs);}
+.focus-bar h2{margin:var(--space-1) 0;font-size:var(--size-xl);}
+.focus-tally{margin-left:var(--space-2);color:var(--muted);font-size:var(--size-md);
+ font-weight:600;font-variant-numeric:tabular-nums;}
+.focus-detail{color:var(--muted);}
+.focus-action{flex:none;padding:var(--space-4) var(--space-5);}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+ gap:var(--space-3);margin:0 0 var(--space-5);}
+.metric small{display:block;color:var(--muted);font-size:var(--size-xs);}
+.metric strong{display:block;margin-top:var(--space-1);font-size:var(--size-lg);
+ font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.live-layout{display:grid;gap:var(--space-5);align-items:start;
+ grid-template-columns:minmax(0,1.7fr) minmax(20rem,.72fr);}
+.chat-panel{min-height:38rem;position:relative;}
+.secondary-grid{display:grid;grid-template-columns:1.1fr .8fr 1.2fr;
+ gap:var(--space-5);}
+.detail-panel summary{cursor:pointer;padding:var(--space-4) var(--space-5);
+ font-weight:700;color:var(--accent);}
+.detail-panel[open] summary{border-bottom:1px solid var(--border);}
+.detail-body{padding:var(--space-5);}
+.rules{display:flex;flex-direction:column;gap:var(--space-1);}
+.rule{display:flex;align-items:baseline;gap:var(--space-4);
+ border-left:4px solid var(--border);padding:var(--space-2) var(--space-4);
+ background:var(--page);font-size:var(--size-sm);}
+.rule time{min-width:4.2rem;font-weight:700;font-family:var(--font-mono);
+ font-variant-numeric:tabular-nums;}
+.rule.past{opacity:var(--dim);}
+.rule.current{border-color:var(--accent);background:var(--surface);font-weight:700;}
+.tally{display:grid;gap:var(--space-3);
+ grid-template-columns:repeat(auto-fit,minmax(5.5rem,1fr));}
+.tally div{padding:var(--space-4);border-radius:var(--radius-sm);
+ background:var(--page);text-align:center;}
+.tally-label{font-size:var(--size-xs);}
+.tally strong{display:block;font-size:var(--size-2xl);font-family:var(--font-mono);
+ font-variant-numeric:tabular-nums;}
+.agents{display:flex;flex-direction:column;gap:var(--space-2);}
+.agent{border:1px solid var(--border);border-radius:var(--radius-sm);
+ padding:var(--space-3) var(--space-4);background:var(--page);}
+.agent-head{display:grid;grid-template-columns:2.25rem 1fr auto;gap:var(--space-3);
+ align-items:center;}
+.avatar,.speaker-avatar{display:grid;place-items:center;
+ border-radius:var(--radius-pill);background:var(--surface);
+ border:1px solid var(--border);}
+.avatar{width:2.25rem;height:2.25rem;font-size:var(--size-lg);}
+.speaker-avatar{width:2rem;height:2rem;}
+.agent h3{margin:0;font-size:var(--size-sm);}
+.agent small,.speaker small{display:block;color:var(--muted);
+ font-size:var(--size-2xs);}
+.agent .stance{margin:0;font-size:var(--size-xs);font-weight:700;}
+.agent .status{grid-column:2/4;justify-self:start;background:var(--surface);
+ color:var(--accent);font-size:var(--size-2xs);
+ padding:var(--space-1) var(--space-2);border-radius:var(--radius-pill);}
+.feed{display:flex;flex-direction:column;gap:var(--space-4);max-height:48rem;
+ overflow:auto;padding-right:var(--space-1);}
+.feed-empty{color:var(--muted);}
+.message{width:min(52rem,96%);border:1px solid var(--border);
+ border-left:4px solid var(--accent);background:var(--page);
+ padding:var(--space-4) var(--space-5);
+ border-radius:var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg);
+ animation:bubble-in var(--motion-fast) ease-out;}
+.message-head{display:flex;justify-content:space-between;align-items:center;
+ gap:var(--space-4);}
+.speaker{display:flex;align-items:center;gap:var(--space-2);}
+.message time,.history-row time{color:var(--muted);font-size:var(--size-xs);
+ white-space:nowrap;font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.message p{margin:var(--space-2) 0;}
+.message-meta{display:flex;align-items:center;gap:var(--space-3);flex:none;}
+.message-reason strong,.stance-change strong{color:var(--muted);}
+.stance-change{font-size:var(--size-sm);}
+.stance-change.changed{color:var(--oppose);font-weight:700;}
+.badge{font-size:var(--size-2xs);font-weight:700;
+ padding:var(--space-1) var(--space-3);border-radius:var(--radius-pill);
+ background:var(--surface);border:1px solid var(--border);color:var(--muted);}
+.message-evidence{margin:var(--space-2) 0 0;color:var(--muted);
+ font-size:var(--size-2xs);}
+@keyframes bubble-in{from{opacity:0;transform:translateY(.5rem);}
+ to{opacity:1;transform:none;}}
+@media (prefers-reduced-motion:reduce){.message{animation:none;}}
+.feed-jump{position:absolute;left:50%;bottom:var(--space-5);
+ transform:translateX(-50%);padding:var(--space-3) var(--space-5);
+ border-radius:var(--radius-pill);}
+.history{list-style:none;margin:0;padding:0;}
+.history li{padding:var(--space-2) 0;border-bottom:1px solid var(--border);}
+.history-row{display:flex;align-items:center;gap:var(--space-3);
+ font-size:var(--size-sm);}
+.history-row time{min-width:4.2rem;}
+.history-seat{flex:1;min-width:0;}
+.history-row.changed{background:var(--page);border-left:3px solid var(--abstain);
+ padding-left:var(--space-3);}
+.history-flag{font-size:var(--size-2xs);font-weight:700;color:var(--abstain);
+ background:var(--surface);border:1px solid var(--border);
+ padding:var(--space-1) var(--space-3);border-radius:var(--radius-pill);}
+.notice.saved,.card.saved{border-color:var(--success);}
+.notice.refused,.card.refused{border-color:var(--danger);}
+.notice.locked{border-color:var(--border);}
+.notice.saved h2,.card.saved h2{color:var(--success);}
+.notice.refused h2,.card.refused h2{color:var(--danger);}
+.field-error{margin:0;color:var(--danger);font-size:var(--size-xs);font-weight:600;}
+.field input[aria-invalid="true"]{border-color:var(--danger);border-width:2px;}
+.hit-rate{margin:var(--space-1) 0 var(--space-4);font-size:var(--size-2xl);
+ font-weight:700;font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.stat-row{display:flex;flex-wrap:wrap;gap:var(--space-4) var(--space-6);
+ margin:var(--space-4) 0 0;}
+.stat-row .stat{display:grid;gap:var(--space-1);}
+.stat-row dt{font-size:var(--size-sm);color:var(--muted);}
+.stat-row dd{margin:0;font-size:var(--size-lg);font-weight:700;
+ font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+fieldset.settings-group{padding:var(--space-4) var(--space-5) var(--space-5);
+ margin:0 0 var(--space-5);min-width:0;}
+fieldset.settings-group legend{padding:0 var(--space-2);font-weight:700;
+ font-size:var(--size-sm);font-family:var(--font-mono);}
+ul.timeline{list-style:none;margin:0;padding:0;display:grid;gap:var(--space-3);}
+ul.timeline>li{display:grid;gap:var(--space-1) var(--space-4);align-items:center;
+ grid-template-columns:minmax(9rem,auto) 1fr minmax(9rem,auto);}
+.timeline-name{font-family:var(--font-mono);font-size:var(--size-sm);}
+.timeline-bar{display:block;height:.75rem;border:1px solid var(--border);
+ border-radius:var(--radius-sm);background:var(--page);overflow:hidden;}
+.timeline-fill{display:block;height:100%;background:var(--accent);}
+.timeline-value{font-family:var(--font-mono);font-variant-numeric:tabular-nums;
+ font-size:var(--size-sm);color:var(--muted);}
+@media (max-width:70rem){.metrics{grid-template-columns:repeat(2,1fr);}
+ .live-layout,.secondary-grid{grid-template-columns:1fr;}
+ .focus-bar{align-items:flex-start;}
+ .focus-tally{display:block;margin-left:0;}}
+@media (max-width:38rem){.top,.header-top,.focus-bar{flex-direction:column;}
+ .top-actions,.page-tabs{width:100%;}
+ .page-tabs a,.page-tabs [role=link]{flex:1;text-align:center;
+  padding:var(--space-3) var(--space-1);}
+ .metrics,.tally{grid-template-columns:1fr;}
+ .focus-action{width:100%;text-align:center;}
+ ul.timeline>li{grid-template-columns:1fr;}}
+.ask:has(option[value=""]:checked) .ask-target{display:none;}.ask:has(option[value="crypto"]:checked) .ask-target:not([data-asset-class="crypto"]){display:none;}.ask:has(option[value="tw_stock"]:checked) .ask-target:not([data-asset-class="tw_stock"]){display:none;}.ask:has(option[value="us_stock"]:checked) .ask-target:not([data-asset-class="us_stock"]){display:none;}.ask:has(option[value="open"]:checked) .ask-target:not([data-asset-class="open"]){display:none;}.ask:not(:has(option[value=""]:checked)) .ask-prompt{display:none;}.stance-unknown{color:var(--muted);}.outcome-abstain{color:var(--abstain);}.outcome-danger{color:var(--danger);}.outcome-muted{color:var(--muted);}.outcome-success{color:var(--success);}.message.claude{border-left-color:var(--provider-claude);}.message.codex{border-left-color:var(--accent);}.message.gemini{border-left-color:var(--provider-gemini);}</style>
+
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要內容</a>
+<header class="site-header">
+<div class="header-top">
+<div>
+<h1>辯論規則設定</h1>
+<p class="site-note">設定檔：/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/config/debate_rules.json</p>
+</div>
+<div class="top-actions">
+<nav class="page-tabs" aria-label="主要頁面"><a href="/">即時辯論</a><a href="/history">歷史與命中率</a><a href="/settings" aria-current="page">設定</a></nav>
+<form class="stop-form" method="post" action="/shutdown">
+<button type="submit">關閉伺服器</button>
+</form>
+</div>
+</div>
+</header>
+<main id="main" tabindex="-1">
+<section class="card" aria-labelledby="settings-timeline-heading">
+<h2 id="settings-timeline-heading">時間軸</h2>
+<p class="hint">每一條的長度就是該欄位的毫秒數，起點都是 T+0；括號是換算後的 MM:SS。</p>
+<ul class="timeline"><li><span class="timeline-name">debate_start</span><span class="timeline-bar" aria-hidden="true"><span class="timeline-fill" style="width:40.0%"></span></span><span class="timeline-value">240000 ms（04:00）</span></li><li><span class="timeline-name">round_one_window</span><span class="timeline-bar" aria-hidden="true"><span class="timeline-fill" style="width:30.0%"></span></span><span class="timeline-value">180000 ms（03:00）</span></li><li><span class="timeline-name">reduced_threshold_from</span><span class="timeline-bar" aria-hidden="true"><span class="timeline-fill" style="width:80.0%"></span></span><span class="timeline-value">480000 ms（08:00）</span></li><li><span class="timeline-name">final_round_start</span><span class="timeline-bar" aria-hidden="true"><span class="timeline-fill" style="width:87.5%"></span></span><span class="timeline-value">525000 ms（08:45）</span></li><li><span class="timeline-name">final_round_end</span><span class="timeline-bar" aria-hidden="true"><span class="timeline-fill" style="width:97.5%"></span></span><span class="timeline-value">585000 ms（09:45）</span></li><li><span class="timeline-name">force_stop</span><span class="timeline-bar" aria-hidden="true"><span class="timeline-fill" style="width:100.0%"></span></span><span class="timeline-value">600000 ms（10:00）</span></li></ul>
+</section>
+<form class="card" method="post" action="/settings" aria-labelledby="settings-form-heading">
+<h2 id="settings-form-heading">辯論規則</h2>
+<p class="hint">存檔會先交給載入器驗證；被拒絕時檔案不會有任何改動。存檔成功後從下一個開始的 run 生效。</p>
+<fieldset class="settings-group" aria-describedby="about-root">
+<legend>（最外層）</legend>
+<p class="hint" id="about-root">辯論時間門檻、票數階梯與燈號規則的唯一來源。改門檻只動這個檔，程式不得複製字面值。時間單位為毫秒，起點是該 run 的 T+0。</p>
+<div class="field-grid">
+<div class="field">
+<label for="schema_version">schema_version</label>
+<input id="schema_version" name="schema_version" type="text" value="1" aria-describedby="hint-schema_version" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-schema_version">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group" aria-describedby="about-timeline_ms">
+<legend>timeline_ms</legend>
+<p class="hint" id="about-timeline_ms">debate_start 是單幣題的預設封存時刻；實際起跑點以該 run 的封存時刻為準（research_scheduler.research_deadlines 是封存時刻的唯一權威）。round_one_window 是相對窗，第一輪牆＝該 run 封存時刻＋這個窗。其餘四個是絕對牆。</p>
+<div class="field-grid">
+<div class="field">
+<label for="timeline_ms.debate_start">debate_start</label>
+<input id="timeline_ms.debate_start" name="timeline_ms.debate_start" type="text" value="240000" aria-describedby="hint-timeline_ms.debate_start" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-timeline_ms.debate_start">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="timeline_ms.round_one_window">round_one_window</label>
+<input id="timeline_ms.round_one_window" name="timeline_ms.round_one_window" type="text" value="180000" aria-describedby="hint-timeline_ms.round_one_window" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-timeline_ms.round_one_window">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="timeline_ms.reduced_threshold_from">reduced_threshold_from</label>
+<input id="timeline_ms.reduced_threshold_from" name="timeline_ms.reduced_threshold_from" type="text" value="480000" aria-describedby="hint-timeline_ms.reduced_threshold_from" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-timeline_ms.reduced_threshold_from">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="timeline_ms.final_round_start">final_round_start</label>
+<input id="timeline_ms.final_round_start" name="timeline_ms.final_round_start" type="text" value="525000" aria-describedby="hint-timeline_ms.final_round_start" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-timeline_ms.final_round_start">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="timeline_ms.final_round_end">final_round_end</label>
+<input id="timeline_ms.final_round_end" name="timeline_ms.final_round_end" type="text" value="585000" aria-describedby="hint-timeline_ms.final_round_end" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-timeline_ms.final_round_end">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="timeline_ms.force_stop">force_stop</label>
+<input id="timeline_ms.force_stop" name="timeline_ms.force_stop" type="text" value="600000" aria-describedby="hint-timeline_ms.force_stop" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-timeline_ms.force_stop">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group" aria-describedby="about-vote_thresholds">
+<legend>vote_thresholds</legend>
+<p class="hint" id="about-vote_thresholds">採納立場所需的絕對票數。unanimous_blind_pass 是開場盲投直過的門檻：七席開場全部發布、還沒有任何辯論訊息，而且同一立場的開場票數達到它時，直接停止產報告。initial／reduced／forced_stop 是辯論後的有效票階梯，三者必須嚴格遞減；initial 從辯論開始生效，reduced 從 timeline_ms.reduced_threshold_from 生效，forced_stop 在 timeline_ms.force_stop 強制結算時生效。</p>
+<div class="field-grid">
+<div class="field">
+<label for="vote_thresholds.unanimous_blind_pass">unanimous_blind_pass</label>
+<input id="vote_thresholds.unanimous_blind_pass" name="vote_thresholds.unanimous_blind_pass" type="text" value="7" aria-describedby="hint-vote_thresholds.unanimous_blind_pass" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-vote_thresholds.unanimous_blind_pass">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="vote_thresholds.initial">initial</label>
+<input id="vote_thresholds.initial" name="vote_thresholds.initial" type="text" value="6" aria-describedby="hint-vote_thresholds.initial" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-vote_thresholds.initial">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="vote_thresholds.reduced">reduced</label>
+<input id="vote_thresholds.reduced" name="vote_thresholds.reduced" type="text" value="5" aria-describedby="hint-vote_thresholds.reduced" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-vote_thresholds.reduced">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="vote_thresholds.forced_stop">forced_stop</label>
+<input id="vote_thresholds.forced_stop" name="vote_thresholds.forced_stop" type="text" value="4" aria-describedby="hint-vote_thresholds.forced_stop" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-vote_thresholds.forced_stop">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group">
+<legend>confidence.light_scale[0]</legend>
+<div class="field-grid">
+<div class="field">
+<label for="confidence.light_scale[0].min_votes">min_votes</label>
+<input id="confidence.light_scale[0].min_votes" name="confidence.light_scale[0].min_votes" type="text" value="7" aria-describedby="hint-confidence.light_scale[0].min_votes" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-confidence.light_scale[0].min_votes">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="confidence.light_scale[0].level">level</label>
+<input id="confidence.light_scale[0].level" name="confidence.light_scale[0].level" type="text" value="blue" aria-describedby="hint-confidence.light_scale[0].level" autocomplete="off" spellcheck="false">
+<p class="hint" id="hint-confidence.light_scale[0].level">目前是文字。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group">
+<legend>confidence.light_scale[1]</legend>
+<div class="field-grid">
+<div class="field">
+<label for="confidence.light_scale[1].min_votes">min_votes</label>
+<input id="confidence.light_scale[1].min_votes" name="confidence.light_scale[1].min_votes" type="text" value="6" aria-describedby="hint-confidence.light_scale[1].min_votes" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-confidence.light_scale[1].min_votes">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="confidence.light_scale[1].level">level</label>
+<input id="confidence.light_scale[1].level" name="confidence.light_scale[1].level" type="text" value="green" aria-describedby="hint-confidence.light_scale[1].level" autocomplete="off" spellcheck="false">
+<p class="hint" id="hint-confidence.light_scale[1].level">目前是文字。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group">
+<legend>confidence.light_scale[2]</legend>
+<div class="field-grid">
+<div class="field">
+<label for="confidence.light_scale[2].min_votes">min_votes</label>
+<input id="confidence.light_scale[2].min_votes" name="confidence.light_scale[2].min_votes" type="text" value="5" aria-describedby="hint-confidence.light_scale[2].min_votes" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-confidence.light_scale[2].min_votes">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="confidence.light_scale[2].level">level</label>
+<input id="confidence.light_scale[2].level" name="confidence.light_scale[2].level" type="text" value="yellow" aria-describedby="hint-confidence.light_scale[2].level" autocomplete="off" spellcheck="false">
+<p class="hint" id="hint-confidence.light_scale[2].level">目前是文字。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group">
+<legend>confidence.light_scale[3]</legend>
+<div class="field-grid">
+<div class="field">
+<label for="confidence.light_scale[3].min_votes">min_votes</label>
+<input id="confidence.light_scale[3].min_votes" name="confidence.light_scale[3].min_votes" type="text" value="4" aria-describedby="hint-confidence.light_scale[3].min_votes" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-confidence.light_scale[3].min_votes">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="confidence.light_scale[3].level">level</label>
+<input id="confidence.light_scale[3].level" name="confidence.light_scale[3].level" type="text" value="orange" aria-describedby="hint-confidence.light_scale[3].level" autocomplete="off" spellcheck="false">
+<p class="hint" id="hint-confidence.light_scale[3].level">目前是文字。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group">
+<legend>confidence.light_scale[4]</legend>
+<div class="field-grid">
+<div class="field">
+<label for="confidence.light_scale[4].min_votes">min_votes</label>
+<input id="confidence.light_scale[4].min_votes" name="confidence.light_scale[4].min_votes" type="text" value="0" aria-describedby="hint-confidence.light_scale[4].min_votes" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-confidence.light_scale[4].min_votes">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="confidence.light_scale[4].level">level</label>
+<input id="confidence.light_scale[4].level" name="confidence.light_scale[4].level" type="text" value="red" aria-describedby="hint-confidence.light_scale[4].level" autocomplete="off" spellcheck="false">
+<p class="hint" id="hint-confidence.light_scale[4].level">目前是文字。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group">
+<legend>confidence.downgrades.few_independent_domains</legend>
+<div class="field-grid">
+<div class="field">
+<label for="confidence.downgrades.few_independent_domains.levels">levels</label>
+<input id="confidence.downgrades.few_independent_domains.levels" name="confidence.downgrades.few_independent_domains.levels" type="text" value="1" aria-describedby="hint-confidence.downgrades.few_independent_domains.levels" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-confidence.downgrades.few_independent_domains.levels">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="confidence.downgrades.few_independent_domains.min_independent_domains">min_independent_domains</label>
+<input id="confidence.downgrades.few_independent_domains.min_independent_domains" name="confidence.downgrades.few_independent_domains.min_independent_domains" type="text" value="2" aria-describedby="hint-confidence.downgrades.few_independent_domains.min_independent_domains" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-confidence.downgrades.few_independent_domains.min_independent_domains">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+</div>
+</fieldset>
+<fieldset class="settings-group">
+<legend>confidence.downgrades.low_trust_source</legend>
+<div class="field-grid">
+<div class="field">
+<label for="confidence.downgrades.low_trust_source.levels">levels</label>
+<input id="confidence.downgrades.low_trust_source.levels" name="confidence.downgrades.low_trust_source.levels" type="text" value="1" aria-describedby="hint-confidence.downgrades.low_trust_source.levels" autocomplete="off" spellcheck="false" inputmode="numeric">
+<p class="hint" id="hint-confidence.downgrades.low_trust_source.levels">目前是整數；送出的文字原樣交給載入器判斷。</p>
+</div>
+<div class="field">
+<label for="confidence.downgrades.low_trust_source.trusted_source_tiers">trusted_source_tiers</label>
+<input id="confidence.downgrades.low_trust_source.trusted_source_tiers" name="confidence.downgrades.low_trust_source.trusted_source_tiers" type="text" value="1, 2" aria-describedby="hint-confidence.downgrades.low_trust_source.trusted_source_tiers" autocomplete="off" spellcheck="false">
+<p class="hint" id="hint-confidence.downgrades.low_trust_source.trusted_source_tiers">目前是陣列，用半形逗號分隔；清空代表空陣列。</p>
+</div>
+<div class="field">
+<label for="confidence.downgrades.low_trust_source.exempt_seat_ids">exempt_seat_ids</label>
+<input id="confidence.downgrades.low_trust_source.exempt_seat_ids" name="confidence.downgrades.low_trust_source.exempt_seat_ids" type="text" value="social-macro" aria-describedby="hint-confidence.downgrades.low_trust_source.exempt_seat_ids" autocomplete="off" spellcheck="false">
+<p class="hint" id="hint-confidence.downgrades.low_trust_source.exempt_seat_ids">目前是陣列，用半形逗號分隔；清空代表空陣列。</p>
+</div>
+</div>
+</fieldset>
+<div class="actions">
+<button class="primary" type="submit">存檔</button>
+</div>
+</form>
+<section class="card" aria-labelledby="settings-about-heading">
+<h2 id="settings-about-heading">設定檔內的說明</h2>
+<p class="hint">這些是 JSON 裡以底線開頭的註解欄位，本頁只顯示，不修改。</p>
+<dl class="summary"><div><dt><code>（最外層）</code></dt><dd>辯論時間門檻、票數階梯與燈號規則的唯一來源。改門檻只動這個檔，程式不得複製字面值。時間單位為毫秒，起點是該 run 的 T+0。</dd></div><div><dt><code>timeline_ms</code></dt><dd>debate_start 是單幣題的預設封存時刻；實際起跑點以該 run 的封存時刻為準（research_scheduler.research_deadlines 是封存時刻的唯一權威）。round_one_window 是相對窗，第一輪牆＝該 run 封存時刻＋這個窗。其餘四個是絕對牆。</dd></div><div><dt><code>vote_thresholds</code></dt><dd>採納立場所需的絕對票數。unanimous_blind_pass 是開場盲投直過的門檻：七席開場全部發布、還沒有任何辯論訊息，而且同一立場的開場票數達到它時，直接停止產報告。initial／reduced／forced_stop 是辯論後的有效票階梯，三者必須嚴格遞減；initial 從辯論開始生效，reduced 從 timeline_ms.reduced_threshold_from 生效，forced_stop 在 timeline_ms.force_stop 強制結算時生效。</dd></div><div><dt><code>confidence</code></dt><dd>ADR 0003 的純票數燈號制，report_contract.confidence_cap 的唯一來源。min_votes 比對的是最終採納立場的有效票數，不是全場有效票數。light_scale 由好到壞排序，最後一級的 min_votes 必須是 0；降級＝沿著這個順序往後移 levels 格，末端夾住。級別字串本身（有哪些燈、誰比誰好、配哪個圖示）由 report_contract.CONFIDENCE_LEVELS 擁有，本檔只決定「幾票對哪一級」，兩者必須逐字一致且同序，否則載入時就會被拒絕。</dd></div><div><dt><code>confidence.downgrades</code></dt><dd>ADR 0003 只保留這兩條，判定範圍是採納立場實際引用的證據卡。刪掉整條規則就是關掉它。exempt_seat_ids 內的席位貢獻的證據卡不參與該條規則的判定（輿情席職責就是蒐集三手輿情訊號，對它套用來源等級降級屬於誤殺），這個欄位只有逐卡判定的 low_trust_source 有；few_independent_domains 數的是網域集合基數，豁免會讓集合變小、反而更容易降級，因此不提供該欄位。</dd></div></dl>
+</section>
+</main>
+<footer class="site-footer"><p>本頁會寫入辯論規則設定檔；run artifact 一律只讀，不會修改任何一份紀錄。</p></footer>
+</body>
+</html>

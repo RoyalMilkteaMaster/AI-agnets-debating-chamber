@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>完整辯論室 — Hoya Bit 可稽核市場研究</title>
+<style>:root{--abstain:#8a5000;--accent:#1967d2;--accent-text:#ffffff;--affirm:#137333;--border:#80868b;--danger:#c5221f;--glass-surface:rgba(255,255,255,0.72);--google-blue:#186ede;--google-green:#188038;--google-red:#d93025;--google-yellow:#fbbc04;--link:#1967d2;--muted:#5f6368;--oppose:#c5221f;--page:#f8f9fa;--provider-claude:#b06000;--provider-gemini:#6d28d9;--success:#137333;--surface:#ffffff;--text:#202124;--dim:.55;--font-mono:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,"Liberation Mono",monospace;--font-sans:"Microsoft JhengHei",system-ui,-apple-system,"Segoe UI","PingFang TC","Noto Sans TC","Helvetica Neue",sans-serif;--glass-blur:12px;--line-base:1.55;--line-tight:1.25;--motion-fast:.18s;--radius-lg:.75rem;--radius-md:.5rem;--radius-pill:999px;--radius-sm:.25rem;--shell:86rem;--size-2xl:2.25rem;--size-2xs:.75rem;--size-lg:1.15rem;--size-md:1rem;--size-sm:.88rem;--size-xl:1.5rem;--size-xs:.8rem;--space-1:.25rem;--space-2:.375rem;--space-3:.5rem;--space-4:.75rem;--space-5:1rem;--space-6:1.5rem;--space-7:2rem;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--page);color:var(--text);font-family:var(--font-sans);
+ font-size:var(--size-md);line-height:var(--line-base);}
+main{max-width:var(--shell);margin:auto;padding:var(--space-6);}
+h1,h2,h3,h4{line-height:var(--line-tight);}
+h1{font-size:var(--size-xl);margin:var(--space-1) 0;}
+h2{margin:var(--space-1) 0 var(--space-4);font-size:var(--size-lg);}
+h3{margin:0;font-size:var(--size-md);}
+h4{margin:var(--space-3) 0 var(--space-1);color:var(--muted);font-size:var(--size-xs);}
+a{color:var(--link);overflow-wrap:anywhere;}
+code{font-family:var(--font-mono);font-size:var(--size-sm);}
+a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px;}
+.page-header{display:flex;justify-content:space-between;align-items:center;
+ gap:var(--space-5);margin:0 0 var(--space-5);}
+.eyebrow{margin:0;color:var(--muted);font-size:var(--size-2xs);font-weight:700;
+ letter-spacing:.08em;text-transform:uppercase;}
+.page-tabs{display:flex;gap:var(--space-1);padding:var(--space-1);
+ background-color:var(--glass-surface);border:1px solid var(--border);
+ border-radius:var(--radius-pill);
+ -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));}
+.page-tabs a{color:var(--link);text-decoration:none;font-weight:700;
+ padding:var(--space-3) var(--space-4);border-radius:var(--radius-pill);white-space:nowrap;}
+.page-tabs a[aria-current=page]{background:var(--accent);color:var(--accent-text);}
+section,.page-footer{background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-lg);padding:var(--space-6);margin:0 0 var(--space-5);}
+.run-summary{padding-top:var(--space-7);background-color:var(--glass-surface);
+ -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));}
+.run-summary .eyebrow{color:var(--accent);}
+.summary-main{display:flex;align-items:center;justify-content:space-between;
+ gap:var(--space-6);}
+.summary-main h2{margin:var(--space-1) 0;font-size:var(--size-xl);}
+.summary-tally{margin:var(--space-1) 0;color:var(--muted);font-weight:700;}
+.primary-action{flex:none;background:var(--accent);color:var(--accent-text);
+ font-weight:700;text-decoration:none;padding:var(--space-4) var(--space-5);
+ border-radius:var(--radius-md);}
+.summary-meta{grid-template-columns:7rem 1fr;max-width:36rem;
+ margin-top:var(--space-5);padding-top:var(--space-4);
+ border-top:1px solid var(--border);}
+dl{display:grid;grid-template-columns:10rem 1fr;gap:var(--space-2) var(--space-5);margin:0;}
+dt{font-weight:700;color:var(--muted);}
+dd{margin:0;}
+.chat{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;
+ gap:var(--space-4);}
+.round-mark{display:flex;align-items:center;gap:var(--space-3);color:var(--muted);
+ font-size:var(--size-xs);font-weight:700;margin:var(--space-2) 0;}
+.round-mark span{background:var(--page);border:1px solid var(--border);
+ border-radius:var(--radius-pill);padding:var(--space-1) var(--space-4);}
+.turn{display:flex;gap:var(--space-3);align-items:flex-start;--tone:var(--border);}
+.avatar{flex:none;width:2.6rem;height:2.6rem;border-radius:50%;display:grid;
+ place-items:center;font-size:var(--size-lg);background:var(--page);
+ border:1px solid var(--tone);}
+.bubble{flex:1;min-width:0;background:var(--surface);border:1px solid var(--border);
+ border-left:4px solid var(--tone);padding:var(--space-4) var(--space-5);
+ border-radius:var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg);}
+.speaker{color:var(--text);font-size:var(--size-md);font-weight:700;}
+.meta{display:flex;flex-wrap:wrap;gap:var(--space-1) var(--space-4);
+ margin:var(--space-1) 0;font-size:var(--size-xs);color:var(--muted);}
+.meta .clock{font-variant-numeric:tabular-nums;}
+.meta .stance{font-weight:700;color:var(--text);}
+.says p,.change,.change-note,.cites{margin:var(--space-1) 0;}
+.says p{white-space:pre-wrap;}
+.change{font-size:var(--size-sm);}
+.change.changed{border:1px dashed var(--tone);border-radius:var(--radius-sm);
+ padding:var(--space-2) var(--space-3);margin:var(--space-3) 0;background:var(--page);}
+.change-note{font-size:var(--size-sm);color:var(--muted);}
+.cites{font-size:var(--size-sm);margin-top:var(--space-3);}
+.evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(20rem,1fr));
+ gap:var(--space-4);align-items:start;}
+.evidence-card{background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-md);}
+.evidence-card summary{cursor:pointer;padding:var(--space-4) var(--space-5);
+ display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-3);align-items:center;
+ font-weight:700;border-radius:var(--radius-md);}
+.evidence-card .hint{color:var(--muted);font-size:var(--size-2xs);font-weight:400;}
+.evidence-body{padding:0 var(--space-5) var(--space-5);}
+.evidence-meta{grid-template-columns:7rem 1fr;font-size:var(--size-sm);}
+.tier{color:var(--accent);font-size:var(--size-2xs);font-weight:700;}
+.unsafe-url,.unknown{color:var(--danger);font-weight:700;overflow-wrap:anywhere;}
+@media(max-width:60rem){.page-header,.summary-main{flex-direction:column;
+ align-items:flex-start;}
+ .page-tabs{width:100%;}
+ .page-tabs a{flex:1;text-align:center;}
+ dl,.evidence-meta{grid-template-columns:1fr;}}
+@media print{body{background:var(--surface);}
+ main{max-width:none;padding:0;}
+ .page-tabs,.primary-action{display:none;}
+ .evidence-card .hint{display:none;}
+ section,.turn,.evidence-card{break-inside:avoid;}
+ a{color:var(--text);}}
+.run-summary{background-image:linear-gradient(90deg,var(--google-blue) 0%,var(--google-blue) 25%,var(--google-green) 25%,var(--google-green) 50%,var(--google-red) 50%,var(--google-red) 75%,var(--google-yellow) 75%,var(--google-yellow) 100%);background-repeat:no-repeat;background-size:100% 4px;background-position:top;}.tone-1{--tone:var(--google-blue);}.tone-2{--tone:var(--google-green);}.tone-3{--tone:var(--google-red);}.tone-4{--tone:var(--google-yellow);}.tone-5{--tone:var(--google-blue);}.tone-6{--tone:var(--google-green);}.tone-7{--tone:var(--google-red);}</style>
+</head>
+<body><style>.hoya-site-nav{--abstain:#8a5000;--accent:#1967d2;--accent-text:#ffffff;--affirm:#137333;--border:#80868b;--danger:#c5221f;--dim:.55;--font-mono:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,"Liberation Mono",monospace;--font-sans:"Microsoft JhengHei",system-ui,-apple-system,"Segoe UI","PingFang TC","Noto Sans TC","Helvetica Neue",sans-serif;--glass-blur:12px;--glass-surface:rgba(255,255,255,0.72);--google-blue:#186ede;--google-green:#188038;--google-red:#d93025;--google-yellow:#fbbc04;--line-base:1.55;--line-tight:1.25;--link:#1967d2;--motion-fast:.18s;--muted:#5f6368;--oppose:#c5221f;--page:#f8f9fa;--provider-claude:#b06000;--provider-gemini:#6d28d9;--radius-lg:.75rem;--radius-md:.5rem;--radius-pill:999px;--radius-sm:.25rem;--shell:86rem;--size-2xl:2.25rem;--size-2xs:.75rem;--size-lg:1.15rem;--size-md:1rem;--size-sm:.88rem;--size-xl:1.5rem;--size-xs:.8rem;--space-1:.25rem;--space-2:.375rem;--space-3:.5rem;--space-4:.75rem;--space-5:1rem;--space-6:1.5rem;--space-7:2rem;--success:#137333;--surface:#ffffff;--text:#202124;display:flex;align-items:center;gap:var(--space-1);flex-wrap:wrap;margin:0;padding:var(--space-1);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);font-family:var(--font-sans);font-size:var(--size-sm);line-height:var(--line-base);}.hoya-site-nav a,.hoya-site-nav [role=link]{text-decoration:none;font-weight:700;white-space:nowrap;padding:var(--space-3) var(--space-4);border-radius:var(--radius-sm);}.hoya-site-nav a{color:var(--link);}.hoya-site-nav a[aria-current=page]{background:var(--accent);color:var(--accent-text);}.hoya-site-nav [aria-disabled=true]{color:var(--muted);opacity:var(--dim);}.hoya-site-nav .hoya-site-nav-admin{margin-inline-start:auto;}</style><nav class="hoya-site-nav" aria-label="站內導覽"><a href="/">即時辯論</a><a href="/history">歷史與命中率</a><a href="/run/20260314T015926Z-2330-aaa111/report.html">市場報告</a><a href="/run/20260314T015926Z-2330-aaa111/debate.html" aria-current="page">完整辯論</a><a href="/settings" class="hoya-site-nav-admin">設定</a></nav>
+<main>
+<header class="page-header">
+<div><p class="eyebrow">Hoya Bit 可稽核市場研究</p><h1>完整辯論室</h1></div>
+<nav class="page-tabs" aria-label="主要頁面"><a href="report.html">市場報告</a><a href="debate.html" aria-current="page">完整辯論</a></nav>
+</header>
+<section class="run-summary" aria-labelledby="summary-title">
+<div class="summary-main"><div><p class="eyebrow">本場辯論摘要</p>
+<h2 id="summary-title">達成共識｜採納立場：偏多</h2>
+<p class="summary-tally">偏多：6／偏空：1／方向不明：0</p></div>
+<a class="primary-action" href="report.html">回到市場報告</a></div>
+<dl class="summary-meta">
+<dt>共識狀態</dt><dd>達成共識</dd>
+<dt>採納立場</dt><dd>偏多</dd>
+<dt>票數</dt><dd>偏多：6／偏空：1／方向不明：0</dd>
+<dt>分析期間</dt><dd>過去 14 日</dd>
+<dt>公開發言則數</dt><dd>33 則</dd>
+<dt>證據卡數</dt><dd>7 張</dd>
+</dl>
+</section>
+<section class="transcript" aria-labelledby="transcript-title">
+<h2 id="transcript-title">七席公開辯論聊天室</h2>
+<p>依本次執行記錄的原始順序逐則轉錄，未重新排序或摘要。</p>
+<ol class="chat">
+<li class="round-mark"><span>初始立場</span></li>
+<li class="turn tone-1" id="turn-1">
+<span class="avatar" aria-hidden="true">📈</span>
+<article class="bubble">
+<h3 class="speaker">Codex・技術面分析師（Agent 1）</h3>
+<p class="meta"><span class="clock">T+04:30</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：否（首次公開表態）</p>
+<p class="cites">引用證據：<a href="#evidence-spot-technical-01"><code>spot-technical-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-2" id="turn-2">
+<span class="avatar" aria-hidden="true">⚙️</span>
+<article class="bubble">
+<h3 class="speaker">Codex・籌碼面分析師（Agent 2）</h3>
+<p class="meta"><span class="clock">T+04:30</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：否（首次公開表態）</p>
+<p class="cites">引用證據：<a href="#evidence-derivatives-01"><code>derivatives-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-3" id="turn-3">
+<span class="avatar" aria-hidden="true">⛓️</span>
+<article class="bubble">
+<h3 class="speaker">Claude・法人動向分析師（Agent 3）</h3>
+<p class="meta"><span class="clock">T+04:30</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：否（首次公開表態）</p>
+<p class="cites">引用證據：<a href="#evidence-onchain-01"><code>onchain-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-4" id="turn-4">
+<span class="avatar" aria-hidden="true">📣</span>
+<article class="bubble">
+<h3 class="speaker">Claude・官方公告哨兵（Agent 4）</h3>
+<p class="meta"><span class="clock">T+04:30</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：否（首次公開表態）</p>
+<p class="cites">引用證據：<a href="#evidence-official-events-01"><code>official-events-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-5" id="turn-5">
+<span class="avatar" aria-hidden="true">📰</span>
+<article class="bubble">
+<h3 class="speaker">Codex・新聞探員（Agent 5）</h3>
+<p class="meta"><span class="clock">T+04:30</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：否（首次公開表態）</p>
+<p class="cites">引用證據：<a href="#evidence-news-01"><code>news-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-6" id="turn-6">
+<span class="avatar" aria-hidden="true">🌐</span>
+<article class="bubble">
+<h3 class="speaker">Claude・輿情與大盤觀察員（Agent 6）</h3>
+<p class="meta"><span class="clock">T+04:30</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：否（首次公開表態）</p>
+<p class="cites">引用證據：<a href="#evidence-social-macro-01"><code>social-macro-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-7">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+04:30</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：否（首次公開表態）</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="round-mark"><span>第 1 輪</span></li>
+<li class="turn tone-1" id="turn-8">
+<span class="avatar" aria-hidden="true">📈</span>
+<article class="bubble">
+<h3 class="speaker">Codex・技術面分析師（Agent 1）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 counter-evidence 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-spot-technical-01"><code>spot-technical-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-2" id="turn-9">
+<span class="avatar" aria-hidden="true">⚙️</span>
+<article class="bubble">
+<h3 class="speaker">Codex・籌碼面分析師（Agent 2）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 counter-evidence 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-derivatives-01"><code>derivatives-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-3" id="turn-10">
+<span class="avatar" aria-hidden="true">⛓️</span>
+<article class="bubble">
+<h3 class="speaker">Claude・法人動向分析師（Agent 3）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 counter-evidence 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-onchain-01"><code>onchain-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-4" id="turn-11">
+<span class="avatar" aria-hidden="true">📣</span>
+<article class="bubble">
+<h3 class="speaker">Claude・官方公告哨兵（Agent 4）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 counter-evidence 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-official-events-01"><code>official-events-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-5" id="turn-12">
+<span class="avatar" aria-hidden="true">📰</span>
+<article class="bubble">
+<h3 class="speaker">Codex・新聞探員（Agent 5）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 counter-evidence 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-news-01"><code>news-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-6" id="turn-13">
+<span class="avatar" aria-hidden="true">🌐</span>
+<article class="bubble">
+<h3 class="speaker">Claude・輿情與大盤觀察員（Agent 6）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 counter-evidence 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-social-macro-01"><code>social-macro-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-14">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 spot-technical 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-15">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 derivatives 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-16">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 onchain 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-17">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 official-events 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-18">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 news 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-19">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>挑戰理由</h4><p>本席以已引用的證據反駁 social-macro 的公開立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-1" id="turn-20">
+<span class="avatar" aria-hidden="true">📈</span>
+<article class="bubble">
+<h3 class="speaker">Codex・技術面分析師（Agent 1）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席回應反方挑戰並維持原立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-spot-technical-01"><code>spot-technical-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-2" id="turn-21">
+<span class="avatar" aria-hidden="true">⚙️</span>
+<article class="bubble">
+<h3 class="speaker">Codex・籌碼面分析師（Agent 2）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席回應反方挑戰並維持原立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-derivatives-01"><code>derivatives-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-3" id="turn-22">
+<span class="avatar" aria-hidden="true">⛓️</span>
+<article class="bubble">
+<h3 class="speaker">Claude・法人動向分析師（Agent 3）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席回應反方挑戰並維持原立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-onchain-01"><code>onchain-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-4" id="turn-23">
+<span class="avatar" aria-hidden="true">📣</span>
+<article class="bubble">
+<h3 class="speaker">Claude・官方公告哨兵（Agent 4）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席回應反方挑戰並維持原立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-official-events-01"><code>official-events-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-5" id="turn-24">
+<span class="avatar" aria-hidden="true">📰</span>
+<article class="bubble">
+<h3 class="speaker">Codex・新聞探員（Agent 5）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席回應反方挑戰並維持原立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-news-01"><code>news-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-6" id="turn-25">
+<span class="avatar" aria-hidden="true">🌐</span>
+<article class="bubble">
+<h3 class="speaker">Claude・輿情與大盤觀察員（Agent 6）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席回應反方挑戰並維持原立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-social-macro-01"><code>social-macro-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-26">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席回應反方挑戰並維持原立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-7" id="turn-27">
+<span class="avatar" aria-hidden="true">🔎</span>
+<article class="bubble">
+<h3 class="speaker">Gemini・基本面分析師（Agent 7）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏空</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-counter-evidence-01"><code>counter-evidence-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-1" id="turn-28">
+<span class="avatar" aria-hidden="true">📈</span>
+<article class="bubble">
+<h3 class="speaker">Codex・技術面分析師（Agent 1）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-spot-technical-01"><code>spot-technical-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-2" id="turn-29">
+<span class="avatar" aria-hidden="true">⚙️</span>
+<article class="bubble">
+<h3 class="speaker">Codex・籌碼面分析師（Agent 2）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-derivatives-01"><code>derivatives-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-3" id="turn-30">
+<span class="avatar" aria-hidden="true">⛓️</span>
+<article class="bubble">
+<h3 class="speaker">Claude・法人動向分析師（Agent 3）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-onchain-01"><code>onchain-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-4" id="turn-31">
+<span class="avatar" aria-hidden="true">📣</span>
+<article class="bubble">
+<h3 class="speaker">Claude・官方公告哨兵（Agent 4）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-official-events-01"><code>official-events-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-5" id="turn-32">
+<span class="avatar" aria-hidden="true">📰</span>
+<article class="bubble">
+<h3 class="speaker">Codex・新聞探員（Agent 5）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-news-01"><code>news-01</code></a></p>
+</article>
+</li>
+<li class="turn tone-6" id="turn-33">
+<span class="avatar" aria-hidden="true">🌐</span>
+<article class="bubble">
+<h3 class="speaker">Claude・輿情與大盤觀察員（Agent 6）</h3>
+<p class="meta"><span class="clock">T+05:20</span><span class="stance">立場：偏多</span></p>
+<div class="says"><h4>判斷理由</h4><p>本席依據已引用的證據說明目前立場。</p></div>
+<p class="change">是否變更立場：未變更</p>
+<p class="cites">引用證據：<a href="#evidence-social-macro-01"><code>social-macro-01</code></a></p>
+</article>
+</li>
+</ol>
+</section>
+<section id="evidence-library" aria-labelledby="evidence-title">
+<h2 id="evidence-title">完整證據卡</h2>
+<p>每張證據卡預設收合，點選或按 Enter 即可展開完整內容與來源。</p>
+<div class="evidence-grid">
+<details class="evidence-card" id="evidence-spot-technical-01"><summary><span class="ev-id">證據卡 <code>spot-technical-01</code></span><span class="tier">第一級：官方或原始資料</span><span class="hint">點選展開完整證據內容</span></summary><div class="evidence-body"><p><strong>證據陳述：</strong>本席提交的測試證據陳述，僅用於驗證流程。</p><dl class="evidence-meta"><dt>提出研究席</dt><dd>Codex・技術面分析師（Agent 1）</dd><dt>資料類別</dt><dd>技術面分析師</dd><dt>證據方向</dt><dd>支持目前判斷</dd><dt>來源網站</dt><dd>example-source:spot-technical</dd><dt>來源等級</dt><dd>第一級：官方或原始資料</dd><dt>發布時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd><dt>取得時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd></dl><p><strong>原文摘錄：</strong>close 68,420</p><p><strong>可信度說明：</strong>測試資料，不是真實市場證據。</p><p class="source"><a class="source-link" href="https://example.invalid/spot-technical/1" rel="noreferrer">開啟來源網址：https://example.invalid/spot-technical/1</a></p></div></details>
+<details class="evidence-card" id="evidence-derivatives-01"><summary><span class="ev-id">證據卡 <code>derivatives-01</code></span><span class="tier">第一級：官方或原始資料</span><span class="hint">點選展開完整證據內容</span></summary><div class="evidence-body"><p><strong>證據陳述：</strong>本席提交的測試證據陳述，僅用於驗證流程。</p><dl class="evidence-meta"><dt>提出研究席</dt><dd>Codex・籌碼面分析師（Agent 2）</dd><dt>資料類別</dt><dd>籌碼面分析師</dd><dt>證據方向</dt><dd>支持目前判斷</dd><dt>來源網站</dt><dd>example-source:derivatives</dd><dt>來源等級</dt><dd>第一級：官方或原始資料</dd><dt>發布時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd><dt>取得時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd></dl><p><strong>原文摘錄：</strong>close 68,420</p><p><strong>可信度說明：</strong>測試資料，不是真實市場證據。</p><p class="source"><a class="source-link" href="https://example.invalid/derivatives/1" rel="noreferrer">開啟來源網址：https://example.invalid/derivatives/1</a></p></div></details>
+<details class="evidence-card" id="evidence-onchain-01"><summary><span class="ev-id">證據卡 <code>onchain-01</code></span><span class="tier">第一級：官方或原始資料</span><span class="hint">點選展開完整證據內容</span></summary><div class="evidence-body"><p><strong>證據陳述：</strong>本席提交的測試證據陳述，僅用於驗證流程。</p><dl class="evidence-meta"><dt>提出研究席</dt><dd>Claude・法人動向分析師（Agent 3）</dd><dt>資料類別</dt><dd>法人動向分析師</dd><dt>證據方向</dt><dd>支持目前判斷</dd><dt>來源網站</dt><dd>example-source:onchain</dd><dt>來源等級</dt><dd>第一級：官方或原始資料</dd><dt>發布時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd><dt>取得時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd></dl><p><strong>原文摘錄：</strong>close 68,420</p><p><strong>可信度說明：</strong>測試資料，不是真實市場證據。</p><p class="source"><a class="source-link" href="https://example.invalid/onchain/1" rel="noreferrer">開啟來源網址：https://example.invalid/onchain/1</a></p></div></details>
+<details class="evidence-card" id="evidence-official-events-01"><summary><span class="ev-id">證據卡 <code>official-events-01</code></span><span class="tier">第一級：官方或原始資料</span><span class="hint">點選展開完整證據內容</span></summary><div class="evidence-body"><p><strong>證據陳述：</strong>本席提交的測試證據陳述，僅用於驗證流程。</p><dl class="evidence-meta"><dt>提出研究席</dt><dd>Claude・官方公告哨兵（Agent 4）</dd><dt>資料類別</dt><dd>官方公告哨兵</dd><dt>證據方向</dt><dd>支持目前判斷</dd><dt>來源網站</dt><dd>example-source:official-events</dd><dt>來源等級</dt><dd>第一級：官方或原始資料</dd><dt>發布時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd><dt>取得時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd></dl><p><strong>原文摘錄：</strong>close 68,420</p><p><strong>可信度說明：</strong>測試資料，不是真實市場證據。</p><p class="source"><a class="source-link" href="https://example.invalid/official-events/1" rel="noreferrer">開啟來源網址：https://example.invalid/official-events/1</a></p></div></details>
+<details class="evidence-card" id="evidence-news-01"><summary><span class="ev-id">證據卡 <code>news-01</code></span><span class="tier">第二級：可信二手資料</span><span class="hint">點選展開完整證據內容</span></summary><div class="evidence-body"><p><strong>證據陳述：</strong>本席提交的測試證據陳述，僅用於驗證流程。</p><dl class="evidence-meta"><dt>提出研究席</dt><dd>Codex・新聞探員（Agent 5）</dd><dt>資料類別</dt><dd>新聞探員</dd><dt>證據方向</dt><dd>支持目前判斷</dd><dt>來源網站</dt><dd>example-source:news</dd><dt>來源等級</dt><dd>第二級：可信二手資料</dd><dt>發布時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd><dt>取得時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd></dl><p><strong>原文摘錄：</strong>close 68,420</p><p><strong>可信度說明：</strong>測試資料，不是真實市場證據。</p><p class="source"><a class="source-link" href="https://example.invalid/news/1" rel="noreferrer">開啟來源網址：https://example.invalid/news/1</a></p></div></details>
+<details class="evidence-card" id="evidence-social-macro-01"><summary><span class="ev-id">證據卡 <code>social-macro-01</code></span><span class="tier">第二級：可信二手資料</span><span class="hint">點選展開完整證據內容</span></summary><div class="evidence-body"><p><strong>證據陳述：</strong>本席提交的測試證據陳述，僅用於驗證流程。</p><dl class="evidence-meta"><dt>提出研究席</dt><dd>Claude・輿情與大盤觀察員（Agent 6）</dd><dt>資料類別</dt><dd>輿情與大盤觀察員</dd><dt>證據方向</dt><dd>支持目前判斷</dd><dt>來源網站</dt><dd>example-source:social-macro</dd><dt>來源等級</dt><dd>第二級：可信二手資料</dd><dt>發布時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd><dt>取得時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd></dl><p><strong>原文摘錄：</strong>close 68,420</p><p><strong>可信度說明：</strong>測試資料，不是真實市場證據。</p><p class="source"><a class="source-link" href="https://example.invalid/social-macro/1" rel="noreferrer">開啟來源網址：https://example.invalid/social-macro/1</a></p></div></details>
+<details class="evidence-card" id="evidence-counter-evidence-01"><summary><span class="ev-id">證據卡 <code>counter-evidence-01</code></span><span class="tier">第二級：可信二手資料</span><span class="hint">點選展開完整證據內容</span></summary><div class="evidence-body"><p><strong>證據陳述：</strong>本席提交的測試證據陳述，僅用於驗證流程。</p><dl class="evidence-meta"><dt>提出研究席</dt><dd>Gemini・基本面分析師（Agent 7）</dd><dt>資料類別</dt><dd>基本面分析師</dd><dt>證據方向</dt><dd>反對目前判斷</dd><dt>來源網站</dt><dd>example-source:counter-evidence</dd><dt>來源等級</dt><dd>第二級：可信二手資料</dd><dt>發布時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd><dt>取得時間</dt><dd>2026/03/14 09:00:00（台北時間；原始時間 2026-03-14T01:00:00Z）</dd></dl><p><strong>原文摘錄：</strong>close 68,420</p><p><strong>可信度說明：</strong>測試資料，不是真實市場證據。</p><p class="source"><a class="source-link" href="https://example.invalid/counter-evidence/1" rel="noreferrer">開啟來源網址：https://example.invalid/counter-evidence/1</a></p></div></details>
+</div>
+</section>
+<footer class="page-footer"><h2>本頁限制</h2><ul>
+<li>本頁為公開發言與證據的稽核紀錄，內容由七席自行提出，控制程式只負責轉錄與排版。</li>
+<li>發言依本次執行記錄的原始順序逐字轉錄，未重新排序、改寫或摘要。</li>
+<li>未被本次執行記錄的欄位一律顯示「未提供」，不得由本頁推測或補寫。</li>
+<li>本頁只呈現公開內容，內部識別碼與雜湊值保留在執行紀錄檔中，不在本頁顯示。</li>
+</ul></footer>
+</main>
+</body>
+</html>

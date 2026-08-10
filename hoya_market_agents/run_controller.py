@@ -17,11 +17,14 @@ from pathlib import Path
 from .clock import SystemClock, iso_utc
 from .contract_validator import (
     CONTRACT_VERSION,
+    RUN_RULES_FIELD,
     STANCES,
+    run_rules_record,
     validate_question_package,
     validate_run_manifest,
     validate_seat_evidence,
 )
+from .debate_rules import debate_rules
 from .prompt_builder import build_seat_prompt, load_research_snapshot
 from .provider_gateway import ProviderGateway
 from .question import UnsupportedQuestionError, analyze_question
@@ -66,6 +69,10 @@ class RunController:
         scope = self._approve(question)
         started_at_utc = self.clock.utc_now()
         start_monotonic_ms = self.clock.monotonic_ms()
+        # 規則在 run 開始的這一刻定下來，整趟就用這一份，manifest 也記這一份。
+        # 在 _write_manifest 才現讀的話，途中有人 reload 就會寫下一份這場 run 從
+        # 來沒有遵守過的規則——事後驗證會照那份去判，比不記錄還糟。
+        rules = debate_rules()
 
         run_id = new_run_id(started_at_utc, scope.asset_slug, self.token_source())
         run = self.store.create_run(run_id, SEAT_IDS)
@@ -103,6 +110,7 @@ class RunController:
             tally=tally,
             started_at_utc=started_at_utc,
             start_monotonic_ms=start_monotonic_ms,
+            rules=rules,
         )
         self.store.point_latest_at(run)
 
@@ -213,7 +221,7 @@ class RunController:
         return report
 
     def _write_manifest(
-        self, run, gateway, scope, votes, tally, started_at_utc, start_monotonic_ms
+        self, run, gateway, scope, votes, tally, started_at_utc, start_monotonic_ms, rules
     ):
         completed_at_utc = self.clock.utc_now()
         stances = {record["seat_id"]: record["stance"] for record in votes}
@@ -245,6 +253,7 @@ class RunController:
             "tally": tally,
             "artifacts": run.artifact_index(),
             "scope_limits": list(SCOPE_LIMITS),
+            RUN_RULES_FIELD: run_rules_record(rules),
         }
         validate_run_manifest(manifest)
         run.write_json("manifest.json", manifest, source="final run manifest")

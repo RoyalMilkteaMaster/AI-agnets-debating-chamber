@@ -1,0 +1,68 @@
+Ticket 08 / Spec A4 第 3 條：對比度實測數字（本票重跑，數值引 Ticket 03）
+指令：PYTHONPATH=/tmp/t08-intercept:tests python3 -m unittest -v test_webapp.ContrastTest test_design_tokens.ContrastFromTokensTest
+（tests 加進 PYTHONPATH 的理由：test_webapp 以 'from fakes import ...' 載入 fixtures，
+ 這是 discover -s tests 自己會提供的路徑；單獨點名模組時要自己給。）
+門檻由 pages.CONTRAST_REQUIREMENTS 依 token 角色產生；比值由測試端獨立實作 WCAG 2.1 公式計算。
+======================================================================
+test_both_themes_define_the_same_tokens (test_webapp.ContrastTest.test_both_themes_define_the_same_tokens) ... ok
+test_each_declared_pair_meets_its_minimum_in_every_theme (test_webapp.ContrastTest.test_each_declared_pair_meets_its_minimum_in_every_theme)
+Prints the whole measured table: a ratio that is only asserted is a ... ok
+test_every_requirement_names_tokens_that_exist (test_webapp.ContrastTest.test_every_requirement_names_tokens_that_exist) ... ok
+test_every_declared_pair_meets_its_minimum_in_both_palettes (test_design_tokens.ContrastFromTokensTest.test_every_declared_pair_meets_its_minimum_in_both_palettes) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.004s
+
+OK
+light             text on page      16.30:1  needs 4.5:1
+light             text on surface   17.85:1  needs 4.5:1
+light            muted on page       6.92:1  needs 4.5:1
+light            muted on surface    7.58:1  needs 4.5:1
+light             link on page       6.12:1  needs 4.5:1
+light             link on surface    6.70:1  needs 4.5:1
+light           accent on page       6.12:1  needs 4.5:1
+light           accent on surface    6.70:1  needs 4.5:1
+light           affirm on page       6.51:1  needs 4.5:1
+light           affirm on surface    7.13:1  needs 4.5:1
+light           oppose on page       5.91:1  needs 4.5:1
+light           oppose on surface    6.47:1  needs 4.5:1
+light          abstain on page       6.47:1  needs 4.5:1
+light          abstain on surface    7.09:1  needs 4.5:1
+light           danger on page       5.91:1  needs 4.5:1
+light           danger on surface    6.47:1  needs 4.5:1
+light          success on page       6.51:1  needs 4.5:1
+light          success on surface    7.13:1  needs 4.5:1
+light           border on page       4.34:1  needs 3.0:1
+light           border on surface    4.76:1  needs 3.0:1
+light  provider_claude on page       6.67:1  needs 3.0:1
+light  provider_claude on surface    7.31:1  needs 3.0:1
+light  provider_gemini on page       6.49:1  needs 3.0:1
+light  provider_gemini on surface    7.10:1  needs 3.0:1
+light      accent_text on accent     6.70:1  needs 4.5:1
+dark              text on page      19.28:1  needs 4.5:1
+dark              text on surface   17.06:1  needs 4.5:1
+dark             muted on page       7.87:1  needs 4.5:1
+dark             muted on surface    6.96:1  needs 4.5:1
+dark              link on page      11.19:1  needs 4.5:1
+dark              link on surface    9.90:1  needs 4.5:1
+dark            accent on page      11.19:1  needs 4.5:1
+dark            accent on surface    9.90:1  needs 4.5:1
+dark            affirm on page      11.58:1  needs 4.5:1
+dark            affirm on surface   10.25:1  needs 4.5:1
+dark            oppose on page      10.63:1  needs 4.5:1
+dark            oppose on surface    9.41:1  needs 4.5:1
+dark           abstain on page      13.99:1  needs 4.5:1
+dark           abstain on surface   12.38:1  needs 4.5:1
+dark            danger on page      10.63:1  needs 4.5:1
+dark            danger on surface    9.41:1  needs 4.5:1
+dark           success on page      11.58:1  needs 4.5:1
+dark           success on surface   10.25:1  needs 4.5:1
+dark            border on page       4.24:1  needs 3.0:1
+dark            border on surface    3.75:1  needs 3.0:1
+dark   provider_claude on page      11.96:1  needs 3.0:1
+dark   provider_claude on surface   10.59:1  needs 3.0:1
+dark   provider_gemini on page      10.93:1  needs 3.0:1
+dark   provider_gemini on surface    9.67:1  needs 3.0:1
+dark       accent_text on accent     9.90:1  needs 4.5:1
+======================================================================
+EXIT=0

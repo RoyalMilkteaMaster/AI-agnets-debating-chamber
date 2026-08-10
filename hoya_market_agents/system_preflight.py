@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .seats import ROSTER_PATH, SEAT_IDS
+from .seats import ROSTER_PATH, SEAT_IDS, RosterError, roster_seats
 
 
 REQUIRED_CHECK_IDS = (
@@ -30,12 +30,14 @@ REQUIRED_CHECK_IDS = (
 RUN_SCOPED_CHECK_IDS = frozenset(("search", "seven_seat_timeline", "report_deadline"))
 NON_BLOCKING_CHECK_IDS = frozenset(("provider_runtime_attestation",))
 PROVIDER_COUNTS = {"claude": 3, "codex": 3, "antigravity": 1}
+# 相似資訊面跨模型家族（Spec R5）：籌碼↔資金流、官方↔新聞，所以 onchain 是
+# claude 席、news 是 codex 席。家族一換，模型與該家族的搜尋工具名稱一起換。
 EXPECTED_SEATS = {
     "spot-technical": ("codex", "gpt-5.6-sol", ["web_search"], ["research"]),
     "derivatives": ("codex", "gpt-5.6-sol", ["web_search"], ["research"]),
-    "onchain": ("codex", "gpt-5.6-sol", ["web_search"], ["research"]),
+    "onchain": ("claude", "opus", ["WebSearch", "WebFetch"], ["research"]),
     "official-events": ("claude", "opus", ["WebSearch", "WebFetch"], ["research"]),
-    "news": ("claude", "opus", ["WebSearch", "WebFetch"], ["research"]),
+    "news": ("codex", "gpt-5.6-sol", ["web_search"], ["research"]),
     "social-macro": ("claude", "opus", ["WebSearch", "WebFetch"], ["research"]),
     "counter-evidence": (
         "antigravity",
@@ -53,7 +55,22 @@ class PreflightError(ValueError):
 
 
 def load_frozen_roster(path=None):
-    """Load the exact competition mapping; extra flexibility is unsafe here."""
+    """Load the exact competition mapping; extra flexibility is unsafe here.
+
+    Two kinds of fact are frozen, and they answer to two different owners. The
+    provider policy — who fills a seat, with which model and which search tool —
+    is this module's own and is checked here. What a seat is *called*, what it
+    researches and the one-line 白話說明 a reader gets under its card belong to
+    :func:`~hoya_market_agents.seats.roster_seats`, so this hands that verifier
+    the document rather than keeping a second copy of the rule: a roster that
+    would not load for a run does not clear preflight either.
+
+    The file is opened **once**, and the document verified is the document
+    returned. Asking the seat loader to re-open the path would have verified a
+    second read: a roster swapped between the two reads could be answered with
+    profiles nobody checked, which is the opposite of what a fail-closed check is
+    for.
+    """
     roster_path = Path(path or ROSTER_PATH)
     try:
         roster = json.loads(roster_path.read_text(encoding="utf-8"))
@@ -120,6 +137,10 @@ def load_frozen_roster(path=None):
     gemini = [seat for seat in seats if seat["provider"] == "antigravity"]
     if gemini[0]["target_model"] != "gemini-3.1-pro-high":
         raise PreflightError("Gemini 席必須固定為 gemini-3.1-pro-high。")
+    try:
+        roster_seats(roster, roster_path)
+    except RosterError as exc:
+        raise PreflightError("frozen roster 席位套組不完整：{}".format(exc)) from exc
     return roster
 
 

@@ -7,9 +7,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .clock import iso_utc
-from .contract_validator import CONTRACT_VERSION, validate_evidence_card
+from .contract_validator import (
+    CONTRACT_VERSION,
+    RUN_RULES_FIELD,
+    run_rules_record,
+    validate_evidence_card,
+)
+from .debate_rules import debate_rules
 from .debate_state_machine import DebateStateMachine, stances_for
-from .question import SUPPORTED_ASSETS
+from .question import OVERALL_MARKET_ASSET
 from .question_package import build_question_package
 from .report_audit_renderer import render_debate_html
 from .report_fixtures import load_fixture
@@ -23,11 +29,10 @@ from .system_preflight import load_frozen_roster
 
 DRILL_START_UTC = datetime(2026, 8, 1, 2, 0, 0, tzinfo=timezone.utc)
 LIMITATION = "不得作為真實市場或訂閱 provider READY 證據"
-OPEN_QUESTION_TYPE = "open_proposition"
-# An overall-market question names no asset, but an evidence card must still
-# carry one approved symbol. The drill labels those fixture cards with the
-# first approved asset; the text stays explicitly fake either way.
-FALLBACK_EVIDENCE_ASSET = SUPPORTED_ASSETS[0]
+# An overall-market or open question names no target, but an evidence card must
+# still say what it is about. The drill labels those fixture cards the same way
+# the seat prompt tells a real seat to; the text stays explicitly fake either way.
+FALLBACK_EVIDENCE_ASSET = OVERALL_MARKET_ASSET
 
 
 @dataclass(frozen=True)
@@ -95,13 +100,16 @@ class _NoRepair:
 def run_fake_competition_drill(*, data_root, question, token):
     """Exercise scheduler, debate and report workflow with one fake clock."""
     package = build_question_package(question)
+    # 一趟演練一份規則：狀態機用它跑，manifest 記它。狀態機自己現讀（rules 省略
+    # 時的預設）的話，manifest 就無從保證記到的是同一份。
+    rules = debate_rules()
     stances = _drill_stances(package)
     card_assets = tuple(package.assets) or (FALLBACK_EVIDENCE_ASSET,)
     roster = load_frozen_roster()
     clock = DrillClock()
     run_id = new_run_id(clock.utc_now(), package.asset_slug, token)
     store = RunStore(Path(data_root))
-    run = store.create_run(run_id, SEAT_IDS)
+    run = store.create_run(run_id, SEAT_IDS, question=package.question)
     run.write_json("question.json", _question_record(run_id, package, clock))
 
     models = {seat["seat_id"]: seat["target_model"] for seat in roster["seats"]}
@@ -158,6 +166,7 @@ def run_fake_competition_drill(*, data_root, question, token):
         start_monotonic_ms=0,
         started_at_utc=DRILL_START_UTC,
         debate_start_ms=deadlines.seal_ms,
+        rules=rules,
     )
     _complete_first_round(debate, stances, scheduler.seal["sha256"])
     # Persist minority first; the sixth bullish vote then stops at 6/1 with all
@@ -249,6 +258,7 @@ def run_fake_competition_drill(*, data_root, question, token):
         "competition_timeline": timeline,
         "artifacts": run.artifact_index(),
         "limitations": [LIMITATION],
+        RUN_RULES_FIELD: run_rules_record(rules),
     }
     run.write_json("manifest.json", manifest, source="fake competition drill manifest")
     store.point_latest_at(run)
@@ -264,7 +274,7 @@ def _drill_stances(package):
 
 
 def _question_record(run_id, package, clock):
-    record = {
+    return {
         "schema_version": CONTRACT_VERSION,
         "run_id": run_id,
         "phase": "question",
@@ -272,14 +282,13 @@ def _question_record(run_id, package, clock):
         "elapsed_ms": 0,
         "question": package.question,
         "question_type": package.question_type,
+        "asset_class": package.asset_class,
         "assets": list(package.assets),
         "period_days": package.period_days,
+        # The fake path never calls a provider, so every drill question keeps the
+        # degraded proposition the real launcher would fall back to: its own words.
+        "proposition": getattr(package, "proposition", None) or package.question,
     }
-    if package.question_type == OPEN_QUESTION_TYPE:
-        # The fake path never calls a real provider, so an open question keeps
-        # the degraded proposition: the user's own wording.
-        record["proposition"] = getattr(package, "proposition", None) or package.question
-    return record
 
 
 def _evidence(run_id, seat_id, attempt_id, clock, asset):

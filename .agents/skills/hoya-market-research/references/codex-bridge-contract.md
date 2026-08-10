@@ -28,7 +28,7 @@ directory makes Core generate another ID.
   `model_confirmation_source=runtime|operator_ui`; use `operator_ui` only when
   the operator explicitly confirms that the UI shows the target model. Legacy
   four-field handoffs remain valid and imply `runtime`.
-- Seats, in order: `spot-technical`, `derivatives`, `onchain`.
+- Seats, in order: `spot-technical`, `derivatives`, `news`.
 - Each seat: unique non-empty `thread_id`, `actual_model=gpt-5.6-sol`, and
   `model_confirmed`, `capability_confirmed`, `persistent` all `true`.
 - Each seat dispatch: unique `dispatch_id`, exact web-search-only `tool_policy`,
@@ -41,9 +41,22 @@ directory makes Core generate another ID.
 
 ## Handoff artifact
 
-Write the result once to:
+Write the result once to `preflight/codex-handoff.json` **inside that run's own
+directory**.
 
-`<Data Root>/runs/<run_id>/preflight/codex-handoff.json`
+Do not spell the directory out by hand. Since ADR 0005 a run lives under its
+Taipei date, in a folder named for the question, and ends in a digest of the
+whole run id — `<Data Root>/runs/<YYYY-MM-DD>/<HHMM-題目slug-hash>/` — so a
+path assembled from the run id alone points at nothing. Ask for it:
+
+```bash
+# WSL, from Code Root
+python3 -c 'import sys; from hoya_market_agents.run_store import resolve_run_dir; \
+print(resolve_run_dir(sys.argv[1], sys.argv[2]) or "")' "$DATA_ROOT" "$CODEX_RUN_ID"
+```
+
+An empty answer means there is no such run under that Data Root; that is
+`NOT READY`, not an invitation to create the path.
 
 The result includes the validated Question Package; pinned research snapshot;
 shared prompt, preflight challenge, contract, and source/time-policy bytes plus SHA-256 values; and

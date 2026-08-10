@@ -14,8 +14,8 @@
    確認 UI 顯示目標模型，並記錄
    `model_confirmation_source="operator_ui"`；不得稱之為 runtime attestation。
 3. **Roster 檢查** — `config/agent_roster.json` 的七席 provider／模型映射與
-   凍結 roster 一致：Codex 三席 `spot-technical`／`derivatives`／`onchain`、
-   Claude 三席 `official-events`／`news`／`social-macro`、Antigravity 一席
+   凍結 roster 一致：Codex 三席 `spot-technical`／`derivatives`／`news`、
+   Claude 三席 `onchain`／`official-events`／`social-macro`、Antigravity 一席
    `counter-evidence`。不得替換模型、席位或席數。
 4. **環境檢查** — Data Root 與 Code Root 是不同目錄；Data Root 可建立執行
    目錄並寫入檔案；Windows／WSL 路徑轉換與命令參數傳遞正常。
@@ -26,7 +26,9 @@
    1. `python3 -m hoya_market_agents prepare-launch --question '<任一核准題目>' --data-root DATA_ROOT`
       取得 `CODEX_RUN_ID` 與 `CODEX_CHALLENGE`。
    2. 開 3 個 persistent Codex threads（`gpt-5.6-sol`），依
-      `codex-bridge-contract.md` 寫入 handoff artifact。
+      `codex-bridge-contract.md` 寫入 handoff artifact。run 目錄自 ADR 0005
+      起按台北日期分層且以題目命名，**不要自己拼路徑**——照 contract 用
+      `resolve_run_dir` 問出來。
    3. `verify-preflight --provider codex --run-id ... --challenge ...` 須 READY。
 
    handoff 建立後 **300 秒內**執行第 6 步；過期或已綁定 → 重開 fresh Task 重做。

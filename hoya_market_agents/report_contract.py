@@ -6,20 +6,53 @@ ceilings.  They deliberately do not create or choose market judgements.
 
 import json
 import re
-from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from .contract_validator import CONTRACT_VERSION
+from .debate_rules import DebateRulesError, debate_rules
 from .seats import SEAT_IDS
 
-CONFIDENCE_LEVELS = ("red", "orange", "yellow", "yellow_green", "green")
+# ADR 0003：燈號＝共識強度，由壞到好。這個順序就是「降一級」的方向，也是
+# ``_validate_confidence`` 判斷「不得高於上限」用的排序。這裡擁有的是**詞彙**
+# ——有哪些燈、誰比誰好、配哪個圖示；「幾票對哪一級」則由
+# ``config/debate_rules.json`` 擁有，見 :func:`confidence_scale`。
+CONFIDENCE_LEVELS = ("red", "orange", "yellow", "green", "blue")
 CONFIDENCE_ICONS = {
     "red": "🔴",
     "orange": "🟠",
     "yellow": "🟡",
-    "yellow_green": "🟡🟢",
     "green": "🟢",
+    "blue": "🔵",
 }
+_WORST_LEVEL = CONFIDENCE_LEVELS[0]
+
+
+class _RulesNotRecorded:
+    """The third value of ``rules``: this run did not record the rules it used.
+
+    ``rules`` 本來只有兩個值：一份 :class:`~.debate_rules.ConfidenceRules`，或
+    ``None``＝「省略，現讀」。少了「不知道」這一個值，於是
+    ``run_verifier`` 驗一份沒有記錄規則的舊 run 時只剩兩個爛選項：拿現行設定去
+    算（把「我不知道」變成一個有自信的失敗宣稱），或整段報告契約都不驗（連證據
+    回查、票數交叉比對這些與規則無關的檢查一起丟掉）。
+
+    這個哨兵讓第三個答案講得出來，而且範圍很窄：**只有「燈號不得高於上限」那一
+    項**被略過，因為只有它是規則的函數。級別、圖示、說明文字與報告契約的其餘部
+    分照常驗。
+
+    是獨立型別而不是 ``None`` 或空的 ``ConfidenceRules``：``None`` 已經是「現
+    讀」，空的階梯會被 :func:`_checked_scale` 判成缺燈號而拒絕——兩者都無法表達
+    「不知道」，而且都會被誤讀成別的意思。
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "RULES_NOT_RECORDED"
+
+
+#: 見 :class:`_RulesNotRecorded`。以身分（``is``）比對，不比值。
+RULES_NOT_RECORDED = _RulesNotRecorded()
 
 _DIRECTIONLESS_STATUSES = {
     "no_consensus",
@@ -41,8 +74,18 @@ class ReportContractError(ValueError):
         super().__init__("report contract failed: {}".format("; ".join(self.problems)))
 
 
-def validate_market_report(report, sources):
-    """Return the Core report unchanged when every objective check passes."""
+def validate_market_report(report, sources, rules=None):
+    """Return the Core report unchanged when every objective check passes.
+
+    ``rules`` 是可選的 :class:`~.debate_rules.ConfidenceRules` 快照。本模組裡
+    ``rules`` 一律指這個型別（見 :func:`confidence_scale`）——呼叫端若已經持有一
+    份規則快照，傳 ``snapshot.confidence`` 進來，整段驗證就與呼叫端的其他檢查用
+    同一份設定。省略時現讀，行為與過去完全相同。
+
+    第三個值是 :data:`RULES_NOT_RECORDED`＝「這個 run 沒有記錄它跑的規則」。它
+    **只**略過「燈號不得高於上限」那一項，其餘檢查一項不減——包含燈號自己的級
+    別、圖示與說明文字。
+    """
     problems = []
     if not isinstance(report, dict):
         raise ReportContractError(["report 必須為物件"])
@@ -92,42 +135,143 @@ def validate_market_report(report, sources):
     _validate_vote_cross_references(report, votes, evidence_by_id, problems)
     _validate_debate_cross_references(sources, votes, evidence_by_id, problems)
     _validate_direction(report, problems)
-    _validate_confidence(report, sources, problems)
+    _validate_confidence(report, sources, problems, rules)
 
     if problems:
         raise ReportContractError(problems)
     return report
 
 
-def confidence_cap(report, sources):
-    """Compute an upper bound from votes and evidence; never choose a level."""
+def confidence_scale(rules=None):
+    """Return the vote→light ladder, refusing one that speaks another vocabulary.
+
+    設定檔擁有「幾票對哪一級」，本模組擁有「有哪些級、誰比誰好」。載入器
+    （Ticket 02）刻意只把 ``level`` 當成不重複的非空字串，好讓自己維持只依賴
+    stdlib 與 ``seats`` 的葉節點；認得燈號的是這裡，所以缺口也在這裡關掉：
+    階梯的級別序列必須逐字等於 ``CONFIDENCE_LEVELS`` 的反序（由好到壞）。
+
+    要求「同一組級別」是因為每一級都必須有票數能走到，否則 ``CONFIDENCE_ICONS``
+    與 Core 輸出 schema 會宣告一個系統永遠產不出來的燈；要求「同一個順序」是
+    因為 ``confidence_cap`` 沿階梯降級、``_validate_confidence`` 沿
+    ``CONFIDENCE_LEVELS`` 比較上限——兩條排序不一致時，「不得高於上限」就沒有
+    唯一解釋。
+
+    傳入 ``rules`` 可直接檢查一份 :class:`~.debate_rules.ConfidenceRules`（測試
+    接縫）；省略時檢查**現行**規則。
+
+    這裡刻意不存快取。階梯是規則算出來的衍生值：另存一份的話，
+    :func:`~.debate_rules.reload_debate_rules` 換掉規則之後就會出現「規則是新
+    的、階梯是舊的」混合狀態，而且沒有任何地方會報錯，報告會沿著一條沒有人選
+    過的階梯評燈。每次都從現行規則算，那個狀態就無法表達——不必靠呼叫者記得
+    再清第二份快取，那正是下一個人一定會忘記的東西。
+
+    成本：每次 :func:`confidence_cap` 跑一次；一個正常成功的 run 通常是兩次
+    （Core 撰稿時的上限、事後契約驗證各一），走修正流程會更多。單次約 0.5 µs，
+    總成本仍可忽略。
+    """
+    return _checked_scale(debate_rules().confidence if rules is None else rules)
+
+
+def _checked_scale(confidence):
+    # 兩個公開入口（confidence_scale、confidence_cap）都會流經這裡，所以哨兵只
+    # 要在這一個地方擋。「這一份規則的階梯長怎樣」在規則未知時沒有答案，回一個
+    # 猜的比丟例外糟得多——唯一該略過上限的地方是 _validate_confidence，而它是
+    # 靠自己的分支略過，不是靠這裡回傳一個假階梯。
+    if confidence is RULES_NOT_RECORDED:
+        raise DebateRulesError(
+            "規則未知時算不出燈號階梯與上限：這個 run 沒有記錄它跑的規則。"
+        )
+    expected = tuple(reversed(CONFIDENCE_LEVELS))
+    levels = tuple(step.level for step in confidence.light_scale)
+    unknown = [level for level in levels if level not in CONFIDENCE_LEVELS]
+    if unknown:
+        raise DebateRulesError(
+            "confidence.light_scale 含未核准燈號：{}；核准燈號為 {}。".format(
+                "、".join(unknown), "、".join(expected)
+            )
+        )
+    missing = [level for level in expected if level not in levels]
+    if missing:
+        raise DebateRulesError(
+            "confidence.light_scale 缺少燈號：{}；每一級都必須有票數對應得到"
+            "它。".format("、".join(missing))
+        )
+    if levels != expected:
+        raise DebateRulesError(
+            "confidence.light_scale 的燈號順序必須由好到壞：{}；收到 {}。".format(
+                "、".join(expected), "、".join(levels)
+            )
+        )
+    return confidence.light_scale
+
+
+def confidence_cap(report, sources, rules=None):
+    """Compute an upper bound from votes and evidence; never choose a level.
+
+    ADR 0003：上限＝最終採納立場的有效票數直接映射，再套用設定檔裡的來源降級。
+    證據的廣度與新鮮度不再影響燈號——那由七席同儕辯論把關。
+
+    整段計算只讀一次規則權威：階梯與降級規則都取自同一份 ``confidence`` 快照。
+    分兩次讀的話，中間若有人 :func:`~.debate_rules.reload_debate_rules`，就會拿
+    新規則的降級去修舊階梯算出來的上限——一個兩份設定都沒有描述過的結果。
+
+    ``rules`` 讓呼叫端把自己那一份 :class:`~.debate_rules.ConfidenceRules` 傳進
+    來，好讓「一次操作一份快照」延伸到跨模組的操作（``run_verifier.verify_run``
+    就是這樣把同一份快照同時用在時間線、停止語意與這裡）。省略時現讀。
+    """
+    confidence = debate_rules().confidence if rules is None else rules
+    scale = confidence_scale(confidence)
     votes = sources.get("votes", {}) if isinstance(sources, dict) else {}
     rows = votes.get("votes", []) if isinstance(votes, dict) else []
     valid_rows = [row for row in rows if isinstance(row, dict) and row.get("state") == "valid"]
-    valid_count = len(valid_rows)
     status = report.get("consensus_status") if isinstance(report, dict) else None
     adopted = report.get("adopted_stance") if isinstance(report, dict) else None
     adopted_rows = [row for row in valid_rows if row.get("final_stance") == adopted]
-    effective_leader = len(adopted_rows)
 
-    if report.get("process_failure") or not isinstance(valid_count, int) or valid_count < 4:
-        return "red"
+    # 紅燈語意不變：流程失敗，或票數不足。後者不需要自己的分支——採納票是有效
+    # 票的子集，而 `_light_for` 對票數單調不減，所以
+    #     light(有效票) == 最底一級  ⟹  light(採納票) == 最底一級
+    # 下面那一次查表已經涵蓋。成立條件只要階梯通得過載入器（min_votes 嚴格遞
+    # 減、末級為 0），與門檻設成多少無關；反向不成立，也不需要成立。
+    if report.get("process_failure"):
+        return _WORST_LEVEL
     if status in ("failed_insufficient_valid_votes", "insufficient_data", "validation_failed"):
-        return "red"
-    if status != "consensus" or report.get("adopted_stance") is None:
-        return "orange"
-    if effective_leader < 4:
-        return "red"
+        return _WORST_LEVEL
+    # ADR 0003 決策 1：燈號＝**最終採納立場**的有效票數。沒有採納立場就沒有票
+    # 數可數，可數的採納票數是 0，於是落在階梯最底一級。改用最大落敗集團的票
+    # 數頂替，等於替一個議場明確沒有採納的立場報告共識強度——ADR 的主詞寫得很
+    # 死，這是選這一版的理由本身。
+    #
+    # 注意**不要**把它讀成「兩種算法等價」：只有在出貨的 forced_stop=4 階梯下，
+    # 合法的未達共識停止（run_verifier 要求領先票 < forced_stop）領先票必 ≤3，
+    # 兩者才同樣落在紅。把門檻設成 forced_stop=5 就有實跑得出來的反例——4/3/0
+    # 未達共識，本版仍是 red，最大集團版會是 orange。
+    if status != "consensus" or adopted is None:
+        adopted_rows = []
 
-    if effective_leader == 4:
-        cap = "orange"
-    elif effective_leader == 5:
-        cap = "yellow"
-    elif effective_leader == 6:
-        cap = "yellow_green"
-    else:
-        cap = "green"
+    cap = _light_for(len(adopted_rows), scale)
+    cards = _cited_cards(sources, adopted_rows)
+    for rule in confidence.downgrades:
+        if _DOWNGRADE_CONDITIONS[rule.rule](rule, _cards_judged_by(rule, cards)):
+            cap = _worse(cap, rule.levels)
+    return cap
 
+
+def _light_for(votes, scale):
+    """Read one vote count off the ladder, which runs best rung first."""
+    for step in scale:
+        if votes >= step.min_votes:
+            return step.level
+    return _WORST_LEVEL
+
+
+def _worse(level, levels):
+    """Move ``levels`` rungs toward the worse end, clamped at the worst light."""
+    return CONFIDENCE_LEVELS[max(0, CONFIDENCE_LEVELS.index(level) - levels)]
+
+
+def _cited_cards(sources, adopted_rows):
+    """The evidence cards the adopted stance actually cited."""
     all_cards = sources.get("evidence", []) if isinstance(sources, dict) else []
     cited_ids = {
         evidence_id
@@ -135,39 +279,40 @@ def confidence_cap(report, sources):
         for evidence_id in row.get("final_evidence_ids", [])
         if isinstance(evidence_id, str)
     }
-    cards = [
+    return [
         card
         for card in all_cards
         if isinstance(card, dict) and card.get("evidence_id") in cited_ids
     ]
-    origins = {card.get("source_origin") for card in cards if isinstance(card, dict)}
+
+
+def _cards_judged_by(rule, cards):
+    """Drop the cards contributed by seats this rule exempts."""
+    return [card for card in cards if card.get("seat_id") not in rule.exempt_seat_ids]
+
+
+def _too_few_independent_domains(rule, cards):
+    origins = {card.get("source_origin") for card in cards}
     origins.discard(None)
-    categories = {card.get("category") for card in cards if isinstance(card, dict)}
-    categories.discard(None)
-    reliable_categories = {
-        card.get("category")
+    return len(origins) < rule.min_independent_domains
+
+
+def _cites_an_untrusted_source(rule, cards):
+    # ``type(...) is int`` 而非 ``in``：True == 1 且 1.0 == 1，只比值的話一張
+    # 沒有等級的卡片可以靠 ``true`` 冒充 tier 1。
+    return any(
+        type(card.get("source_tier")) is not int
+        or card["source_tier"] not in rule.trusted_source_tiers
         for card in cards
-        if isinstance(card, dict) and card.get("source_tier") in (1, 2)
-    }
-    reliable_categories.discard(None)
+    )
 
-    if len(origins) < 2:
-        cap = _lower(cap, "orange")
-    if effective_leader >= 7 and len(categories) < 4:
-        cap = _lower(cap, "yellow_green")
-    elif effective_leader >= 6 and len(reliable_categories) < 3:
-        cap = _lower(cap, "yellow")
-    elif effective_leader >= 5 and len(categories) < 2:
-        cap = _lower(cap, "orange")
 
-    generated = _parse_utc(report.get("generated_at_utc"))
-    stale = any(_is_stale(card, generated) for card in cards if isinstance(card, dict))
-    low_quality = any(card.get("source_tier") not in (1, 2) for card in cards if isinstance(card, dict))
-    fatal = any(bool(card.get("fatal_counterevidence")) for card in cards if isinstance(card, dict))
-    contradictory = bool(sources.get("material_contradiction"))
-    if stale or low_quality or fatal or contradictory:
-        cap = CONFIDENCE_LEVELS[max(0, CONFIDENCE_LEVELS.index(cap) - 1)]
-    return cap
+# 每條降級的條件是程式，不是資料——新增第四條規則必然要寫評估它的函式，所以
+# 這張表跟著 debate_rules._DOWNGRADE_PARAMETERS 一起走。
+_DOWNGRADE_CONDITIONS = {
+    "few_independent_domains": _too_few_independent_domains,
+    "low_trust_source": _cites_an_untrusted_source,
+}
 
 
 def canonical_sha256(value):
@@ -370,7 +515,7 @@ def _validate_direction(report, problems):
             problems.append("consensus report 必須如實標示 adopted_stance")
 
 
-def _validate_confidence(report, sources, problems):
+def _validate_confidence(report, sources, problems, rules=None):
     confidence = report.get("confidence")
     if not isinstance(confidence, dict):
         problems.append("confidence 必須為物件")
@@ -383,7 +528,12 @@ def _validate_confidence(report, sources, problems):
         problems.append("confidence icon 與 level 不一致")
     if not isinstance(confidence.get("text"), str) or not confidence["text"].strip():
         problems.append("confidence.text 不得為空")
-    cap = confidence_cap(report, sources)
+    # 上限是規則的函數，上面那三項不是。規則未知時只放掉這一項——拿現行設定去
+    # 算會把「我不知道」變成一個有自信的失敗宣稱，而那正是「改了設定就判舊 run
+    # 失敗」的那個 bug。
+    if rules is RULES_NOT_RECORDED:
+        return
+    cap = confidence_cap(report, sources, rules)
     if CONFIDENCE_LEVELS.index(level) > CONFIDENCE_LEVELS.index(cap):
         problems.append("信心 {} 高於資料上限 {}".format(level, cap))
 
@@ -402,21 +552,6 @@ def _string_list_problems(record, field):
 
 def _is_utc(value):
     return isinstance(value, str) and _UTC.fullmatch(value) is not None
-
-
-def _parse_utc(value):
-    if not _is_utc(value):
-        return None
-    return datetime.fromisoformat(value[:-1] + "+00:00").astimezone(timezone.utc)
-
-
-def _is_stale(card, generated):
-    published = _parse_utc(card.get("published_at_utc"))
-    return generated is not None and (published is None or (generated - published).days > 30)
-
-
-def _lower(left, right):
-    return CONFIDENCE_LEVELS[min(CONFIDENCE_LEVELS.index(left), CONFIDENCE_LEVELS.index(right))]
 
 
 def is_safe_source_url(value):

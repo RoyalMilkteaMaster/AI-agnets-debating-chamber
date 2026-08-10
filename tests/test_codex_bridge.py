@@ -34,6 +34,7 @@ from hoya_market_agents.codex_bridge import (
 )
 from hoya_market_agents.question_package import build_question_package
 from hoya_market_agents.run_store import RunStore
+from hoya_market_agents.system_preflight import load_frozen_roster
 
 QUESTION = "分析 BTC 過去 14 日市場狀態"
 RUN_ID = "20260801T000000Z-btc-abc123"
@@ -83,7 +84,7 @@ def threads(**overrides):
     return value
 
 
-def evidence_card(seat_id="onchain", attempt_id="attempt-1", **overrides):
+def evidence_card(seat_id="news", attempt_id="attempt-1", **overrides):
     card = {
         "schema_version": "1.0.0",
         "evidence_id": "{}-01".format(seat_id),
@@ -109,7 +110,7 @@ def evidence_card(seat_id="onchain", attempt_id="attempt-1", **overrides):
     return card
 
 
-def raw_handoff(seat_id="onchain", attempt_id="attempt-1", **overrides):
+def raw_handoff(seat_id="news", attempt_id="attempt-1", **overrides):
     payload = {
         "schema_version": "1.0.0",
         "run_id": RUN_ID,
@@ -146,6 +147,28 @@ def continuation_message(**overrides):
     }
     message.update(overrides)
     return message
+
+
+class CodexSeatGroupingTest(unittest.TestCase):
+    """inbox 橋接的三個 GPT 席必須就是 roster 上 provider 為 codex 的三席。
+
+    對不上就會替一個已經改成 claude 家族的席位開 Codex 執行緒，而那一席的答案
+    永遠不會回來——所以 roster 改了而這個常數沒改，這裡直接紅。
+    """
+
+    def test_the_group_is_the_roster_codex_column_in_roster_order(self):
+        expected = tuple(
+            seat["seat_id"]
+            for seat in load_frozen_roster()["seats"]
+            if seat["provider"] == "codex"
+        )
+
+        self.assertEqual(expected, CODEX_SEAT_IDS)
+
+    def test_the_mapped_seats_come_from_the_roster_in_that_same_order(self):
+        self.assertEqual(
+            CODEX_SEAT_IDS, tuple(seat.seat_id for seat in codex_seats())
+        )
 
 
 class CodexHandoffTest(unittest.TestCase):
@@ -195,8 +218,13 @@ class CodexHandoffTest(unittest.TestCase):
         nonces = iter(("A" * 32, "B" * 32))
         with tempfile.TemporaryDirectory() as temporary_directory:
             data_root = Path(temporary_directory)
-            existing = data_root / "runs" / "20260802T030405Z-btc-abc123"
-            existing.mkdir(parents=True)
+            # 用真的 RunStore 佔位：run 目錄在哪裡是 run_store 說了算，
+            # fixture 自己拼路徑就會測到一個不存在的排列方式。
+            RunStore(data_root).create_run(
+                "20260802T030405Z-btc-abc123",
+                CODEX_SEAT_IDS,
+                question=QUESTION,
+            )
 
             payload = prepare_launch_inputs(
                 QUESTION,
@@ -263,7 +291,7 @@ class CodexHandoffTest(unittest.TestCase):
         payload = self.build()
 
         self.assertEqual(
-            ("spot-technical", "derivatives", "onchain"),
+            ("spot-technical", "derivatives", "news"),
             tuple(seat["seat_id"] for seat in payload["seats"]),
         )
         self.assertEqual(3, len(payload["seats"]))
@@ -358,28 +386,28 @@ class CodexHandoffTest(unittest.TestCase):
         for override in cases:
             with self.subTest(override=override):
                 broken = threads()
-                broken["onchain"] = dict(broken["onchain"], **override)
+                broken["news"] = dict(broken["news"], **override)
                 with self.assertRaises(PreflightNotReadyError):
                     self.build(threads=broken)
 
     def test_dispatch_and_runtime_receipt_identity_are_unique_and_bound(self):
         duplicate_dispatch = threads()
-        duplicate_dispatch["onchain"]["dispatch_id"] = duplicate_dispatch[
+        duplicate_dispatch["news"]["dispatch_id"] = duplicate_dispatch[
             "derivatives"
         ]["dispatch_id"]
-        duplicate_dispatch["onchain"]["runtime_policy_receipt"][
+        duplicate_dispatch["news"]["runtime_policy_receipt"][
             "dispatch_id"
         ] = duplicate_dispatch["derivatives"]["dispatch_id"]
 
         duplicate_receipt = threads()
-        duplicate_receipt["onchain"]["runtime_policy_receipt"][
+        duplicate_receipt["news"]["runtime_policy_receipt"][
             "receipt_id"
         ] = duplicate_receipt["derivatives"]["runtime_policy_receipt"][
             "receipt_id"
         ]
 
         wrong_binding = threads()
-        wrong_binding["onchain"]["runtime_policy_receipt"][
+        wrong_binding["news"]["runtime_policy_receipt"][
             "dispatch_id"
         ] = "dispatch-derivatives"
 
@@ -420,12 +448,13 @@ class CodexHandoffTest(unittest.TestCase):
 
     def test_seat_set_must_be_exactly_the_three_codex_seats(self):
         extra = threads()
-        extra["news"] = dict(extra["onchain"], thread_id="thread-news")
+        # onchain 對調成 claude 席之後就不是 GPT 席：多開一條它的執行緒必須被拒。
+        extra["onchain"] = dict(extra["news"], thread_id="thread-onchain")
         with self.assertRaises(PreflightNotReadyError):
             self.build(threads=extra)
 
         missing = threads()
-        del missing["onchain"]
+        del missing["news"]
         with self.assertRaises(PreflightNotReadyError):
             self.build(threads=missing)
 
@@ -536,8 +565,8 @@ class PublicCheckpointTest(unittest.TestCase):
 
     def test_checkpoint_must_match_sealed_preflight_seat_thread_mapping(self):
         cases = (
-            ("derivatives", self.checkpoint(thread_id="thread-onchain")),
-            ("onchain", self.checkpoint()),
+            ("derivatives", self.checkpoint(thread_id="thread-news")),
+            ("news", self.checkpoint()),
         )
         for seat_id, checkpoint in cases:
             with self.subTest(seat_id=seat_id, thread_id=checkpoint["thread_id"]):
@@ -589,7 +618,7 @@ class SeatIsolationTest(unittest.TestCase):
         for seat_id, target in (
             ("derivatives", codex_bridge.CODE_ROOT / "hoya_market_agents" / "cli.py"),
             ("derivatives", self.data_root / "secrets.env"),
-            ("derivatives", seat_output_dir(self.data_root, RUN_ID, "onchain") / "raw.txt"),
+            ("derivatives", seat_output_dir(self.data_root, RUN_ID, "news") / "raw.txt"),
             ("derivatives", seat_output_dir(self.data_root, RUN_ID, "derivatives") / ".." / "x"),
         ):
             with self.subTest(target=str(target)):
@@ -600,7 +629,54 @@ class SeatIsolationTest(unittest.TestCase):
 
     def test_code_root_cannot_be_used_as_data_root(self):
         with self.assertRaises(CodexBridgeError):
-            codex_bridge.seat_output_dir(codex_bridge.CODE_ROOT, RUN_ID, "onchain")
+            codex_bridge.seat_output_dir(codex_bridge.CODE_ROOT, RUN_ID, "news")
+
+    def test_a_near_miss_run_id_cannot_reach_this_runs_seat_directory(self):
+        """A run id is matched whole, so a neighbour cannot borrow this run.
+
+        The directory name ends in a digest of the entire id (ADR 0005). Were
+        it the id's random token instead, every id below would end in the same
+        thing and any of them would land in this run's attempt directory.
+        """
+        self.assertEqual("20260801T000000Z-btc-abc123", RUN_ID)
+        mine = seat_output_dir(self.data_root, RUN_ID, "derivatives")
+
+        for other in (
+            "20260801T000059Z-btc-abc123",  # 同一分鐘，差 59 秒
+            "20260801T000000Z-eth-abc123",  # 同一時刻，差標的
+        ):
+            with self.subTest(other=other):
+                with self.assertRaises(CodexBridgeError):
+                    seat_output_dir(self.data_root, other, "derivatives")
+                with self.assertRaises(CodexBridgeError):
+                    codex_bridge.assert_seat_write_allowed(
+                        mine / "raw.txt", self.data_root, other, "derivatives"
+                    )
+
+        self.assertEqual(
+            mine.resolve(),
+            codex_bridge.assert_seat_write_allowed(
+                mine / "raw.txt", self.data_root, RUN_ID, "derivatives"
+            ).parent,
+        )
+
+    def test_a_seat_directory_is_refused_when_the_run_does_not_exist(self):
+        """A run's directory is found from its id, so an unknown id has none.
+
+        Before the dated layout the path was spelled out from the run id and
+        came back whether or not it existed; a seat could then be told to
+        write into a run that was never created.
+        """
+        with self.assertRaises(CodexBridgeError):
+            seat_output_dir(self.data_root, "20260801T000000Z-btc-absent", "news")
+
+        with self.assertRaises(CodexBridgeError):
+            codex_bridge.assert_seat_write_allowed(
+                self.data_root / "stray.txt",
+                self.data_root,
+                "20260801T000000Z-btc-absent",
+                "news",
+            )
 
     def test_seat_may_write_its_own_attempt_file(self):
         target = seat_output_dir(self.data_root, RUN_ID, "derivatives") / "raw.txt"
@@ -611,21 +687,21 @@ class SeatIsolationTest(unittest.TestCase):
 
     def test_raw_handoff_bytes_and_sha256_are_preserved_exactly(self):
         raw = raw_handoff()
-        record = seal_seat_handoff(self.run, "onchain", "attempt-1", raw)
+        record = seal_seat_handoff(self.run, "news", "attempt-1", raw)
 
         stored = (self.run.path / record["path"]).read_bytes()
         self.assertEqual(raw.encode("utf-8"), stored)
         self.assertEqual(hashlib.sha256(raw.encode("utf-8")).hexdigest(), record["sha256"])
         self.assertEqual(len(raw.encode("utf-8")), record["bytes"])
-        self.assertIn("agents/onchain/", record["path"])
+        self.assertIn("agents/news/", record["path"])
 
     def test_core_may_not_rewrite_a_sealed_seat_handoff(self):
-        seal_seat_handoff(self.run, "onchain", "attempt-1", raw_handoff())
+        seal_seat_handoff(self.run, "news", "attempt-1", raw_handoff())
         with self.assertRaises(CodexBridgeError):
-            seal_seat_handoff(self.run, "onchain", "attempt-1", raw_handoff())
+            seal_seat_handoff(self.run, "news", "attempt-1", raw_handoff())
 
     def test_invalid_or_private_raw_handoff_writes_zero_bytes(self):
-        attempt_root = seat_output_dir(self.data_root, RUN_ID, "onchain")
+        attempt_root = seat_output_dir(self.data_root, RUN_ID, "news")
         cases = ["not json"]
         for field in (
             "hidden",
@@ -653,7 +729,7 @@ class SeatIsolationTest(unittest.TestCase):
                 ) + "\n"
             with self.subTest(attempt_id=attempt_id):
                 with self.assertRaises(CodexBridgeError):
-                    seal_seat_handoff(self.run, "onchain", attempt_id, raw)
+                    seal_seat_handoff(self.run, "news", attempt_id, raw)
                 self.assertFalse((attempt_root / attempt_id).exists())
 
 
@@ -760,7 +836,7 @@ class PreflightVerificationTest(unittest.TestCase):
 
         self.assertEqual(STATUS_READY, result["status"])
         self.assertEqual(3, len(result["seats"]))
-        self.assertFalse(list((self.run.path / "agents" / "onchain" / "attempts").iterdir()))
+        self.assertFalse(list((self.run.path / "agents" / "news" / "attempts").iterdir()))
 
     def test_old_wrong_challenge_and_replayed_handoff_are_rejected(self):
         write_codex_handoff(self.run, self.payload)

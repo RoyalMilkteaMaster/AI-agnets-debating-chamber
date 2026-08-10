@@ -16,6 +16,7 @@ from datetime import timedelta
 
 from .clock import iso_utc
 from .contract_validator import CONTRACT_VERSION
+from .debate_rules import debate_rules
 from .question_package import (
     COMPARISON_STANCES,
     EVENT_STANCES,
@@ -25,32 +26,6 @@ from .question_package import (
 )
 from .run_store import RunStoreError
 from .seats import SEAT_IDS
-
-# 2026-08-02 使用者核准的修訂時間表。研究讓出一分鐘後，辯論從 T+4:00 起跑，
-# 每一道牆都往後挪，好讓兩次真實 CLI 呼叫（開場 50-60 秒、第一輪 30-60 秒）
-# 各自有完整的時間，而不是擠在同一段 90 秒裡互相踩死。
-#
-# 起跑點是「該 run 實際封存的那一刻」，不是這個常數：兩幣比較題的研究窗到
-# T+4:30（research_scheduler.research_deadlines 是唯一權威）。常數留作預設，
-# 建構時可用 ``debate_start_ms`` 覆寫，且必須與 RunStore 的 seal 完全一致。
-DEBATE_START_MS = 240_000             # T+4:00 sealed evidence broadcast（單幣預設）
-# 第一輪的牆是相對的：該 run 實際封存的時刻 ＋ ROUND_ONE_WINDOW_MS，所以兩幣
-# 比較題（封存晚 30 秒）的第一輪也拿得到同樣長的視窗。常數只是單幣預設，實際
-# 判定一律走 machine 實例的 challenge_deadline_ms。
-#
-# 這道牆不是「辯論何時結束」——湊滿門檻票數的那一刻就結束了。它是慢席的截止
-# 線，而慢席投不投得到票，決定的是六票同向能不能成立。實測 run
-# 20260802T055930Z 的教訓：Claude 席開場落在封存＋40 秒，第一輪呼叫要讀完整
-# 證據快照與全場逐字稿、再花 50-70 秒；120 秒的窗只留給它們 73 秒，三席同時
-# 掉隊，有效票剩四張，於是既湊不到六票（無法提早結束），信心也被壓成紅燈。
-# 180 秒讓「開場＋挑戰＋relay」那條鏈完整放得下；七席都投得到票時，共識反而
-# 在 T+6:30 前就成立，比原本乾等到 T+10 更早收工。
-ROUND_ONE_WINDOW_MS = 180_000
-CHALLENGE_DEADLINE_MS = DEBATE_START_MS + ROUND_ONE_WINDOW_MS  # 單幣預設 T+7:00
-THRESHOLD_FIVE_FROM_MS = 480_000      # T+8:00 threshold drops to five
-FINAL_ROUND_START_MS = 525_000        # T+8:45 second round closes, final opens
-FINAL_ROUND_END_MS = 585_000          # T+9:45 final round closes
-FORCE_STOP_MS = 600_000               # T+10:00 forced stop, four adopts
 
 STANCES_BY_QUESTION_TYPE = {
     "single_asset_market_state": MARKET_STANCES,
@@ -75,6 +50,12 @@ NEUTRAL_STANCES = (
 )
 
 MESSAGE_KINDS = ("position", "challenge", "response", "final_vote")
+
+# architecture §11.3：opening 是互不可見的盲投，七席各自獨立得出同一個結論是本
+# 系統拿得到的最強共識，所以它直接停止並產報告，取代 §5.4 對全票情境「仍須一輪
+# 反方挑戰」的要求。停止原因刻意不叫 consensus_<n>_votes：那一串是「辯論後的有
+# 效票達到當下階梯」，和這裡的「開場票」不是同一種票。
+UNANIMOUS_BLIND_PASS = "unanimous_blind_pass"
 
 
 class DebateError(RuntimeError):
@@ -129,28 +110,14 @@ def stances_for(question_type):
         raise DebateError("未知 question_type：{!r}".format(question_type)) from exc
 
 
-def required_votes_at(elapsed_ms):
+def required_votes_at(elapsed_ms, rules=None):
     """Return the absolute vote threshold in force at an elapsed time."""
-    if elapsed_ms >= FORCE_STOP_MS:
-        return 4
-    if elapsed_ms >= THRESHOLD_FIVE_FROM_MS:
-        return 5
-    return 6
+    return (rules or debate_rules()).required_votes_at(elapsed_ms)
 
 
-def phase_at(elapsed_ms, challenge_deadline_ms=CHALLENGE_DEADLINE_MS):
+def phase_at(elapsed_ms, challenge_deadline_ms=None, rules=None):
     """Name the deadline window an elapsed time falls in."""
-    if elapsed_ms >= FORCE_STOP_MS:
-        return "forced_stop"
-    if elapsed_ms > FINAL_ROUND_END_MS:
-        return "after_final_round"
-    if elapsed_ms >= FINAL_ROUND_START_MS:
-        return "final_round"
-    if elapsed_ms >= THRESHOLD_FIVE_FROM_MS:
-        return "five_vote_threshold"
-    if elapsed_ms >= challenge_deadline_ms:
-        return "first_round_closed"
-    return "first_round"
+    return (rules or debate_rules()).phase_at(elapsed_ms, challenge_deadline_ms)
 
 
 def content_sha256(content):
@@ -230,15 +197,21 @@ class DebateStateMachine:
         seat_ids=SEAT_IDS,
         start_monotonic_ms=None,
         started_at_utc=None,
-        debate_start_ms=DEBATE_START_MS,
+        debate_start_ms=None,
+        rules=None,
     ):
         self.run = run
         self.clock = clock
         self.gateway = gateway
         self.question_type = question_type
-        self.debate_start_ms = debate_start_ms
-        # 第一輪牆是相對制：封存後兩分鐘（使用者 2026-08-02 指令的本意）。
-        self.challenge_deadline_ms = debate_start_ms + ROUND_ONE_WINDOW_MS
+        self.rules = rules or debate_rules()
+        self.debate_start_ms = (
+            self.rules.debate_start_ms if debate_start_ms is None else debate_start_ms
+        )
+        # 第一輪牆是相對制：以該 run 實際封存的時刻起算一整個 round_one_window。
+        self.challenge_deadline_ms = self.rules.challenge_deadline_ms(
+            self.debate_start_ms
+        )
         self.stances = stances_for(question_type)
         self.seat_ids = tuple(seat_ids)
         self.evidence_records = list(evidence_records)
@@ -391,7 +364,11 @@ class DebateStateMachine:
             self._reject(content, "duplicate_message_id", elapsed)
             raise DuplicateMessageError("message_id {} 重複。".format(message_id))
 
-        if self.stopped or elapsed >= FORCE_STOP_MS or elapsed > FINAL_ROUND_END_MS:
+        if (
+            self.stopped
+            or elapsed >= self.rules.force_stop_ms
+            or elapsed > self.rules.final_round_end_ms
+        ):
             self._reject(content, "late_message", elapsed)
             raise LateMessageError(
                 "訊息於 {}ms 抵達，辯論已結束；fail closed。".format(elapsed)
@@ -445,13 +422,28 @@ class DebateStateMachine:
             raise DebateLifecycleError("debate round 必須為 1、2 或 3。")
         elif elapsed <= self.challenge_deadline_ms and round_number != 1:
             self._reject(content, "round_does_not_match_deadline", elapsed)
-            raise DebateLifecycleError("第一輪牆（封存＋2:00）前只能提交第一輪內容。")
-        elif self.challenge_deadline_ms < elapsed < FINAL_ROUND_START_MS and round_number != 2:
+            raise DebateLifecycleError(
+                "第一輪牆（{}ms）前只能提交第一輪內容。".format(
+                    self.challenge_deadline_ms
+                )
+            )
+        elif (
+            self.challenge_deadline_ms < elapsed < self.rules.final_round_start_ms
+            and round_number != 2
+        ):
             self._reject(content, "round_does_not_match_deadline", elapsed)
-            raise DebateLifecycleError("第一輪牆後、T+8:45 前只能提交第二輪內容。")
-        elif elapsed >= FINAL_ROUND_START_MS and round_number != 3:
+            raise DebateLifecycleError(
+                "第一輪牆後、最後一輪（{}ms）開始前只能提交第二輪內容。".format(
+                    self.rules.final_round_start_ms
+                )
+            )
+        elif elapsed >= self.rules.final_round_start_ms and round_number != 3:
             self._reject(content, "round_does_not_match_deadline", elapsed)
-            raise DebateLifecycleError("T+8:45 後只能提交最後一輪內容。")
+            raise DebateLifecycleError(
+                "最後一輪（{}ms）開始後只能提交最後一輪內容。".format(
+                    self.rules.final_round_start_ms
+                )
+            )
 
         stance = content.get("stance")
         if stance not in self.stances:
@@ -497,7 +489,9 @@ class DebateStateMachine:
             if elapsed > self.challenge_deadline_ms or seat.initial is None:
                 self._reject(content, "late_or_missing_initial_challenge", elapsed)
                 raise DebateLifecycleError(
-                    "第一輪 challenge 必須在第一輪牆（封存＋2:00）前且先有 position。"
+                    "第一輪 challenge 必須在第一輪牆（{}ms）前且先有 position。".format(
+                        self.challenge_deadline_ms
+                    )
                 )
             for field in ("target_seat_id", "target_claim"):
                 value = content.get(field)
@@ -582,6 +576,28 @@ class DebateStateMachine:
             for seat in self.seats.values()
             if seat.initial is not None
         }
+
+    def opening_tally(self):
+        """Count the published blind openings by stance."""
+        counts = {stance: 0 for stance in self.stances}
+        for seat in self.seats.values():
+            if seat.initial is not None:
+                counts[seat.initial["stance"]] += 1
+        return counts
+
+    @property
+    def debate_rounds_started(self):
+        """True once any seat published something beyond its blind opening.
+
+        判準是公開紀錄本身：只要出現過 challenge、response 或 final_vote，這一
+        場就不再是「互不可見的盲投」，直過的前提也就消失了。讀 entries 而不是
+        席位的 ``final``，是因為直過本身會把開場記成最終票——那不能反過來使這
+        個判斷變成 True。
+        """
+        return any(
+            entry.get("event") == "seat_message" and entry.get("kind") != "position"
+            for entry in self.entries
+        )
 
     def _challenge_mode(self, seat, target_seat_id):
         """Name the standard this first-round challenge is judged by.
@@ -731,7 +747,7 @@ class DebateStateMachine:
             "event": event,
             "created_at_utc": self._utc_at(elapsed),
             "elapsed_ms": elapsed,
-            "deadline_phase": phase_at(elapsed, self.challenge_deadline_ms),
+            "deadline_phase": self.rules.phase_at(elapsed, self.challenge_deadline_ms),
             **detail,
         }
         entry["entry_sha256"] = content_sha256(entry)
@@ -780,9 +796,14 @@ class DebateStateMachine:
         if self.stopped:
             return None
         elapsed = self.elapsed_ms
-        if elapsed >= FORCE_STOP_MS:
+        if elapsed >= self.rules.force_stop_ms:
             return self._force_stop()
-        threshold = required_votes_at(elapsed)
+        # 直過與底下的票數階梯互斥，不必排順序：直過的前提是還沒有任何辯論訊
+        # 息，因此也還沒有任何有效票，而階梯數的正是有效票。
+        blind_pass_stance = self._blind_pass_stance(elapsed)
+        if blind_pass_stance is not None:
+            return self._blind_pass(blind_pass_stance, elapsed)
+        threshold = self.rules.required_votes_at(elapsed)
         counts = self.tally()
         leader = max(counts, key=lambda stance: counts[stance])
         if counts[leader] >= threshold:
@@ -791,19 +812,63 @@ class DebateStateMachine:
             )
         return None
 
+    def _blind_pass_stance(self, elapsed):
+        """Return the stance a blind 7/7 opening adopted, or ``None``.
+
+        三個條件全部來自 ``config/debate_rules.json``，缺一不可：
+
+        * **時點**：還在第一輪牆之內。牆一過，這一場已經是辯論場，開場票不再
+          能繞過辯論直接定案。
+        * **盲**：公開紀錄裡還沒有任何 challenge／response／final_vote。
+        * **全席發布且達門檻**：七席的開場都已進公開紀錄，且同一立場的開場票
+          數達到 ``vote_thresholds.unanimous_blind_pass``。
+        """
+        if elapsed > self.challenge_deadline_ms:
+            return None
+        if self.debate_rounds_started:
+            return None
+        if any(seat.initial is None for seat in self.seats.values()):
+            return None
+        counts = self.opening_tally()
+        leader = max(counts, key=lambda stance: counts[stance])
+        if counts[leader] < self.rules.unanimous_blind_pass_votes:
+            return None
+        return leader
+
+    def _blind_pass(self, stance, elapsed):
+        """Adopt every seat's own blind opening as its final vote, then stop.
+
+        直過就是「開場即定案」。Core 沒有創作也沒有改寫任何內容：每一席的最終
+        票就是它自己公開的那一則開場原文。因此票表、tally、報告與 verifier 全
+        部沿用既有欄位，不存在第二套「直過專用」的計票路徑。
+        """
+        for seat in self.seats.values():
+            seat.final = dict(seat.initial)
+        return self._stop(
+            UNANIMOUS_BLIND_PASS,
+            elapsed,
+            stance,
+            self.rules.unanimous_blind_pass_votes,
+        )
+
     def _force_stop(self):
         elapsed = self.elapsed_ms
-        if elapsed < FORCE_STOP_MS:
+        if elapsed < self.rules.force_stop_ms:
             return None
+        required = self.rules.forced_stop_votes
         counts = self.tally()
         leader = max(counts, key=lambda stance: counts[stance])
         valid_count = len(self.valid_votes())
-        adopted = leader if valid_count >= 4 and counts[leader] >= 4 else None
-        if valid_count < 4:
+        adopted = (
+            leader if valid_count >= required and counts[leader] >= required else None
+        )
+        if valid_count < required:
             reason = "forced_stop_insufficient_valid_votes"
+        elif adopted:
+            reason = "forced_stop_{}_votes".format(required)
         else:
-            reason = "forced_stop_4_votes" if adopted else "forced_stop_no_consensus"
-        return self._stop(reason, elapsed, adopted, 4)
+            reason = "forced_stop_no_consensus"
+        return self._stop(reason, elapsed, adopted, required)
 
     def _stop(self, reason, elapsed, adopted_stance, threshold):
         self.stopped = True
@@ -866,14 +931,15 @@ class DebateStateMachine:
         valid_count = len(votes)
         adopted = getattr(self, "_adopted_stance", None)
         threshold = getattr(self, "_stop_threshold", None)
-        red = self.stopped and valid_count < 4
+        quorum = self.rules.forced_stop_votes
+        red = self.stopped and valid_count < quorum
         if not self.stopped:
             adopted = None
             status = "in_progress"
         elif red:
             adopted = None
             status = "failed_insufficient_valid_votes"
-        elif adopted is not None and counts.get(adopted, 0) >= (threshold or 4):
+        elif adopted is not None and counts.get(adopted, 0) >= (threshold or quorum):
             status = "consensus"
         else:
             adopted = None

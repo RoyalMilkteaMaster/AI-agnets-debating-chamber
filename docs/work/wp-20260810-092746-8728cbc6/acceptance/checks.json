@@ -1,0 +1,78 @@
+{
+  "generator": "docs/work/wp-20260810-092746-8728cbc6/acceptance/tools/gen_evidence.py",
+  "runner": "docs/work/wp-20260810-092746-8728cbc6/acceptance/tools/rerun.sh",
+  "command": "bash docs/work/wp-20260810-092746-8728cbc6/acceptance/tools/rerun.sh",
+  "environment": "WSL Ubuntu-24.04、Python 3.12.3",
+  "baseline_tree": "1ac0192e024320a913e3211c9c72c668b7c25432",
+  "snapshot_tree": "見 acceptance-summary.md〈重跑與快照〉",
+  "full_suite": "python3 -m unittest discover -s tests（結果見 full-suite.txt）",
+  "note": "重跑會覆寫 acceptance/ 底下的證據；不想覆寫就設 HOYA_ACCEPTANCE_OUT 指到別的目錄。歷史頁與未知鍵設定頁會印出當次的暫存 Data Root 路徑，那幾份 HTML 每跑一次就換一個路徑，其餘檔案逐位元組相同。",
+  "checks": [
+    {
+      "id": "AC2-nav",
+      "description": "每頁五導覽、設定在關閉伺服器左邊、報告導覽指向正確",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "id": "AC2-latest-tw_stock",
+      "description": "tw_stock：latest_report_run 就是這一趟 run",
+      "ok": true,
+      "detail": "{'run_id': '20260314T015926Z-2330-aaa111', 'artifacts': {'report.html': True, 'debate.html': True}}"
+    },
+    {
+      "id": "AC2-latest-crypto",
+      "description": "crypto：latest_report_run 就是這一趟 run",
+      "ok": true,
+      "detail": "{'run_id': '20260315T015926Z-btc-bbb222', 'artifacts': {'report.html': True, 'debate.html': True}}"
+    },
+    {
+      "id": "AC1-labels",
+      "description": "設定頁逐鍵中文標籤＋白話說明、分組標題中文",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "id": "AC1-fallback",
+      "description": "未知鍵顯示原鍵名＋尚未翻譯且可編輯",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "id": "AC3-injection",
+      "description": "經伺服器瀏覽離線頁有五導覽、磁碟位元組不變、無插入點原樣送出",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "id": "AC4-design",
+      "description": "白底單一設計、無深色 media query、對比度全數達 WCAG AA",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "id": "AC5-roster",
+      "description": "席位定案名＋blurb、兩處一致、roster fail-closed",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "id": "AC6-menu",
+      "description": "發問選單只有三市場、歷史開放題 run 可回看",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "id": "AC7-protected",
+      "description": "保護區三種票數、聊天室、燈位行為與紀錄一致",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "id": "AC7-a5",
+      "description": "A5 標準渲染後繁中 grep 通過（含 Ticket 04 窄豁免判讀）",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

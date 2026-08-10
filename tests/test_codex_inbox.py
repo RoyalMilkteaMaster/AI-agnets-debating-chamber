@@ -58,22 +58,26 @@ class SeatPromptTest(unittest.TestCase):
         self.data_root = Path(self._tmp.name)
 
     def test_prompt_is_written_once_and_readable(self):
-        path = write_seat_prompt(self.data_root, RUN_ID, "onchain", "研究 BTC 鏈上資料")
+        path = write_seat_prompt(
+            self.data_root, RUN_ID, "news", "查證 BTC 新聞與事件時間線"
+        )
 
-        self.assertEqual("研究 BTC 鏈上資料", path.read_text(encoding="utf-8"))
         self.assertEqual(
-            inbox_root(self.data_root, RUN_ID) / "prompts" / "onchain.txt", path
+            "查證 BTC 新聞與事件時間線", path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            inbox_root(self.data_root, RUN_ID) / "prompts" / "news.txt", path
         )
 
     def test_second_prompt_for_the_same_seat_is_rejected(self):
-        write_seat_prompt(self.data_root, RUN_ID, "onchain", "第一版")
+        write_seat_prompt(self.data_root, RUN_ID, "news", "第一版")
 
         with self.assertRaises(InboxError):
-            write_seat_prompt(self.data_root, RUN_ID, "onchain", "第二版")
+            write_seat_prompt(self.data_root, RUN_ID, "news", "第二版")
 
         self.assertEqual(
             "第一版",
-            (inbox_root(self.data_root, RUN_ID) / "prompts" / "onchain.txt").read_text(
+            (inbox_root(self.data_root, RUN_ID) / "prompts" / "news.txt").read_text(
                 encoding="utf-8"
             ),
         )
@@ -116,7 +120,7 @@ class SeatResultTest(unittest.TestCase):
 
     def test_default_submitted_at_is_stamped_in_the_utc_record_format(self):
         path = write_seat_result(
-            self.data_root, RUN_ID, "onchain", "onchain-codex-1", RAW_ENVELOPE
+            self.data_root, RUN_ID, "news", "news-codex-1", RAW_ENVELOPE
         )
 
         stamp = json.loads(path.read_text(encoding="utf-8"))["submitted_at_utc"]
@@ -124,19 +128,24 @@ class SeatResultTest(unittest.TestCase):
 
     def test_duplicate_submission_is_rejected_and_keeps_the_first(self):
         write_seat_result(
-            self.data_root, RUN_ID, "onchain", "onchain-codex-1", "第一次"
+            self.data_root, RUN_ID, "news", "news-codex-1", "第一次"
         )
 
         with self.assertRaises(InboxError):
             write_seat_result(
-                self.data_root, RUN_ID, "onchain", "onchain-codex-1", "第二次"
+                self.data_root, RUN_ID, "news", "news-codex-1", "第二次"
             )
 
         results = poll_results(self.data_root, RUN_ID, set())
-        self.assertEqual([("onchain", "onchain-codex-1", "第一次")], results)
+        self.assertEqual([("news", "news-codex-1", "第一次")], results)
 
     def test_non_codex_seat_is_rejected(self):
-        for seat_id in ("news", "official-events", "social-macro", "counter-evidence"):
+        for seat_id in (
+            "onchain",
+            "official-events",
+            "social-macro",
+            "counter-evidence",
+        ):
             with self.subTest(seat_id=seat_id):
                 with self.assertRaises(InboxError):
                     write_seat_result(
@@ -146,12 +155,12 @@ class SeatResultTest(unittest.TestCase):
     def test_attempt_id_containing_a_path_is_rejected(self):
         with self.assertRaises(InboxError):
             write_seat_result(
-                self.data_root, RUN_ID, "onchain", "../escape", RAW_ENVELOPE
+                self.data_root, RUN_ID, "news", "../escape", RAW_ENVELOPE
             )
 
     def test_raw_output_must_be_text(self):
         with self.assertRaises(InboxError):
-            write_seat_result(self.data_root, RUN_ID, "onchain", "onchain-codex-1", {})
+            write_seat_result(self.data_root, RUN_ID, "news", "news-codex-1", {})
 
 
 class PollResultsTest(unittest.TestCase):
@@ -166,11 +175,11 @@ class PollResultsTest(unittest.TestCase):
     def test_polling_is_incremental(self):
         seen = set()
         write_seat_result(
-            self.data_root, RUN_ID, "onchain", "onchain-codex-1", "第一份"
+            self.data_root, RUN_ID, "news", "news-codex-1", "第一份"
         )
 
         first = poll_results(self.data_root, RUN_ID, seen)
-        self.assertEqual([("onchain", "onchain-codex-1", "第一份")], first)
+        self.assertEqual([("news", "news-codex-1", "第一份")], first)
         self.assertEqual([], poll_results(self.data_root, RUN_ID, seen))
 
         write_seat_result(
@@ -181,7 +190,7 @@ class PollResultsTest(unittest.TestCase):
 
     def test_broken_files_are_skipped_without_losing_valid_results(self):
         results_dir = ensure_inbox(self.data_root, RUN_ID) / "results"
-        (results_dir / "onchain.broken.json").write_text("{ not json", encoding="utf-8")
+        (results_dir / "news.broken.json").write_text("{ not json", encoding="utf-8")
         (results_dir / "derivatives.partial.json").write_text(
             json.dumps({"schema_version": "1.0.0"}), encoding="utf-8"
         )
@@ -204,7 +213,7 @@ class SubmitSeatCommandTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.data_root = Path(self._tmp.name)
 
-    def submit(self, raw, seat_id="onchain", attempt_id="onchain-codex-1", argv=None):
+    def submit(self, raw, seat_id="news", attempt_id="news-codex-1", argv=None):
         out, err = io.StringIO(), io.StringIO()
         code = run_submit_seat(
             argv
@@ -230,8 +239,8 @@ class SubmitSeatCommandTest(unittest.TestCase):
 
         self.assertEqual(EXIT_OK, code, err)
         results = poll_results(self.data_root, RUN_ID, set())
-        self.assertEqual([("onchain", "onchain-codex-1", RAW_ENVELOPE + "\n")], results)
-        self.assertIn("onchain.onchain-codex-1.json", out)
+        self.assertEqual([("news", "news-codex-1", RAW_ENVELOPE + "\n")], results)
+        self.assertIn("news.news-codex-1.json", out)
 
     def test_blank_stdin_is_rejected(self):
         code, _, err = self.submit("   \n")
@@ -241,10 +250,10 @@ class SubmitSeatCommandTest(unittest.TestCase):
         self.assertEqual([], poll_results(self.data_root, RUN_ID, set()))
 
     def test_non_codex_seat_is_rejected(self):
-        code, _, err = self.submit(RAW_ENVELOPE, seat_id="news")
+        code, _, err = self.submit(RAW_ENVELOPE, seat_id="onchain")
 
         self.assertEqual(EXIT_REJECTED, code)
-        self.assertIn("news", err)
+        self.assertIn("onchain", err)
 
     def test_duplicate_submission_is_rejected(self):
         self.assertEqual(EXIT_OK, self.submit(RAW_ENVELOPE)[0])

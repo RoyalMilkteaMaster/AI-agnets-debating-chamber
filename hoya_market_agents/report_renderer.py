@@ -8,11 +8,20 @@ The renderer never writes a market conclusion. In a fake tracer run there is no
 Core Agent, so the report says so plainly and shows only what the seats
 themselves published: their stances, reasons, cited evidence and the arithmetic
 vote tally.
+
+**No colour is decided here.** Every value both offline pages are painted with
+comes from :mod:`~hoya_market_agents.design_tokens` at render time, through
+:func:`stylesheet`; a hex in this module would be a second copy of a colour that
+table already owns (Spec R-004). The rule bodies below therefore name tokens and
+never values, and the debate page reads the same two helpers rather than keeping
+a palette of its own. A repaint reaches the pages a *new* run writes: files a
+past run sealed are immutable and are not rebuilt.
 """
 
 import html
 from datetime import datetime, timedelta, timezone
 
+from . import design_tokens
 from .contract_validator import CONTRACT_VERSION, validate_report
 from .question_package import (
     COMPARISON_STANCES,
@@ -22,7 +31,7 @@ from .question_package import (
     OPEN_STANCE_LABELS,
 )
 from .report_contract import is_safe_source_url
-from .seats import SEAT_IDS
+from .seats import SEAT_DISPLAY_NAMES, SEAT_IDS, seat_display_names, seat_identities
 
 REPORT_SCHEMA_VERSION = CONTRACT_VERSION
 
@@ -32,25 +41,10 @@ DIRECTION_LABELS = (
     ("neutral", "中性／限制條件證據"),
 )
 
-SEAT_LABELS = {
-    "spot-technical": "現貨技術席",
-    "derivatives": "衍生品席",
-    "onchain": "鏈上資料席",
-    "official-events": "官方事件席",
-    "news": "新聞資訊席",
-    "social-macro": "社群與總體經濟席",
-    "counter-evidence": "反方證據席",
-}
-
-REPORT_AGENT_PROFILES = {
-    "spot-technical": ("Codex・圖表偵探", "📈"),
-    "derivatives": ("Codex・槓桿雷達", "⚙️"),
-    "onchain": ("Codex・鏈上獵人", "⛓️"),
-    "official-events": ("Claude・官方哨兵", "📣"),
-    "news": ("Claude・新聞探員", "📰"),
-    "social-macro": ("Claude・社群觀察員", "🌐"),
-    "counter-evidence": ("Gemini・反證稽核員", "🔎"),
-}
+# 席位名稱不在本模組——它依 run 的資產類別從 roster profiles 取得（ADR 0006），
+# 所以台股報告不會印出幣圈席名。這個名字只是 webapp 尚未改讀那個口的過渡出口，
+# 由 Ticket 03 移除；它是同一份權威的檢視，不是第二份表。
+SEAT_LABELS = SEAT_DISPLAY_NAMES
 
 # The market ballot's own wording, kept as a name for callers that already know
 # their run is a market question. Everything that renders a stance goes through
@@ -97,8 +91,8 @@ RAW_RECORDS = (
     ("manifest.json", "執行 manifest"),
 )
 
-# The graded 🔴／🟠／🟡／🟡🟢／🟢 lights are bounded by the absolute 6/5/4 vote
-# thresholds, which this ticket does not implement. A tracer run therefore
+# The graded 🔴／🟠／🟡／🟢／🔵 lights are the adopted stance's vote count
+# (ADR 0003), which a tracer run has no real ballot for. A tracer run therefore
 # reports an explicitly unassessed light rather than inventing one.
 UNASSESSED_CONFIDENCE = {
     "icon": "⚪",
@@ -273,7 +267,7 @@ def render_html(report):
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         "<title>{} — Hoya Bit 市場研究報告</title>".format(_e(report["run_id"])),
-        "<style>{}</style>".format(_CSS),
+        "<style>{}</style>".format(stylesheet(_CSS)),
         "</head>",
         "<body>",
         '<p class="banner">⚠️ provider mode：{}。本報告內容為離線示範資料，不得作為市場依據。</p>'.format(
@@ -358,22 +352,104 @@ def render_html(report):
     return "\n".join(parts)
 
 
-_CSS = (
-    "body{font-family:system-ui,'Noto Sans TC',sans-serif;margin:0 auto;max-width:52rem;"
-    "padding:1.5rem;line-height:1.6;color:#16202a;background:#ffffff}"
-    ".banner{border:2px solid #b34700;background:#fff4e5;color:#7a3000;"
-    "padding:.75rem 1rem;border-radius:.5rem;font-weight:700}"
-    ".headline{border:1px solid #c8d2dc;border-radius:.5rem;padding:1rem;background:#f6f9fc}"
-    "dl{margin:0;display:grid;grid-template-columns:10rem 1fr;gap:.35rem 1rem}"
-    "dt{font-weight:700}dd{margin:0}"
-    "h1{font-size:1.6rem}h2{font-size:1.2rem;border-bottom:1px solid #c8d2dc;padding-bottom:.3rem}"
-    "h3{font-size:1rem;margin-bottom:.3rem}"
-    ".button{display:inline-block;background:#173b70;color:#fff;text-decoration:none;font-weight:800;padding:.6rem .9rem;border-radius:.45rem}"
-    "article{border-left:4px solid #c8d2dc;padding-left:.9rem;margin-bottom:.9rem}"
-    "code{background:#eef2f6;padding:.1rem .3rem;border-radius:.2rem}"
-    "a{color:#0b4f9e}"
-    "@media print{body{max-width:none;padding:0}.banner{border-width:1px}}"
-)
+# -- styling ----------------------------------------------------------------
+#
+# Two rules govern everything below and in :mod:`~.report_audit_renderer`:
+#
+# * **A colour is always a token.** ``var(--x)`` and nothing else, so the sheet
+#   holds no value that :mod:`~hoya_market_agents.design_tokens` does not own.
+# * **A length is a token when it is rhythm** — padding, gaps, margins, radii,
+#   type — and stays a literal when it is one component's own dimension (a
+#   reading measure, a grid column's minimum, a hairline's width). A scale that
+#   also holds one panel's width is not a scale.
+
+
+def stylesheet(rules):
+    """Return one offline page's stylesheet: the token table, then the rules.
+
+    The table is read here at render time rather than baked into the rule text,
+    so a colour changed in :mod:`~hoya_market_agents.design_tokens` reaches the
+    pages the next run writes and nothing else has to be edited. Both offline
+    renderers call this, which is what "the CSS is taken from design_tokens"
+    means when it is checked rather than claimed.
+
+    One ``:root`` and no media query: dark mode is retired (Spec R-004), so
+    there is a single palette and the page is white whatever the operating
+    system prefers.
+    """
+    return (
+        ":root{"
+        + _custom_properties(design_tokens.PALETTE)
+        + _custom_properties(design_tokens.SCALE)
+        + "}"
+        + rules
+    )
+
+
+def _custom_properties(values):
+    return "".join(
+        "--{}:{};".format(name.replace("_", "-"), value)
+        for name, value in sorted(values.items())
+    )
+
+
+def decorative_hairline(selector):
+    """Return the rule that lays the four brand hues along ``selector``'s top edge.
+
+    R-004 asks for 紅藍綠黃 as decoration and for them to say nothing, so the one
+    place they appear is a hairline above a panel: no text sits on it, no reader
+    has to decode it, and a browser that cannot paint the gradient simply shows
+    the panel without it. The stops are generated from
+    :data:`~hoya_market_agents.design_tokens.DECOR_TOKENS`, so a fifth decorative
+    hue widens the strip instead of being silently left out of it.
+    """
+    hues = design_tokens.DECOR_TOKENS
+    stops = []
+    for index, token in enumerate(hues):
+        colour = "var(--{})".format(token.replace("_", "-"))
+        stops.append("{} {}%".format(colour, index * 100 // len(hues)))
+        stops.append("{} {}%".format(colour, (index + 1) * 100 // len(hues)))
+    return (
+        selector
+        + "{background-image:linear-gradient(90deg,"
+        + ",".join(stops)
+        + ");background-repeat:no-repeat;background-size:100% 4px;"
+        + "background-position:top;}"
+    )
+
+
+# The tracer report's rules. It is one plain document rather than a card layout,
+# so the frosted panel is the headline block and the four hues sit above it.
+_CSS = """
+*{box-sizing:border-box;}
+body{margin:0 auto;max-width:52rem;padding:var(--space-6);background:var(--page);
+ color:var(--text);font-family:var(--font-sans);font-size:var(--size-md);
+ line-height:var(--line-base);}
+h1{font-size:var(--size-xl);line-height:var(--line-tight);}
+h2{font-size:var(--size-lg);line-height:var(--line-tight);padding-bottom:var(--space-2);
+ border-bottom:1px solid var(--border);}
+h3{font-size:var(--size-md);line-height:var(--line-tight);margin-bottom:var(--space-2);}
+a{color:var(--link);overflow-wrap:anywhere;}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px;}
+code{font-family:var(--font-mono);font-size:var(--size-sm);background:var(--surface);
+ padding:var(--space-1) var(--space-2);border-radius:var(--radius-sm);}
+.banner{border:1px solid var(--abstain);background:var(--surface);color:var(--abstain);
+ padding:var(--space-4) var(--space-5);border-radius:var(--radius-md);font-weight:700;}
+.button{display:inline-block;background:var(--accent);color:var(--accent-text);
+ text-decoration:none;font-weight:700;padding:var(--space-4) var(--space-5);
+ border-radius:var(--radius-md);}
+.headline{border:1px solid var(--border);border-radius:var(--radius-lg);
+ padding:var(--space-6);background-color:var(--glass-surface);
+ -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));}
+dl{margin:0;display:grid;grid-template-columns:10rem 1fr;gap:var(--space-2) var(--space-5);}
+dt{font-weight:700;color:var(--muted);}
+dd{margin:0;}
+article{background:var(--surface);border:1px solid var(--border);
+ border-left:4px solid var(--border);border-radius:var(--radius-md);
+ padding:var(--space-3) var(--space-5);margin-bottom:var(--space-5);}
+@media print{body{max-width:none;padding:0;background:var(--surface);}
+ a{color:var(--text);}}
+""" + decorative_hairline(".headline")
 
 
 def _headline_rows(report):
@@ -466,6 +542,7 @@ def _e(value):
 def render_market_markdown(report):
     """Render one already-validated, Core-authored report as Markdown."""
     labels = _report_stance_labels(report)
+    seat_labels = _report_seat_labels(report)
     lines = [
         "# Hoya Bit 市場判斷報告",
         "",
@@ -494,7 +571,9 @@ def render_market_markdown(report):
     lines += ["", "## 七席完整紀錄", ""]
     for seat in report["seats"]:
         lines += [
-            "### {}（`{}`）".format(_seat_label(seat["seat_id"]), seat["seat_id"]),
+            "### {}（`{}`）".format(
+                _seat_label(seat["seat_id"], seat_labels), seat["seat_id"]
+            ),
             "",
             "- 初始立場：{}".format(_stance_label(seat["initial_stance"], labels)),
             "- 最終立場：{}".format(_stance_label(seat["final_stance"], labels)),
@@ -529,6 +608,8 @@ def render_market_html(report, sources=None):
     """Render one validated report as a self-contained, accessible HTML file."""
     confidence = report["confidence"]
     labels = _report_stance_labels(report)
+    seat_labels = _report_seat_labels(report)
+    identities = _report_seat_identities(report)
     evidence_by_id = _market_evidence_index(report, sources)
     parts = [
         "<!DOCTYPE html>",
@@ -537,14 +618,19 @@ def render_market_html(report, sources=None):
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         "<title>Hoya Bit 市場判斷報告</title>",
-        "<style>{}</style>".format(_MARKET_CSS),
+        "<style>{}</style>".format(stylesheet(_MARKET_CSS)),
         "</head>",
         "<body>",
         "<main>",
         '<header class="page-header"><div><p class="eyebrow">Hoya Bit 可稽核市場研究</p>',
         "<h1>市場判斷報告</h1></div>",
+        # 導覽只列這份 bundle 真的帶著的頁面。曾經有第三個 tab 指向
+        # ``live.html``，但那個檔案從來不在 run 目錄裡：舊的直播頁走的是伺服器
+        # URL，Ticket 10 退役 live_dashboard 之後連那條脈絡都沒有了，於是每一份
+        # 離線報告都帶著一個永遠 404 的連結出貨。改成 ``/live`` 不算修好——那只
+        # 是把死連結換成「沒開伺服器就壞掉」的連結，而離線 bundle 的契約正是它
+        # 自己就能看。封存後也不缺那一頁：辯論逐字稿就是 debate.html。
         '<nav class="page-tabs" aria-label="主要頁面">'
-        '<a href="live.html">即時辯論</a>'
         '<a href="report.html" aria-current="page">市場報告</a>'
         '<a href="debate.html">完整辯論</a></nav></header>',
         '<section class="decision" aria-labelledby="decision-title">',
@@ -618,16 +704,20 @@ def render_market_html(report, sources=None):
             card = evidence_by_id.get(evidence_id, {})
             evidence_items.append(_seat_evidence_html(evidence_id, card))
         evidence_html = "".join(evidence_items) or "<li>沒有可驗證證據</li>"
-        agent_name, avatar = REPORT_AGENT_PROFILES.get(
-            seat["seat_id"], (_seat_label(seat["seat_id"]), "❔")
+        identity = identities.get(seat["seat_id"])
+        agent_name = (
+            identity.display_name
+            if identity
+            else _seat_label(seat["seat_id"], seat_labels)
         )
+        avatar = identity.avatar if identity else "❔"
         parts += [
             '<article class="seat-card">',
             '<header class="seat-head"><span class="seat-avatar" aria-hidden="true">{}</span>'
             '<div><h3>{}</h3><p>{}｜<code>{}</code></p></div></header>'.format(
                 _e(avatar),
                 _e(agent_name),
-                _e(_seat_label(seat["seat_id"])),
+                _e(_seat_label(seat["seat_id"], seat_labels)),
                 _e(seat["seat_id"]),
             ),
             '<p class="stance-line"><span>初始 {}</span><span aria-hidden="true">→</span>'
@@ -677,7 +767,7 @@ def render_market_html(report, sources=None):
                 _e(evidence_id),
                 _e(card.get("statement") or "未提供證據摘要"),
                 _e(_source_tier_label(card.get("source_tier"))),
-                _e(_seat_label(card.get("seat_id"))),
+                _e(_seat_label(card.get("seat_id"), seat_labels)),
                 _e(_category_label(card.get("category"))),
                 _e(_direction_label(card.get("direction"))),
                 _e(card.get("source_origin") or "未提供"),
@@ -692,53 +782,124 @@ def render_market_html(report, sources=None):
     return "\n".join(parts)
 
 
-_MARKET_CSS = (
-    ":root{--ink:#172033;--muted:#5d687b;--line:#d8dee9;--paper:#fff;--wash:#f3f6fb;"
-    "--brand:#173b70;--brand-2:#2d5f9d;--brand-soft:#eaf1fb;--positive:#17633b;--negative:#9a2f2f}"
-    "*{box-sizing:border-box}body{margin:0;background:var(--wash);color:var(--ink);"
-    "font-family:system-ui,'Noto Sans TC',sans-serif;line-height:1.6}main{max-width:90rem;margin:auto;padding:1.5rem}"
-    ".page-header,.section-heading{display:flex;justify-content:space-between;align-items:center;gap:1rem}"
-    ".page-header{margin:0 0 1rem}.eyebrow{margin:0;color:var(--brand);font-size:.78rem;font-weight:800;"
-    "letter-spacing:.08em;text-transform:uppercase}h1{font-size:2rem;margin:.1rem 0}h2{margin:.2rem 0 .8rem}"
-    ".page-tabs{display:flex;gap:.25rem;padding:.3rem;background:var(--brand-soft);border:1px solid var(--line);"
-    "border-radius:.65rem}.page-tabs a{color:var(--brand);text-decoration:none;font-weight:800;"
-    "padding:.55rem .75rem;border-radius:.4rem;white-space:nowrap}.page-tabs a[aria-current=page]{"
-    "background:var(--brand);color:#fff}.page-tabs a:focus-visible,.primary-action:focus-visible,summary:focus-visible{outline:3px solid #f0b429;outline-offset:2px}"
-    ".text-link{color:var(--brand);font-weight:700;text-decoration:none}.primary-action{flex:none;background:#fff;color:var(--brand);"
-    "font-weight:850;text-decoration:none;padding:.75rem 1rem;border-radius:.55rem}"
-    "section{background:var(--paper);border:1px solid var(--line);border-radius:.75rem;padding:1.1rem;margin:0 0 1rem;"
-    "box-shadow:0 3px 14px rgba(23,32,51,.05)}.decision{padding:1.35rem;background:linear-gradient(120deg,var(--brand),var(--brand-2));color:#fff}"
-    ".decision .eyebrow{color:#cbdcf2}.decision-main{display:flex;justify-content:space-between;align-items:center;gap:1.5rem}"
-    ".decision-scope{margin:.2rem 0;opacity:.82;font-weight:750}.market-status{font-size:clamp(1.8rem,3vw,2.75rem);line-height:1.22;margin:.2rem 0 .45rem}"
-    ".judgement{font-size:1.08rem;margin:0;max-width:58rem}.decision-facts{display:flex;gap:.65rem;flex-wrap:wrap;margin-top:1rem}"
-    ".decision-facts span{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);border-radius:2rem;padding:.35rem .7rem}"
-    "dl{display:grid;grid-template-columns:9rem 1fr;gap:.45rem 1rem}dt{font-weight:750}dd{margin:0}"
-    ".confidence{font-weight:800}.red{color:#8f1414}.orange{color:#8a3b00}.yellow{color:#6b5700}"
-    ".yellow_green{color:#315b10}.green{color:#12602e}.decision .confidence{color:#fff}"
-    ".evidence-columns{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.evidence-side{border:1px solid var(--line);border-radius:.65rem;padding:.9rem}"
-    ".evidence-side h3{margin:.1rem 0 .6rem}.evidence-side ol{margin:0;padding-left:1.35rem}.evidence-side li{padding:.45rem .2rem}"
-    ".evidence-side.support{border-top:4px solid var(--positive);background:#f6fbf8}.evidence-side.oppose{border-top:4px solid var(--negative);background:#fff8f8}"
-    ".comparison-meta{display:block;color:var(--muted);font-size:.78rem}.risk-section{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}"
-    ".risk-section h2{font-size:1.15rem}.section-intro{color:var(--muted);margin-top:-.45rem}"
-    ".seat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.85rem}.seat-card{border:1px solid var(--line);border-radius:.7rem;padding:.9rem;background:#fbfcfe}"
-    ".seat-head{display:flex;align-items:center;gap:.65rem}.seat-avatar{width:2.7rem;height:2.7rem;display:grid;place-items:center;border-radius:50%;background:var(--brand-soft);font-size:1.35rem}"
-    ".seat-head h3{margin:0;font-size:1rem}.seat-head p{margin:0;color:var(--muted);font-size:.76rem}.stance-line{display:flex;gap:.5rem;align-items:center;margin:.7rem 0;padding:.45rem .6rem;border-radius:.45rem;background:var(--brand-soft)}"
-    ".stance-line strong{color:var(--brand)}.seat-reason h4{margin:.5rem 0 .1rem;color:var(--muted);font-size:.78rem}.seat-reason p,.seat-process{margin:.15rem 0 .6rem}.seat-process{font-size:.84rem;color:var(--muted)}"
-    ".seat-sources{border-top:1px solid var(--line);padding-top:.55rem}.seat-sources summary{cursor:pointer;color:var(--brand);font-weight:800}"
-    ".seat-evidence{list-style:none;padding:0;margin:0}.seat-evidence li{padding:.45rem 0;border-bottom:1px dashed var(--line)}"
-    ".seat-evidence li:last-child{border:0}.evidence-summary{display:block;margin-top:.2rem}.meta{display:block;color:var(--muted);"
-    "font-size:.78rem}.evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));gap:.8rem}"
-    ".evidence-card{border:1px solid var(--line);border-radius:.55rem;background:#fbfcfe;align-self:start}.evidence-card summary{cursor:pointer;padding:.8rem;display:flex;justify-content:space-between;gap:.6rem}"
-    ".evidence-card summary span:first-child{display:flex;flex-direction:column}.evidence-card summary strong{font-size:.9rem}.evidence-body{padding:0 .8rem .8rem}.tier{font-size:.75rem;"
-    "font-weight:750;color:var(--brand)}.evidence-meta{grid-template-columns:5.5rem 1fr;"
-    "font-size:.83rem}.source-link{display:inline-block;margin-top:.3rem}a{color:#064f9e;overflow-wrap:anywhere}code{font-weight:700}"
-    "@media(max-width:60rem){.page-header,.section-heading{align-items:flex-start;flex-direction:column}"
-    ".page-tabs{width:100%}.page-tabs a{flex:1;text-align:center}dl{grid-template-columns:1fr}.decision-main{align-items:flex-start;flex-direction:column}"
-    ".evidence-columns,.risk-section,.seat-grid{grid-template-columns:1fr}}"
-    "@media print{body{background:#fff}main{max-width:none;padding:0}.page-tabs,.text-link{display:none}"
-    ".decision{background:#fff;color:#000}.decision .eyebrow,.decision .confidence{color:#000}.primary-action{display:none}"
-    "section{break-inside:auto;border-color:#777;box-shadow:none}.evidence-card,.seat-card{break-inside:avoid}a{color:#000}}"
-)
+# The market report's rules. The conclusion panel is the page's one frosted
+# surface and carries the four-hue hairline; everything else is white cards on
+# the grey canvas, told apart by hairlines and space rather than by fills.
+#
+# **The five confidence lights hold no rule here.** Their colour is the
+# authority's own icon beside the word (``report_contract.CONFIDENCE_ICONS``),
+# which is why ``design_tokens`` deliberately carries no hex for them: a
+# ``.green{color:...}`` in this sheet would be a second copy of a colour that
+# already has an owner. The level's class stays on the element for assistive
+# technology and for anything downstream that reads it; what is gone is the
+# paint, not the light.
+_MARKET_CSS = """
+*{box-sizing:border-box;}
+body{margin:0;background:var(--page);color:var(--text);font-family:var(--font-sans);
+ font-size:var(--size-md);line-height:var(--line-base);}
+main{max-width:var(--shell);margin:auto;padding:var(--space-6);}
+h1,h2,h3,h4{line-height:var(--line-tight);}
+h1{font-size:var(--size-xl);margin:var(--space-1) 0;}
+h2{margin:var(--space-1) 0 var(--space-4);font-size:var(--size-lg);}
+a{color:var(--link);overflow-wrap:anywhere;}
+code{font-family:var(--font-mono);font-size:var(--size-sm);}
+.page-header,.section-heading{display:flex;justify-content:space-between;
+ align-items:center;gap:var(--space-5);}
+.page-header{margin:0 0 var(--space-5);}
+.eyebrow{margin:0;color:var(--muted);font-size:var(--size-2xs);font-weight:700;
+ letter-spacing:.08em;text-transform:uppercase;}
+.page-tabs{display:flex;gap:var(--space-1);padding:var(--space-1);
+ background-color:var(--glass-surface);border:1px solid var(--border);
+ border-radius:var(--radius-pill);
+ -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));}
+.page-tabs a{color:var(--link);text-decoration:none;font-weight:700;
+ padding:var(--space-3) var(--space-4);border-radius:var(--radius-pill);white-space:nowrap;}
+.page-tabs a[aria-current=page]{background:var(--accent);color:var(--accent-text);}
+a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px;}
+.text-link{color:var(--link);font-weight:700;text-decoration:none;}
+.primary-action{flex:none;background:var(--accent);color:var(--accent-text);
+ font-weight:700;text-decoration:none;padding:var(--space-4) var(--space-5);
+ border-radius:var(--radius-md);}
+section{background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-lg);padding:var(--space-6);margin:0 0 var(--space-5);}
+.decision{padding-top:var(--space-7);background-color:var(--glass-surface);
+ -webkit-backdrop-filter:blur(var(--glass-blur));backdrop-filter:blur(var(--glass-blur));}
+.decision .eyebrow{color:var(--accent);}
+.decision-main{display:flex;justify-content:space-between;align-items:center;
+ gap:var(--space-6);}
+.decision-scope{margin:var(--space-1) 0;color:var(--muted);font-weight:700;}
+.market-status{margin:var(--space-1) 0 var(--space-3);font-size:var(--size-2xl);}
+.judgement{margin:0;max-width:58rem;font-size:var(--size-lg);}
+.decision-facts{display:flex;gap:var(--space-3);flex-wrap:wrap;margin-top:var(--space-5);}
+.decision-facts span{background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-pill);padding:var(--space-2) var(--space-4);}
+.confidence{font-weight:700;}
+dl{display:grid;grid-template-columns:9rem 1fr;gap:var(--space-2) var(--space-5);}
+dt{font-weight:700;color:var(--muted);}
+dd{margin:0;}
+.evidence-columns{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-5);}
+.evidence-side{background:var(--page);border:1px solid var(--border);
+ border-radius:var(--radius-md);padding:var(--space-5);}
+.evidence-side h3{margin:0 0 var(--space-4);font-size:var(--size-md);}
+.evidence-side ol{margin:0;padding-left:var(--space-6);}
+.evidence-side li{padding:var(--space-2) var(--space-1);}
+.evidence-side.support{border-top:4px solid var(--affirm);}
+.evidence-side.oppose{border-top:4px solid var(--oppose);}
+.comparison-meta{display:block;color:var(--muted);font-size:var(--size-2xs);}
+.risk-section{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-6);}
+.risk-section h2{font-size:var(--size-lg);}
+.section-intro{margin-top:0;color:var(--muted);}
+.seat-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-5);}
+.seat-card{background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-md);padding:var(--space-5);}
+.seat-head{display:flex;align-items:center;gap:var(--space-4);}
+.seat-avatar{width:2.7rem;height:2.7rem;display:grid;place-items:center;
+ border-radius:50%;background:var(--page);border:1px solid var(--border);
+ font-size:var(--size-lg);}
+.seat-head h3{margin:0;font-size:var(--size-md);}
+.seat-head p{margin:0;color:var(--muted);font-size:var(--size-xs);}
+.stance-line{display:flex;gap:var(--space-3);align-items:center;
+ margin:var(--space-4) 0;padding:var(--space-2) var(--space-4);
+ background:var(--page);border-radius:var(--radius-sm);}
+.stance-line strong{color:var(--text);}
+.seat-reason h4{margin:var(--space-3) 0 var(--space-1);color:var(--muted);
+ font-size:var(--size-2xs);}
+.seat-reason p,.seat-process{margin:var(--space-1) 0 var(--space-4);}
+.seat-process{color:var(--muted);font-size:var(--size-sm);}
+.seat-sources{border-top:1px solid var(--border);padding-top:var(--space-3);}
+.seat-sources summary{cursor:pointer;color:var(--link);font-weight:700;}
+.seat-evidence{list-style:none;padding:0;margin:0;}
+.seat-evidence li{padding:var(--space-2) 0;border-bottom:1px dashed var(--border);}
+.seat-evidence li:last-child{border:0;}
+.evidence-summary{display:block;margin-top:var(--space-1);}
+.meta{display:block;color:var(--muted);font-size:var(--size-2xs);}
+.evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));
+ gap:var(--space-4);}
+.evidence-card{background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-md);align-self:start;}
+.evidence-card summary{cursor:pointer;padding:var(--space-4);display:flex;
+ justify-content:space-between;gap:var(--space-3);}
+.evidence-card summary span:first-child{display:flex;flex-direction:column;}
+.evidence-card summary strong{font-size:var(--size-sm);}
+.evidence-body{padding:0 var(--space-4) var(--space-4);}
+.tier{color:var(--accent);font-size:var(--size-2xs);font-weight:700;}
+.evidence-meta{grid-template-columns:5.5rem 1fr;font-size:var(--size-sm);}
+.source-link{display:inline-block;margin-top:var(--space-1);}
+.unsafe-url{color:var(--danger);font-weight:700;overflow-wrap:anywhere;}
+@media(max-width:60rem){.page-header,.section-heading{align-items:flex-start;
+ flex-direction:column;}
+ .page-tabs{width:100%;}
+ .page-tabs a{flex:1;text-align:center;}
+ dl{grid-template-columns:1fr;}
+ .decision-main{align-items:flex-start;flex-direction:column;}
+ .evidence-columns,.risk-section,.seat-grid{grid-template-columns:1fr;}}
+@media print{body{background:var(--surface);}
+ main{max-width:none;padding:0;}
+ .page-tabs,.text-link,.primary-action{display:none;}
+ section{break-inside:auto;}
+ .evidence-card,.seat-card{break-inside:avoid;}
+ a{color:var(--text);}}
+""" + decorative_hairline(".decision")
 
 
 def _market_tally(report, labels):
@@ -764,6 +925,21 @@ def _report_stance_labels(report):
         if isinstance(stance, str) and stance and stance not in stances:
             stances.append(stance)
     return stance_labels_for(stances, report.get("assets") or ())
+
+
+def _report_seat_labels(report):
+    """The seat names this run is shown under, read off the report's own market.
+
+    The asset class picks the profile set (``seats.profile_set_for``); a report
+    that does not name one reads the open set, exactly as any other caller
+    without an asset class does. This renderer spells no seat name of its own.
+    """
+    return seat_display_names(report.get("asset_class"))
+
+
+def _report_seat_identities(report):
+    """The same seats' bylines — provider family plus the name above."""
+    return seat_identities(report.get("asset_class"))
 
 
 def _comparison_items(cards, empty_text):
@@ -814,10 +990,10 @@ def _seat_evidence_html(evidence_id, card):
     )
 
 
-def _seat_label(value):
+def _seat_label(value, labels):
     if value is None or value == "":
         return "未提供"
-    return SEAT_LABELS.get(value, str(value))
+    return labels.get(value, str(value))
 
 
 def _stance_label(value, labels):

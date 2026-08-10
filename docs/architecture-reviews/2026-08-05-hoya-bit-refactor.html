@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hoya Bit 整改架構健檢報告 — 2026-08-05</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+if (window.mermaid) { mermaid.initialize({ startOnLoad: true, securityLevel: 'strict', theme: 'neutral' }); }
+</script>
+<style>
+:root{--ink:#1a1f2e;--muted:#5a6377;--line:#d8dce6;--bg:#f7f8fb;--card:#ffffff;--accent:#2456c4;--ok:#177245;--warn:#a15c00;--bad:#b3261e;--chip:#eef1f8;}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif;color:var(--ink);background:var(--bg);line-height:1.65}
+main{max-width:1080px;margin:0 auto;padding:24px 20px 80px}
+h1{font-size:1.6rem;margin:.2em 0}
+h2{font-size:1.25rem;border-bottom:2px solid var(--accent);padding-bottom:.25em;margin-top:2.2em}
+h3{font-size:1.05rem;margin-top:1.6em}
+p{margin:.6em 0}
+table{border-collapse:collapse;width:100%;margin:.8em 0;font-size:.92rem;background:var(--card)}
+th,td{border:1px solid var(--line);padding:.45em .6em;text-align:left;vertical-align:top}
+th{background:var(--chip)}
+code{background:var(--chip);padding:.08em .35em;border-radius:4px;font-size:.88em;font-family:Consolas,monospace}
+pre{background:#12141c;color:#e6e9f2;padding:14px;border-radius:8px;overflow-x:auto;font-size:.85rem;line-height:1.5}
+pre code{background:none;color:inherit;padding:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:14px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.badge{display:inline-block;padding:.1em .6em;border-radius:99px;font-size:.8rem;font-weight:700}
+.b-ok{background:#e2f3e8;color:var(--ok)}.b-warn{background:#fdf1dd;color:var(--warn)}.b-bad{background:#fbe4e2;color:var(--bad)}.b-info{background:#e3eafc;color:var(--accent)}
+.k-keep{color:var(--ok);font-weight:700}.k-del{color:var(--bad);font-weight:700}.k-arch{color:var(--warn);font-weight:700}.k-unknown{color:var(--muted);font-weight:700}
+details{margin:.6em 0;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.5em .9em}
+summary{cursor:pointer;font-weight:700;color:var(--accent)}
+summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.mermaid{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;margin:.8em 0;overflow-x:auto}
+.toc{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 18px}
+.toc a{color:var(--accent);text-decoration:none}
+.toc a:hover,.toc a:focus{text-decoration:underline}
+.small{font-size:.85rem;color:var(--muted)}
+@media print{.mermaid script{display:none}body{background:#fff}pre{white-space:pre-wrap}}
+@media (max-width:640px){table{display:block;overflow-x:auto}}
+</style>
+</head>
+<body>
+<main>
+
+<h1>Hoya Bit 整改架構健檢報告</h1>
+<p class="small">產生日期：2026-08-05｜Auditor：milktea-skills-improve-codebase-architecture｜Git SHA：<code>9b8a451</code>（main，工作樹乾淨）</p>
+
+<!-- ═══════════════ 1. 決策摘要 ═══════════════ -->
+<h2 id="s1">1. 決策摘要</h2>
+
+<div class="card">
+<p><strong>這個專案做什麼：</strong>一套 WSL Python 控制的七席多模型（3 Codex＋3 Claude＋1 Antigravity）市場研究辯論系統——單一 <code>launch</code> 命令啟動七席盲投研究、T+4 證據封存、共享辯論室計票、依票數門檻產出附證據鏈的市場報告。原為黑客松比賽打造，本次健檢目標是整改為<strong>日常續用</strong>。</p>
+<p><span class="badge b-ok">結論：值得整改，採「局部整理＋定向新增」（方案 A），不需要重建</span></p>
+<p>理由：核心模組（<code>debate_state_machine</code>、<code>report_contract</code>、<code>run_store</code>）是介面小、實作厚的健康深模組，681 個測試全綠是可貴資產；使用者的五項需求全部可以在既有骨架上以「拔白名單、抽設定檔、加規則分支、清資料、加前端」達成。</p>
+</div>
+
+<h3>掃描範圍</h3>
+<table>
+<tr><th>範圍</th><th>內容</th><th>狀態</th></tr>
+<tr><td>Code Root</td><td><code>hoya-bit-market-agents-final</code> 全部（26 個模組、30 個測試檔、config、docs、.agents）</td><td>已盤點</td></tr>
+<tr><td>Data Root</td><td><code>hoya-bit-market-agents_data</code> 全部（25MB：runs 22M＋presentation×6＋inbox/coordination/logs/preflight/adjustment-audit）</td><td>已盤點</td></tr>
+<tr><td>Sibling</td><td>舊 repo <code>hoya-bit-market-agents</code>（4.2M）、<code>_worktrees</code>（32M）、<code>hoya-bit-site</code>（2.4M）</td><td>只做清單級事實確認，未逐檔盤點</td></tr>
+<tr><td>不處理</td><td><code>milktea-agents-skills-for-codex</code>（通用插件，與產品無關）</td><td>排除</td></tr>
+</table>
+
+<h3>最大三項風險</h3>
+<table>
+<tr><th>#</th><th>風險</th><th>說明</th></tr>
+<tr><td>1</td><td><span class="badge b-bad">Data Root 非 git repo，刪除不可逆</span></td><td>整個 <code>_data</code> 沒有 <code>.git</code>。清理時若誤刪 <code>preflight/latest-ready.json</code>（launch 的唯一前置憑證），系統直接無法啟動，且無法從版本庫還原。</td></tr>
+<tr><td>2</td><td><span class="badge b-bad">燈號改純票數制是行為變更，不是修 bug</span></td><td>現行燈號被四層證據品質規則（來源數/類別數/時效/可信等級）降級，且 <code>confidence_cap</code> 被報告驗證、Core 撰稿提示、run_verifier 三處交叉引用——改制必須三處同步，否則報告會被自己的驗證打成紅燈。</td></tr>
+<tr><td>3</td><td><span class="badge b-warn">run 目錄改日期分層動到 write-once 契約</span></td><td><code>run_store</code> 的 run-id 命名被 <code>latest.json</code> 指標、<code>live_dashboard</code>、<code>codex_bridge</code>、<code>run_verifier</code> 依賴；改 <code>runs/日期/…</code> 分層需同步四處＋SQLite 索引，屬中風險遷移。</td></tr>
+</table>
+
+<p><strong>待決策事項：</strong>見 <a href="#s9">§9</a>（7 項，含「事後驗證要不要自動抓價格」這種會突破既有架構邊界的選擇）。</p>
+<p class="small">📌 提示：你可以<strong>只保留這份報告</strong>結束本次任務；目前尚未產生任何 Spec 或 Tickets，也沒有修改或刪除任何專案內容。</p>
+
+<!-- ═══════════════ 2. 現況 Snapshot ═══════════════ -->
+<h2 id="s2">2. 現況 Snapshot</h2>
+
+<div class="grid">
+<div class="card"><strong>版本</strong><br>Git SHA <code>9b8a451</code>（main）<br>工作樹：乾淨（0 個未提交修改）<br><span class="small">記憶中的 53 個 CRLF 汙染檔已不存在</span></div>
+<div class="card"><strong>環境</strong><br>Windows 10 Enterprise＋WSL Ubuntu 24.04<br>Python 3.12（標準函式庫，零外部依賴）<br>掃描時間：2026-08-05</div>
+<div class="card"><strong>基準驗證（本次實際執行）</strong><br><code>python3 -m unittest discover -s tests</code><br><span class="badge b-ok">681 tests OK（26.8s）</span><br><span class="small">於 WSL 執行，唯讀性質</span></div>
+</div>
+
+<table>
+<tr><th>Root</th><th>解析後路徑</th><th>進 Git</th><th>所有者</th></tr>
+<tr><td>Code Root</td><td><code>D:\workstationD\hoya bit\hoya-bit-market-agents-final</code></td><td>是（main）</td><td>使用者＋測試基準</td></tr>
+<tr><td>Data Root</td><td><code>D:\workstationD\hoya bit\hoya-bit-market-agents_data</code></td><td><strong>否</strong></td><td>執行期程式（run_store 單一寫入者）＋歷史殘留</td></tr>
+<tr><td>Runtime Root</td><td>不存在（規劃文件明定第一版不建立）</td><td>—</td><td>—</td></tr>
+<tr><td>Data Root 解析方式</td><td colspan="3">硬編約定：<code>cli.py:60-61</code> <code>DEFAULT_DATA_ROOT = CODE_ROOT.parent / "hoya-bit-market-agents_data"</code>；無環境變數、無設定檔可覆寫</td></tr>
+</table>
+
+<details><summary>規劃文件與現況的已知漂移</summary>
+<ul>
+<li><code>docs/planning/architecture.md</code> 仍寫 Code Root 是舊 repo <code>hoya-bit-market-agents</code>（無 -final），且描述 <code>execution/hoya_market_agents/</code> 舊結構——實際程式在頂層 <code>hoya_market_agents/</code>。</li>
+<li><code>debate_state_machine.py:240</code> 註解寫「封存後兩分鐘」，實際常數 <code>ROUND_ONE_WINDOW_MS=180_000</code>（3 分鐘，2026-08-04 放寬）。</li>
+<li><code>tests/test_vote_thresholds.py:23</code> docstring 寫「第二輪提前到 T+6:00」，實際斷言是 T+7:00。</li>
+<li>記憶／歷史註記說「run_verifier 沒跟上 4:30 封存分流」——<strong>現況已修復</strong>：<code>run_verifier.py:235-287</code> 已改用 <code>research_deadlines(question_type)</code> 動態核對，查無症狀。</li>
+</ul>
+</details>
+
+<!-- ═══════════════ 3. 現況架構與資料流 ═══════════════ -->
+<h2 id="s3">3. 現況架構與資料流</h2>
+
+<h3>精簡目錄樹</h3>
+<pre><code>hoya-bit-market-agents-final/          # Code Root（git: main @ 9b8a451）
+├─ hoya_market_agents/                 # 26 個模組，全部標準函式庫
+│  ├─ cli.py  __main__.py  launcher.py # 入口鏈：launch 單命令
+│  ├─ question.py  question_package.py # 題目 intake（五幣白名單在此）
+│  ├─ research_scheduler.py  clock.py  # 研究時鐘（T+4 封存）
+│  ├─ run_store.py  seats.py           # run 目錄 write-once 契約
+│  ├─ real_provider.py  *_adapter.py   # 七席派發（codex/claude/antigravity）
+│  ├─ codex_inbox.py  codex_bridge.py  # Codex 席收發件
+│  ├─ debate_state_machine.py          # 計票唯一權威（時鐘常數硬編於此）
+│  ├─ debate_driver.py                 # 辯論驅動（四波：opening/r1/r2/r3）
+│  ├─ report_contract.py               # 報告驗證＋confidence_cap 唯一權威
+│  ├─ report_workflow.py  report_renderer.py  report_audit_renderer.py
+│  ├─ run_verifier.py  system_preflight.py  recovery_state_machine.py
+│  └─ live_dashboard.py                # 唯讀 SSE 直播（HTML 內嵌於 .py）
+├─ config/agent_roster.json            # 七席×provider×model 對照
+├─ .agents/skills/research/SKILL.md    # 被 git blob SHA 釘死的研究規則
+├─ tests/（30 檔，681 案例）
+└─ docs/（planning、adr、runbook、COMPETITION-CARD）
+
+hoya-bit-market-agents_data/           # Data Root（非 git，25MB）
+├─ runs/&lt;UTC時戳-slug-hash&gt;/          # 36 個 run＋latest.json 指標
+├─ preflight/latest-ready.json         # ★ launch 唯一前置憑證
+├─ inbox/ logs/                        # 執行期產物
+└─ presentation-v2..v7/ coordination/ adjustment-audit/   # 零引用殘留</code></pre>
+
+<h3>端到端資料流</h3>
+<div class="mermaid">
+flowchart TD
+  U["使用者：launch --question …"] --> Q["question.py intake<br>五幣白名單＋題型分類"]
+  Q -->|open_proposition| P["codex exec 訂命題<br>（正方/反方詞彙）"]
+  Q --> R["run_store 建 run 目錄<br>write-once 契約"]
+  R --> S["research_scheduler<br>七席並行研究（有搜尋）"]
+  S -->|"T+4:00 / 比較題 T+4:30"| SEAL["證據快照 seal<br>（不可變，sha256）"]
+  SEAL --> D0["debate_driver: opening 波<br>【盲投】transcript=空"]
+  D0 --> D1["r1：challenge/response/final_vote<br>【互看】共享公開立場"]
+  D1 --> D2["r2/r3：revote<br>完整公開逐字稿"]
+  D2 --> SM["debate_state_machine<br>唯一計票：6→5(T+8)→4(T+10)"]
+  SM --> V["votes.json（write-once）"]
+  V --> RPT["report_workflow：Core 撰稿<br>report_contract 驗證＋confidence_cap"]
+  RPT --> OUT["report.json/md/html＋debate.html"]
+  SEAL -.->|"封存後全席禁搜尋<br>（旗標＋結果層攔截）"| D0
+  R -.-> LD["live_dashboard SSE<br>讀 events.jsonl（唯讀）"]
+</div>
+<details><summary>文字版資料流（Mermaid 失效時）</summary>
+<ol>
+<li>launch → question.py（白名單＋分類）→ open_proposition 時先訂命題 → run_store 建目錄</li>
+<li>research_scheduler 七席並行研究（有搜尋）→ T+4:00（比較題 4:30）封存證據快照</li>
+<li>debate_driver：opening 盲投（互不可見）→ r1 起共享公開立場與逐字稿 → r2/r3 revote</li>
+<li>debate_state_machine 計票（6 票，T+8:00 降 5，T+10:00 強停 4）→ votes.json</li>
+<li>report_workflow Core 撰稿 → report_contract 驗證＋confidence_cap 上限 → 四份報告 artifact</li>
+<li>live_dashboard 全程唯讀 SSE 直播 events.jsonl</li>
+</ol>
+</details>
+
+<h3>模組責任矩陣（重點模組）</h3>
+<table>
+<tr><th>模組</th><th>責任</th><th>資料所有權</th><th>形狀評估</th></tr>
+<tr><td><code>question.py</code></td><td>題目 intake gate、五幣白名單唯一權威（<code>question.py:18</code>）</td><td>question.json</td><td>深模組，白名單拔除點集中</td></tr>
+<tr><td><code>run_store.py</code></td><td>run 目錄生命週期、write-once（os.link）、latest.json 指標</td><td>整個 run 目錄</td><td>深模組，日期分層改造的核心</td></tr>
+<tr><td><code>research_scheduler.py</code></td><td>研究時鐘（<code>research_deadlines(question_type)</code>）、封存觸發</td><td>evidence snapshot</td><td>健康；時刻表常數硬編</td></tr>
+<tr><td><code>debate_state_machine.py</code></td><td>唯一計票/停止/lineage 權威；Core 越權硬拒絕</td><td>debate.jsonl、votes.json</td><td>深模組；時鐘常數硬編於 36-53 行</td></tr>
+<tr><td><code>debate_driver.py</code></td><td>四波辯論驅動、challenge 配對、報告草稿 prompt</td><td>—（透過狀態機）</td><td>最大扇出模組，改規則的主戰場</td></tr>
+<tr><td><code>report_contract.py</code></td><td>報告客觀驗證＋<code>confidence_cap</code> 唯一權威</td><td>—（純驗證）</td><td>深模組；燈號 bug 嫌疑在 156-161 行</td></tr>
+<tr><td><code>real_provider.py</code></td><td>七席真實派發、搜尋關卡、替補 fail-closed</td><td>attempts/、inbox requests</td><td>高風險集中點（三 provider 行為共處）</td></tr>
+<tr><td><code>live_dashboard.py</code></td><td>唯讀 SSE 直播伺服器（HTML 內嵌字串 709-783 行）</td><td>無（唯讀）</td><td>常駐前端的改造基底或替換對象</td></tr>
+</table>
+
+<h3>危險共用水管</h3>
+<table>
+<tr><th>水管</th><th>定義</th><th>使用位置</th><th>改動風險</th></tr>
+<tr><td>五幣白名單</td><td><code>question.py:18 SUPPORTED_ASSETS</code></td><td><code>question_package.py:19</code>、<code>contract_validator.py:14</code>（皆 import，無重複定義）</td><td>低——單一權威，拔除點集中；波及題型分類與相關測試</td></tr>
+<tr><td>辯論時鐘常數</td><td><code>debate_state_machine.py:36-53</code>（6 個常數）＋<code>research_scheduler.py:55-77</code>（研究時刻表）</td><td>狀態機、driver（<code>debate_start_ms=deadlines.seal_ms</code> 注入）、run_verifier（動態查 <code>research_deadlines</code>）、<code>tests/test_vote_thresholds.py:26-33</code> 鎖值</td><td>中——設定檔化需讓四處讀同一來源，測試斷言要跟著改為讀設定</td></tr>
+<tr><td>confidence_cap</td><td><code>report_contract.py:102-170</code></td><td>①<code>debate_driver.confidence_ceiling:1299</code>（撰稿上限提示）②<code>report_contract._validate_confidence:373</code>（驗證再算一次）③<code>run_verifier</code>（唯讀重算）</td><td>高——改純票數制三處必須同步，漏一處報告就被打成 red_audit</td></tr>
+<tr><td>run-id／latest.json</td><td><code>run_store.py:348-362</code>（唯一可變檔）</td><td>寫：<code>run_store.py:356</code>；讀：<code>live_dashboard.py:305</code>、<code>codex_bridge.py:348,494</code></td><td>中——日期分層要同步指標格式與所有讀者</td></tr>
+<tr><td>research skill SHA 釘死</td><td><code>prompt_builder.py</code> <code>RESEARCH_GIT_BLOB_SHA</code> ↔ <code>.agents/skills/research/SKILL.md</code></td><td>所有 prompt 組裝路徑（fail-closed ValueError）</td><td>高——改 SKILL.md 一字即全炸；改動必須常數與檔案同步</td></tr>
+<tr><td>硬編機器路徑</td><td><code>cli.py:587-589</code>（<code>/home/leslie/.local/bin/codex|claude|agy</code>）</td><td>preflight real mode CLI 版本檢查</td><td>低（單機自用）；打包 exe 給別人時必炸，屆時需參數化</td></tr>
+</table>
+
+<!-- ═══════════════ 4. 正式 Logging 判定 ═══════════════ -->
+<h2 id="s4">4. 正式 Logging 判定</h2>
+<div class="card">
+<p><strong>現況：沒有正式 Log。</strong>現有輸出＝①<code>events.jsonl</code>（append-only 稽核事件流，屬資料 artifact 不是 log）②<code>logs/live-server.log</code>（<code>launcher.py:544</code> 對 live server 子行程的 stdout 重導向，內容目前只有埠占用錯誤重複訊息）③console stderr。</p>
+<p><strong>判定：本次整改後「需要」最小正式 Log</strong>——因為新目標包含<strong>常駐 Web 前端</strong>（長時間無人看守的本機伺服器），符合「背景長駐程式／Web 服務」條件。建議範圍僅限新前端伺服器：啟動/關閉/請求錯誤/launch 觸發四類事件、單檔輪替、不記機密。既有研究/辯論管線已有 events.jsonl 稽核流，<strong>不需要</strong>另建 Logger。</p>
+</div>
+
+<!-- ═══════════════ 5. 共用使用位置 ═══════════════ -->
+<h2 id="s5">5. 共用使用位置（受本次整改影響者）</h2>
+<table>
+<tr><th>共用物</th><th>定義</th><th>已確認使用位置</th><th>安全接縫建議</th></tr>
+<tr><td>票數門檻階梯</td><td><code>required_votes_at</code>（<code>debate_state_machine.py:132-138</code>）：6→5(T+8:00)→4(T+10:00)，<strong>無 7/7 直過層</strong></td><td><code>_evaluate_stop:779-792</code>、測試鎖值</td><td>新增設定檔載入層，函式簽名不變（讀設定而非常數）</td></tr>
+<tr><td>盲投機制</td><td>opening 波 transcript 傳空 tuple（<code>debate_driver.py:1063-1075</code>）</td><td><code>_opening_wave:592-601</code> 七席並行</td><td><strong>已符合</strong>使用者第一輪盲投需求，只缺「收齊後 7/7 判定」分支</td></tr>
+<tr><td>質疑/說服機制</td><td>challenge 需指向對立立場席（<code>:586-608</code>）；全場一致觸發 scrutiny 輪替配對（<code>debate_driver.py:443-461</code>）；final_vote 改票需附理由（<code>:564-568</code>）、全程記錄 vote_changes（<code>:692-704</code>）</td><td>狀態機＋driver</td><td>質疑骨架已存在；「說服拉票」是 prompt 層強化＋配對策略調整，不是新狀態機</td></tr>
+<tr><td>燈號五級制</td><td><code>CONFIDENCE_LEVELS</code>（<code>report_contract.py:15</code>）：red/orange/yellow/yellow_green/green，<strong>無藍</strong></td><td>contract、renderer CSS（<code>report_renderer.py:716-717</code>）、驗證、verifier</td><td>改制需四處同步＋renderer 樣式加 blue</td></tr>
+<tr><td>研究席 prompt</td><td><code>build_attempt_prompt</code>（<code>real_provider.py:289-297</code>）唯一組裝入口</td><td>全七席</td><td>台股/美股語意（代號解析、交易時段）從這裡進</td></tr>
+</table>
+
+<!-- ═══════════════ 6. 精簡與清理候選 ═══════════════ -->
+<h2 id="s6">6. 精簡與清理候選</h2>
+<p>Data Root 非 git：所有刪除<strong>不可逆</strong>。使用者已口頭核准刪除 runs（含比賽三場）與測試殘留；下表為逐項證據與風險。</p>
+<table>
+<tr><th>項目</th><th>類型</th><th>證據</th><th>建議</th><th>風險</th><th>回復方法</th></tr>
+<tr><td><code>runs/</code> 全部 36 個 run（22M，含 13 個同尺寸 fixture 重跑對、3 個腰斬殘骸、比賽三場）</td><td>測試殘留＋舊資料</td><td>fixture 族同為 446K/49 檔成對出現；比賽 runs 使用者確認不留</td><td><span class="k-del">刪除候選（已核准）</span></td><td>歷史分析紀錄全失；<code>latest.json</code> 指向失效目標</td><td>無版本控制。刪除前一次性 zip 到使用者自選位置可自保（待決策 D3）</td></tr>
+<tr><td><code>presentation-v2</code>~<code>v7</code>（各 ~300K）</td><td>生成物</td><td>六版僅渲染層差異、無入口 html/server；Code Root grep <code>presentation</code> 目錄名 0 命中（僅 manifest 欄位 <code>presentation_version</code> 同名）</td><td><span class="k-del">刪除候選（已核准）</span></td><td>無——純渲染快照，可由任一 run 重新 render</td><td>report_renderer 可隨時重產</td></tr>
+<tr><td><code>coordination/</code>（674K，ticket-2~11 開發協調腳本）</td><td>測試殘留</td><td>全 repo grep 0 命中；內容為 run-developer.sh、reviewer prompt 等人工協作產物</td><td><span class="k-del">刪除候選（已核准）</span></td><td>無程式相依；失去開發過程紀錄</td><td>無</td></tr>
+<tr><td><code>adjustment-audit/</code>（226K）</td><td>測試殘留</td><td>grep 0 命中；2026-08-02 01:00-01:02 兩分鐘內一次寫完的人工稽核快照</td><td><span class="k-del">刪除候選（已核准）</span></td><td>無程式相依</td><td>無</td></tr>
+<tr><td><code>inbox/</code>（611K，19 個 run 的 prompts/requests）</td><td>執行期產物（歷史）</td><td>寫入者：<code>codex_inbox.py:69-112</code>、<code>real_provider.py:730-753</code>；run 結束後純歷史</td><td><span class="k-del">刪除候選（已核准）</span></td><td>僅影響「進行中 run」——清理時不得有 run 在跑</td><td>下次 launch 自動重建目錄</td></tr>
+<tr><td><code>logs/live-server.log</code></td><td>執行期產物</td><td>唯一寫入者 <code>launcher.py:544-559</code>；內容全是埠占用錯誤</td><td><span class="k-del">刪除候選（已核准）</span></td><td>無——<code>mkdir(parents=True, exist_ok=True)</code> 自動重建</td><td>自動重建</td></tr>
+<tr><td><code>preflight/latest-ready.json</code>＋其時戳憑證目錄</td><td>執行期契約</td><td>launch 唯一前置：<code>launcher.py:284-310</code> 讀取並校驗 manifest sha256</td><td><span class="k-keep">保留</span></td><td><strong>誤刪＝launch 直接失敗</strong>，需重跑 legacy preflight 流程重產</td><td>重跑 <code>preflight --provider system --mode real</code></td></tr>
+<tr><td><code>preflight/ticket11-*-v3/v4</code>、<code>final-real-not-ready</code></td><td>測試殘留</td><td>一次性測試產物，非 <code>latest-ready.json</code> 解析路徑</td><td><span class="k-del">刪除候選（已核准）</span></td><td>無</td><td>無</td></tr>
+<tr><td>舊 repo <code>hoya-bit-market-agents</code>＋<code>_worktrees</code>（合計 36M）</td><td>舊版本</td><td>HEAD <code>2de04fe</code> 落後 -final；<strong>9 個 worktree 的 gitdir 指向舊 repo 的 .git</strong>——兩者是同一組，不可只刪其一</td><td><span class="k-unknown">未知（待決策 D5）</span></td><td>使用者未明確核准；刪 .git 會連坐 worktrees</td><td>舊 repo 是 git，可先確認 -final 已含全部需要的 commit</td></tr>
+<tr><td><code>hoya-bit-site</code>（2.4M 靜態網站產生器）</td><td>舊版本</td><td>收錄的是 08-01 舊 fixture run；全部檔案停在 08-02 01:10</td><td><span class="k-unknown">未知（待決策 D5）</span></td><td>使用者未明確核准</td><td>git repo，可還原</td></tr>
+<tr><td><code>docs/planning/architecture.md</code> 舊路徑描述</td><td>文件漂移</td><td>§2 描述（見 §2 details）與現況不符</td><td><span class="k-arch">整改時同步更新</span></td><td>誤導後續維護者</td><td>git 歷史</td></tr>
+</table>
+
+<!-- ═══════════════ 7. 改善方案 ═══════════════ -->
+<h2 id="s7">7. 改善方案與候選目標架構</h2>
+
+<h3>方案比較</h3>
+<table>
+<tr><th></th><th>A. 局部整理＋定向新增 <span class="badge b-ok">推薦</span></th><th>B. 重建控制器</th><th>C. 只清資料不改規則</th></tr>
+<tr><td>做法</td><td>清資料→設定檔化→拔白名單→加 7/7 分支＋純票數燈號→日期分層＋SQLite→常駐前端</td><td>以新架構重寫七席管線</td><td>只做 §6 清理與資料夾重整</td></tr>
+<tr><td>變更量</td><td>中（每階段可獨立驗證）</td><td>大</td><td>小</td></tr>
+<tr><td>681 測試資產</td><td>保留＋增補</td><td>大半作廢重寫</td><td>保留</td></tr>
+<tr><td>相容風險</td><td>低-中（分段回滾）</td><td>高</td><td>低</td></tr>
+<tr><td>滿足五項需求</td><td>全部</td><td>全部（但成本數倍）</td><td>只滿足清理一項</td></tr>
+<tr><td>結論</td><td>核心模組健康、需求全是「加分支/抽設定/換皮」性質，重建無價值</td><td>無證據支持——沒有爛到要重建的模組</td><td>不解決使用者主訴求</td></tr>
+</table>
+
+<h3>方案 A 候選目標架構</h3>
+<pre><code>hoya-bit-market-agents-final/
+├─ config/
+│  ├─ agent_roster.json                # 保留
+│  ├─ debate_rules.json                # ★新：時間門檻/票數階梯/燈號映射（取代硬編常數）
+│  └─ market_scopes.json               # ★新：三類標的規則（crypto/台股/美股語意提示）
+├─ hoya_market_agents/
+│  ├─ question.py                      # 改：拔 SUPPORTED_ASSETS 白名單；open_proposition 升主路徑
+│  ├─ debate_state_machine.py          # 改：常數→讀 debate_rules.json；加 R1 盲投 7/7 直過分支
+│  ├─ report_contract.py               # 改：燈號純票數制（含藍）；修 elif 級聯 bug（隨新制一併消滅）
+│  ├─ run_store.py                     # 改：runs/YYYY-MM-DD/HHMM-slug-hash/ 分層
+│  ├─ run_index.py                     # ★新：SQLite 索引（date/question/標的/燈號/結論）
+│  └─ webapp/                          # ★新：常駐前端（沿用 stdlib http+SSE 模式）
+│     ├─ server.py                     #   歷史查詢/提問啟動/設定頁/事後驗證 API＋正式 log
+│     └─ static/                       #   聊天室直播視圖沿用 v5-chat 版面語彙重製
+└─ tests/                              # 681 案例保留＋各階段新增
+
+hoya-bit-market-agents_data/
+├─ runs/
+│  ├─ index.db                         # ★新：SQLite（唯一可重建的衍生資料）
+│  └─ 2026-08-05/1430-2330未來七天會不會漲-a1b2c3/   # run 內部契約不變
+└─ preflight/latest-ready.json         # 原樣保留</code></pre>
+
+<h3>遷移順序（每階段可獨立驗證、可回滾）</h3>
+<div class="mermaid">
+flowchart LR
+  P0["Phase 0<br>資料清理<br>（§6 已核准項）"] --> P1["Phase 1<br>規則設定檔化<br>debate_rules.json"]
+  P1 --> P2["Phase 2<br>投票/燈號新制<br>7/7直過＋純票數藍綠黃橘紅"]
+  P2 --> P3["Phase 3<br>標的三類全開<br>拔白名單＋命題主路徑"]
+  P3 --> P4["Phase 4<br>日期分層＋SQLite<br>run_store/latest.json 遷移"]
+  P4 --> P5["Phase 5<br>常駐前端<br>查詢/提問/直播/設定/對答案"]
+</div>
+<p class="small">文字版：P0 清理 → P1 設定檔化（行為不變，純重構）→ P2 新投票燈號規則 → P3 標的全開 → P4 資料分層＋索引 → P5 前端。P1 先行是刻意的：P2 的新規則直接寫進設定檔，避免改兩次。回滾單位＝phase（每 phase 結束跑完整測試基準）。</p>
+
+<h3>燈號 bug 的處置說明</h3>
+<div class="card">
+<p><code>report_contract.py:156-161</code> 的三段 <code>elif</code> 級聯：7 票且證據類別充足時，第一個 <code>if</code> 整體為 False 會<strong>掉進 6 票層級的檢查</strong>（<code>7&gt;=6</code> 仍為真），被不該套用的規則降到 yellow。無任何測試鎖定此組合，無法從程式碼判斷是刻意疊加還是疏漏。<strong>處置：使用者已決定改純票數制，此段證據品質降級邏輯整組移除，bug 隨新制自然消滅</strong>——但「移除證據品質降級」本身是行為變更，列入待決策 D1 做最終確認。</p>
+</div>
+
+<!-- ═══════════════ 8. 原有功能與驗證基準 ═══════════════ -->
+<h2 id="s8">8. 原有功能與驗證基準</h2>
+<table>
+<tr><th>保留行為</th><th>目前證據</th><th>重構後重跑的相同驗證</th><th>通過標準</th><th>未知/限制</th></tr>
+<tr><td>完整測試基準</td><td>本次實測 681 tests OK（26.8s）</td><td><code>python3 -m unittest discover -s tests</code>（WSL）</td><td>全綠（案例數允許因新增而增加，不允許減少既有斷言）</td><td>—</td></tr>
+<tr><td>launch 單命令冷啟動</td><td><code>launcher.py:20-22</code> handshake 順序契約（LAUNCHED/SEALED/FINALIZED）</td><td>fixture run：<code>launch --question …</code>（fake provider）</td><td>三行 handshake 依序輸出、run 目錄契約完整</td><td>real mode 驗證需消耗各家額度，列人工抽驗</td></tr>
+<tr><td>preflight fail-closed</td><td><code>system_preflight.py:12-31</code> REQUIRED_CHECK_IDS</td><td><code>preflight --mode fixture --fixture-failure login|model|write|renderer</code></td><td>全數 NOT_READY</td><td>—</td></tr>
+<tr><td>write-once／證據快照不可變</td><td><code>run_store.py:413-426</code>（os.link）、<code>:163-186</code>（seal）</td><td>test_run_store 全部案例</td><td>覆寫必拋 ArtifactAlreadyExistsError/SnapshotSealedError</td><td>日期分層改造不得動搖此語意</td></tr>
+<tr><td>封存後禁搜尋</td><td>旗標層＋結果層攔截（<code>real_provider.py:655-691</code>）</td><td>test_real_provider 相關案例</td><td>POST_SEAL_SEARCH 一律拒收</td><td>Antigravity 只有結果層（CLI 無旗標，設計已知限制）</td></tr>
+<tr><td>Core 不得越權</td><td><code>debate_state_machine.py:322-364</code> CoreOverrideError</td><td>test_debate_state_machine 既有案例</td><td>Core relay/改票一律硬拒絕</td><td>—</td></tr>
+<tr><td>唯讀 run 驗證</td><td><code>run_verifier.py:235-287</code> 動態時刻表核對</td><td><code>verify-run</code> 對新產 run</td><td>PASS</td><td>新時鐘設定檔化後 verifier 需讀同一設定來源</td></tr>
+<tr><td>SSE 直播</td><td><code>live_dashboard.py</code> 唯讀、127.0.0.1</td><td>launch 期間開瀏覽器人工確認</td><td>事件即時推送、不影響 run</td><td>P5 若以新前端取代，此項驗證轉移到新前端</td></tr>
+</table>
+
+<!-- ═══════════════ 9. 待決策事項 ═══════════════ -->
+<h2 id="s9">9. 待決策事項</h2>
+<table>
+<tr><th>#</th><th>決策</th><th>選項與影響</th></tr>
+<tr><td>D1</td><td><strong>燈號純票數制的代價確認</strong></td><td>移除證據品質降級後，「7 票但全部引用同一個網站」也會拿藍燈。接受＝規則簡單透明；不接受＝保留最小品質檢查（例如僅保留「來源少於 2 個網域降一級」）。</td></tr>
+<tr><td>D2</td><td><strong>7/7 直過的判定時點</strong></td><td>opening 收齊即判（最快，完全盲投語意）vs r1 挑戰完成後判（維持「有效票須經反方挑戰」的現行定義）。影響「盲投」的嚴格程度。</td></tr>
+<tr><td>D3</td><td><strong>刪除前要不要一次性 zip 備份</strong></td><td>Data Root 非 git，刪了就沒了。zip 一份到使用者自選位置≈25MB。</td></tr>
+<tr><td>D4</td><td><strong>事後驗證（對答案）的價格來源</strong></td><td>自動抓價格違反現行「Python 不爬網站、不抓行情」架構邊界（architecture.md §3.1）；選項：a) 手動輸入結果 b) 破例允許單一公開報價 API（僅事後驗證用，不進研究管線）c) 用一次七席 mini-run 查價。</td></tr>
+<tr><td>D5</td><td><strong>Sibling 舊 repo／worktrees／site 的處置</strong></td><td>合計 ~38M 未在本次核准清單。刪除需先確認 -final 已含全部需要的 commit；worktrees 與舊 repo .git 連動必須同組處理。</td></tr>
+<tr><td>D6</td><td><strong>新前端與 live_dashboard 的關係</strong></td><td>a) 新前端吸收直播功能後移除 live_dashboard（單一入口）b) 並存（launch 仍開舊直播頁）。</td></tr>
+<tr><td>D7</td><td><strong>是否繼續產生 Spec 與 Tickets</strong></td><td>只保留報告／依方案 A 繼續規劃／先修改本報告。</td></tr>
+</table>
+
+<p class="small">本報告為唯讀盤點產物，未修改任何來源碼或資料；所有結論可追溯至文中路徑與行號。Mermaid 圖表失效時，各圖旁均附文字版。</p>
+
+</main>
+</body>
+</html>

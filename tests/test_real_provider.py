@@ -14,6 +14,7 @@ import threading
 import unittest
 from pathlib import Path
 
+from hoya_market_agents import codex_bridge
 from hoya_market_agents.antigravity_adapter import AntigravityAdapter
 from hoya_market_agents.claude_adapter import (
     CLAUDE_SEAT_SESSIONS,
@@ -30,6 +31,7 @@ from hoya_market_agents.codex_exec_adapter import (
     CodexExecTimeout,
 )
 from hoya_market_agents.contract_validator import MAX_EVIDENCE_CARDS_PER_SEAT
+from hoya_market_agents.question import inspect_question, normalize_asset
 from hoya_market_agents.question_package import build_question_package
 from hoya_market_agents.real_provider import (
     ANTIGRAVITY_SEAT_IDS,
@@ -53,6 +55,7 @@ from hoya_market_agents.real_provider import (
 from hoya_market_agents.recovery_state_machine import ResearchAttempt, SeatRecoveryState
 from hoya_market_agents.run_store import RunStore
 from hoya_market_agents.seats import SEAT_IDS, load_roster
+from hoya_market_agents.system_preflight import load_frozen_roster
 
 QUESTION = "BTC 過去 14 日的市場狀態如何？"
 STAMP = "2026-08-01T02:00:00Z"
@@ -307,6 +310,64 @@ class BlockingCodexAdapter:
         )
 
 
+class SeatProviderGroupingTest(unittest.TestCase):
+    """三個分組常數是 roster ``provider`` 欄的投影，不是第二份事實（Ticket 02）。
+
+    路由寫死在常數裡才擋得住「roster 說 claude、程式仍派給 codex」這種靜默漂移，
+    所以常數留著，但只要 roster 改了而常數沒跟著改，這裡就紅。
+    """
+
+    def setUp(self):
+        self.roster_seats = load_frozen_roster()["seats"]
+
+    def grouped(self, provider):
+        return tuple(
+            seat["seat_id"]
+            for seat in self.roster_seats
+            if seat["provider"] == provider
+        )
+
+    def test_every_group_is_the_roster_provider_column_in_roster_order(self):
+        self.assertEqual(self.grouped("codex"), CODEX_SEAT_IDS)
+        self.assertEqual(self.grouped("claude"), CLAUDE_SEAT_IDS)
+        self.assertEqual(self.grouped("antigravity"), ANTIGRAVITY_SEAT_IDS)
+
+    def test_the_three_groups_cover_the_seven_seats_exactly_once(self):
+        grouped = CODEX_SEAT_IDS + CLAUDE_SEAT_IDS + ANTIGRAVITY_SEAT_IDS
+
+        self.assertEqual(sorted(SEAT_IDS), sorted(grouped))
+        self.assertEqual(len(SEAT_IDS), len(set(grouped)))
+        # 對調不得把家族配額變成 2／4／1。
+        self.assertEqual(
+            (3, 3, 1),
+            (len(CODEX_SEAT_IDS), len(CLAUDE_SEAT_IDS), len(ANTIGRAVITY_SEAT_IDS)),
+        )
+
+    def test_the_inbox_bridge_dispatches_the_same_codex_seats(self):
+        # 兩份 codex 分組分岔的話，inbox 會替一個已經改家族的席位開執行緒。
+        self.assertEqual(CODEX_SEAT_IDS, codex_bridge.CODEX_SEAT_IDS)
+
+    def test_the_antigravity_seat_id_never_moves(self):
+        # 歷史 run 目錄與賽前預檢都綁著這個歷史名字。
+        self.assertEqual(("counter-evidence",), ANTIGRAVITY_SEAT_IDS)
+
+    def test_every_seat_keeps_its_frozen_seat_id_and_output_directory(self):
+        # 提供者對調不得動 seat_id 與 output_dir：歷史 run 目錄、預檢與
+        # ANTIGRAVITY_SEAT_IDS 都綁著這兩個值，所以逐一寫死比對。
+        self.assertEqual(
+            {
+                "spot-technical": "spot-technical",
+                "derivatives": "derivatives",
+                "onchain": "onchain",
+                "official-events": "official-events",
+                "news": "news",
+                "social-macro": "social-macro",
+                "counter-evidence": "counter-evidence",
+            },
+            {seat.seat_id: seat.output_dir for seat in load_roster()},
+        )
+
+
 class TerminatingRunnerTest(unittest.TestCase):
     """真實 subprocess：截止後還在燒訂閱的 provider 進程必須真的停得下來。"""
 
@@ -499,9 +560,13 @@ class RealSeatRunnerTest(unittest.TestCase):
             self.assertEqual([attempt.seat_id], [card["seat_id"] for card in cards])
 
     def test_claude_work_directory_never_collides_with_the_attempts_directory(self):
-        attempt = self.attempt("news")
+        attempt = self.attempt("official-events")
         runner = self.build_runner(
-            claude_outputs={"news": [claude_ok(self.run_id, "news", attempt.attempt_id)]}
+            claude_outputs={
+                "official-events": [
+                    claude_ok(self.run_id, "official-events", attempt.attempt_id)
+                ]
+            }
         )
 
         runner.start(attempt, None)
@@ -509,12 +574,16 @@ class RealSeatRunnerTest(unittest.TestCase):
 
         work_dir = self.claude_runner.calls[0]["cwd"]
         self.assertEqual(
-            self.run.path / "agents" / "news" / "work" / attempt.attempt_id, work_dir
+            self.run.path / "agents" / "official-events" / "work" / attempt.attempt_id,
+            work_dir,
         )
         self.assertNotIn("attempts", work_dir.parts)
         self.assertTrue(
             self.run.record_attempt(
-                "news", attempt.attempt_id, "[]", {"schema_version": "1.0.0", "records": []}
+                "official-events",
+                attempt.attempt_id,
+                "[]",
+                {"schema_version": "1.0.0", "records": []},
             )
         )
 
@@ -544,9 +613,13 @@ class RealSeatRunnerTest(unittest.TestCase):
     def test_a_comparison_question_moves_the_claude_timeout_with_its_own_wall(self):
         """Ticket R7: 兩幣題的收件牆在 T+4:20，研究呼叫的 timeout 跟著它走。"""
         self.scope = build_question_package("比較 BTC 與 ETH 過去 14 日的相對強弱")
-        attempt = self.attempt("news")
+        attempt = self.attempt("official-events")
         runner = self.build_runner(
-            claude_outputs={"news": [claude_ok(self.run_id, "news", attempt.attempt_id)]}
+            claude_outputs={
+                "official-events": [
+                    claude_ok(self.run_id, "official-events", attempt.attempt_id)
+                ]
+            }
         )
 
         runner.start(attempt, None)
@@ -587,8 +660,10 @@ class RealSeatRunnerTest(unittest.TestCase):
         for expected_kind, outputs in cases.items():
             with self.subTest(failure_kind=expected_kind):
                 self.setUp()
-                attempt = self.attempt("news")
-                runner = self.build_runner(claude_outputs={"news": outputs})
+                attempt = self.attempt("official-events")
+                runner = self.build_runner(
+                    claude_outputs={"official-events": outputs}
+                )
 
                 runner.start(attempt, None)
                 messages = self.drain(runner, 1)
@@ -600,13 +675,13 @@ class RealSeatRunnerTest(unittest.TestCase):
                 self.assertTrue(message)
 
     def test_claude_result_from_another_model_is_refused(self):
-        attempt = self.attempt("news")
+        attempt = self.attempt("official-events")
         runner = self.build_runner(
             claude_outputs={
-                "news": [
+                "official-events": [
                     claude_ok(
                         self.run_id,
-                        "news",
+                        "official-events",
                         attempt.attempt_id,
                         actual_model="claude-sonnet-4-5",
                     )
@@ -671,11 +746,13 @@ class RealSeatRunnerTest(unittest.TestCase):
     def test_claude_model_usage_search_count_alone_still_proves_live_research(self):
         # 真實 CLI 可能把搜尋次數記在 modelUsage 而非 usage.server_tool_use；
         # 判準必須與賽前 READY 閘門同一套（result.web_search_requests 對帳值）。
-        attempt = self.attempt("news")
+        attempt = self.attempt("official-events")
         stdout = json.dumps(
             {
                 "is_error": False,
-                "structured_output": envelope(self.run_id, "news", attempt.attempt_id),
+                "structured_output": envelope(
+                    self.run_id, "official-events", attempt.attempt_id
+                ),
                 "usage": {"input_tokens": 5, "output_tokens": 7},
                 "modelUsage": {
                     "claude-opus-5": {
@@ -688,7 +765,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         )
         runner = self.build_runner(
             claude_outputs={
-                "news": [
+                "official-events": [
                     ProcessOutput(returncode=0, stdout=stdout, stderr="", elapsed_ms=12)
                 ]
             }
@@ -737,7 +814,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.assertIn("search_web", message)
 
     def test_codex_result_without_a_search_invocation_is_refused(self):
-        attempt = self.attempt("onchain")
+        attempt = self.attempt("news")
         runner = self.build_runner(
             codex_mode="cli",
             codex_adapter=FakeCodexAdapter(
@@ -822,7 +899,7 @@ class RealSeatRunnerTest(unittest.TestCase):
             runner.start(attempt, None)
 
     def test_codex_cli_mode_answers_through_the_queue_and_still_audits_the_request(self):
-        attempt = self.attempt("onchain")
+        attempt = self.attempt("news")
         runner = self.build_runner(
             codex_mode="cli",
             codex_adapter=FakeCodexAdapter(
@@ -843,7 +920,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         )
         self.assertEqual([attempt.seat_id], [card["seat_id"] for card in cards])
         # The audit trail stays intact even though nothing reads the inbox now.
-        self.assertTrue((self.inbox_requests / "onchain-a1.json").is_file())
+        self.assertTrue((self.inbox_requests / "news-a1.json").is_file())
 
     def test_codex_cli_mode_sends_the_shared_prompt_into_a_fresh_work_directory(self):
         attempt = self.attempt("derivatives")
@@ -937,7 +1014,7 @@ class RealSeatRunnerTest(unittest.TestCase):
 
     def test_undispatchable_replacement_attempt_raises_at_start(self):
         runner = self.build_runner()
-        for seat_id in ("news", "spot-technical", "counter-evidence"):
+        for seat_id in ("official-events", "spot-technical", "counter-evidence"):
             with self.subTest(seat_id=seat_id):
                 attempt = self.attempt(
                     seat_id,
@@ -952,15 +1029,19 @@ class RealSeatRunnerTest(unittest.TestCase):
 
     def test_checkpoint_and_correct_report_no_public_channel(self):
         runner = self.build_runner()
-        attempt = self.attempt("news")
+        attempt = self.attempt("official-events")
 
         self.assertIsNone(runner.checkpoint(attempt.attempt_id))
         self.assertIsNone(runner.correct(attempt, "[]", "boom"))
 
     def test_cancel_and_terminate_never_raise_and_silence_late_workers(self):
-        attempt = self.attempt("news")
+        attempt = self.attempt("official-events")
         runner = self.build_runner(
-            claude_outputs={"news": [claude_ok(self.run_id, "news", attempt.attempt_id)]}
+            claude_outputs={
+                "official-events": [
+                    claude_ok(self.run_id, "official-events", attempt.attempt_id)
+                ]
+            }
         )
 
         self.assertIsNone(runner.cancel("never-started"))
@@ -1033,14 +1114,14 @@ class RealSeatRunnerTest(unittest.TestCase):
         )
 
     def test_a_debate_turn_answers_on_the_debate_message_contract(self):
-        dispatch = self.dispatch("news")
+        dispatch = self.dispatch("official-events")
         runner = self.build_runner(
             claude_outputs={
-                "news": [
+                "official-events": [
                     ProcessOutput(
                         returncode=0,
                         stdout=claude_stdout(
-                            {"seat_id": "news", "stance": "bullish"},
+                            {"seat_id": "official-events", "stance": "bullish"},
                             web_search_requests=0,
                             web_fetch_requests=0,
                         ),
@@ -1055,13 +1136,17 @@ class RealSeatRunnerTest(unittest.TestCase):
         messages = self.drain(runner, 2)
 
         self.assertEqual(
-            ("provider_lineage", "news"), (messages[0][0], messages[0][1])
+            ("provider_lineage", "official-events"),
+            (messages[0][0], messages[0][1]),
         )
         self.assertEqual("claude-opus-5", messages[0][2]["actual_model"])
         kind, dispatch_id, raw_output = messages[1]
         self.assertEqual("debate_result", kind)
-        self.assertEqual("news-r1", dispatch_id)
-        self.assertEqual({"seat_id": "news", "stance": "bullish"}, json.loads(raw_output))
+        self.assertEqual("official-events-r1", dispatch_id)
+        self.assertEqual(
+            {"seat_id": "official-events", "stance": "bullish"},
+            json.loads(raw_output),
+        )
         # 辯論 turn 一定是全新 invocation，永遠不 resume。
         [call] = self.claude_runner.calls
         self.assertIn("--session-id", call["args"])
@@ -1070,17 +1155,17 @@ class RealSeatRunnerTest(unittest.TestCase):
 
     def test_every_debate_turn_calls_its_provider_with_search_switched_off(self):
         # T+4:00 之後只能依封存證據：三個 provider 的辯論呼叫都不得帶著搜尋能力。
-        claude = self.dispatch("news")
-        codex = self.dispatch("onchain")
+        claude = self.dispatch("official-events")
+        codex = self.dispatch("news")
         antigravity = self.dispatch("counter-evidence")
         runner = self.build_runner(
             codex_mode="cli",
             claude_outputs={
-                "news": [
+                "official-events": [
                     ProcessOutput(
                         returncode=0,
                         stdout=claude_stdout(
-                            {"seat_id": "news", "stance": "bullish"},
+                            {"seat_id": "official-events", "stance": "bullish"},
                             web_search_requests=0,
                             web_fetch_requests=0,
                         ),
@@ -1090,7 +1175,7 @@ class RealSeatRunnerTest(unittest.TestCase):
                 ]
             },
             codex_adapter=FakeCodexAdapter(
-                structured_output={"seat_id": "onchain", "stance": "bearish"},
+                structured_output={"seat_id": "news", "stance": "bearish"},
                 search_invocations=0,
             ),
             agy_runner=FakeAgyRunner(
@@ -1120,17 +1205,17 @@ class RealSeatRunnerTest(unittest.TestCase):
         runner = self.build_runner(
             codex_mode="cli",
             codex_adapter=FakeCodexAdapter(
-                structured_output={"seat_id": "onchain", "stance": "bearish"},
+                structured_output={"seat_id": "news", "stance": "bearish"},
                 search_invocations=1,
             ),
         )
 
-        runner.start_debate(self.dispatch("onchain"))
+        runner.start_debate(self.dispatch("news"))
         messages = self.drain(runner, 2)
 
         kind, dispatch_id, failure_kind, message = messages[1]
         self.assertEqual("debate_failure", kind)
-        self.assertEqual("onchain-r1", dispatch_id)
+        self.assertEqual("news-r1", dispatch_id)
         self.assertEqual("provider_error", failure_kind)
         self.assertIn(POST_SEAL_SEARCH, message)
 
@@ -1157,14 +1242,14 @@ class RealSeatRunnerTest(unittest.TestCase):
     def test_a_claude_debate_turn_that_searched_after_the_seal_is_refused(self):
         # 能力層已經關掉 WebSearch，回報卻仍有檢索次數：三個 provider 的結果層
         # 防線必須對稱，claude 不能只靠 --tools 就算數。
-        dispatch = self.dispatch("news")
+        dispatch = self.dispatch("official-events")
         runner = self.build_runner(
             claude_outputs={
-                "news": [
+                "official-events": [
                     ProcessOutput(
                         returncode=0,
                         stdout=claude_stdout(
-                            {"seat_id": "news", "stance": "bullish"},
+                            {"seat_id": "official-events", "stance": "bullish"},
                             web_search_requests=1,
                             web_fetch_requests=0,
                         ),
@@ -1182,7 +1267,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.assertEqual("provider_lineage", messages[0][0])
         kind, dispatch_id, failure_kind, message = messages[1]
         self.assertEqual("debate_failure", kind)
-        self.assertEqual("news-r1", dispatch_id)
+        self.assertEqual("official-events-r1", dispatch_id)
         self.assertEqual("provider_error", failure_kind)
         self.assertIn(POST_SEAL_SEARCH, message)
 
@@ -1202,11 +1287,11 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.assertIn("claude_cli_timeout", message)
 
     def test_a_codex_debate_turn_runs_in_a_fresh_work_directory(self):
-        dispatch = self.dispatch("onchain", slug="opening")
+        dispatch = self.dispatch("news", slug="opening")
         runner = self.build_runner(
             codex_mode="cli",
             codex_adapter=FakeCodexAdapter(
-                structured_output={"seat_id": "onchain", "stance": "bearish"},
+                structured_output={"seat_id": "news", "stance": "bearish"},
                 search_invocations=0,
             ),
         )
@@ -1219,7 +1304,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         [call] = self.codex_adapter.calls
         self.assertEqual(DEBATE_SCHEMA, call["schema"])
         self.assertEqual(
-            self.run.path / "agents" / "onchain" / "work" / "onchain-opening",
+            self.run.path / "agents" / "news" / "work" / "news-opening",
             call["work_dir"],
         )
 
@@ -1364,11 +1449,74 @@ class RealEvidenceGatewayTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.gateway.validate(self.attempt, self.envelope_text(cards))
 
-    def test_requires_the_run_and_asset_binding_at_construction(self):
-        for run_id, assets in ((None, ("BTC",)), (self.run_id, ())):
-            with self.subTest(run_id=run_id, assets=assets):
-                with self.assertRaises(RealProviderError):
-                    RealEvidenceGateway(run_id, assets)
+    def test_binds_a_card_to_its_asset_case_insensitively(self):
+        card = dict(self.card, asset="btc")
+
+        self.assertEqual([card], self.gateway.validate(self.attempt, self.envelope_text([card])))
+
+    def test_binds_a_share_class_or_suffixed_spelling_to_the_same_listing(self):
+        """席位把 BRK.B 寫成 brk-b、把 2330 寫成 2330.TW 都是同一個標的。"""
+        for allowed, spelling in (
+            (("BRK.B",), "brk-b"),
+            (("BRK.B",), "BRK-B"),
+            (("2330",), "2330.TW"),
+            (("2330.TW",), "2330"),
+        ):
+            with self.subTest(allowed=allowed, spelling=spelling):
+                gateway = RealEvidenceGateway(self.run_id, allowed)
+                card = dict(self.card, asset=spelling)
+
+                self.assertEqual(
+                    [card], gateway.validate(self.attempt, self.envelope_text([card]))
+                )
+
+    def test_still_rejects_a_card_about_a_different_listing(self):
+        gateway = RealEvidenceGateway(self.run_id, ("BRK.B",))
+        card = dict(self.card, asset="BRK.A")
+
+        with self.assertRaises(ValueError):
+            gateway.validate(self.attempt, self.envelope_text([card]))
+
+    def test_a_card_spelled_like_its_own_question_is_always_accepted(self):
+        """題目端與證據端用同一個原始拼法，就必須得到同一個 canonical key。
+
+        斷言 scope.assets **精確等於** 該拼法的 canonical key，不是「非空」：
+        intake 少認一個標的與多認一個幽靈標的都要被擋下來。
+        """
+        for spelling in (
+            "BRK.B", "BRK-B", "BRK.B.US", "BRK-B.US", "BRK-B-US", "BRK-B-TW",
+            "NVDA", "NVDA.US", "NVDA-US",
+            "2330", "2330.TW", "2330.TWO", "2330-TW", "2330-TWO",
+            "AAPL", "AAPL-HK", "AAPL.HK",
+        ):
+            with self.subTest(spelling=spelling):
+                scope = inspect_question(
+                    "{} 這檔股票未來七天股價會不會漲".format(spelling)
+                )
+                self.assertEqual((normalize_asset(spelling),), scope.assets)
+                gateway = RealEvidenceGateway(self.run_id, scope.assets)
+                card = dict(self.card, asset=spelling)
+
+                self.assertEqual(
+                    [card], gateway.validate(self.attempt, self.envelope_text([card]))
+                )
+
+    def test_requires_the_run_binding_at_construction(self):
+        with self.assertRaises(RealProviderError):
+            RealEvidenceGateway(None, ("BTC",))
+
+    def test_a_question_naming_no_asset_binds_the_run_only(self):
+        """開放命題沒有標的可綁；run_id 仍然是硬邊界，資產不再是。"""
+        gateway = RealEvidenceGateway(self.run_id, ())
+        card = dict(self.card, asset="2330")
+
+        self.assertEqual([card], gateway.validate(self.attempt, self.envelope_text([card])))
+
+        with self.assertRaises(ValueError):
+            gateway.validate(
+                self.attempt,
+                self.envelope_text([dict(card, run_id="20260801T020000Z-btc-other1")]),
+            )
 
 
 class ResearchEnvelopeContractTest(unittest.TestCase):

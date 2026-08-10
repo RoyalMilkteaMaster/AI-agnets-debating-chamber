@@ -124,7 +124,7 @@ class VersionedContractTest(unittest.TestCase):
                 with self.assertRaises(ContractViolationError):
                     validator({**value, "schema_version": "99.0"})
 
-    def test_question_package_checks_types_and_supported_assets(self):
+    def test_question_package_checks_types_and_asset_shape(self):
         package = {
             "schema_version": CONTRACT_VERSION,
             "run_id": RUN_ID,
@@ -138,8 +138,14 @@ class VersionedContractTest(unittest.TestCase):
         }
         self.assertIs(package, validate_question_package(package))
 
+        # 白名單移除後，assets 只剩形狀契約：任何具名標的都合法，空字串不是。
+        for assets in (["DOGE"], ["NVDA"], ["2330"], []):
+            with self.subTest(assets=assets):
+                value = {**package, "assets": assets}
+                self.assertIs(value, validate_question_package(value))
+
         with self.assertRaises(ContractViolationError) as caught:
-            validate_question_package({**package, "assets": ["DOGE"], "period_days": "14"})
+            validate_question_package({**package, "assets": [" "], "period_days": "14"})
         self.assertIn("assets", str(caught.exception))
         self.assertIn("period_days", str(caught.exception))
 

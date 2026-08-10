@@ -25,9 +25,13 @@ from pathlib import Path
 
 CLAUDE_CLI_PATH = "/home/leslie/.local/bin/claude"
 CLAUDE_MODEL_ALIAS = "opus"
+# 一席一顆固定 session UUID，順序同 roster。提供者對調後 news 走 codex、onchain
+# 走 claude（Spec R5），所以 news 的條目移除、onchain 拿一顆全新的 UUID：沿用
+# news 那顆會把 news 席的 session 歷史接到 onchain 席身上。另兩席的 UUID 不得
+# 重新產生，那是它們既有 session 的連續性。
 CLAUDE_SEAT_SESSIONS = {
+    "onchain": "a8577ee5-8faa-44c3-bb33-38f08ff48299",
     "official-events": "0eed52ad-0c61-462d-a61c-f4b45c9e545f",
-    "news": "3b3522b1-2d02-45d2-8195-3162f485e06c",
     "social-macro": "2cfc5b87-ba9d-4788-9657-d8d79c87dcd3",
 }
 

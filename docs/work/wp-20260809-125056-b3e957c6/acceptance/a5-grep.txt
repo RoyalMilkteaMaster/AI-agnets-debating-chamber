@@ -1,0 +1,44 @@
+Ticket 08 / Spec A5：webapp 各頁渲染後可見文字的英文枚舉值掃描
+========================================================================
+
+讀法：以 html.parser 剖析，跳過 <style> 與 <script> 的內容，只取文字節點，
+不讀任何屬性，再以完整英文單詞邊界搜尋。屬性刻意排除：value="tw_stock"、
+class="stance-affirm" 是瀏覽器與查詢的機器值，A5 管的是畫面上讀到的字
+（與 Ticket 04 合併頁同一判準）。
+
+受掃描的枚舉值（32 個，全部由權威推導）：
+  question.ASSET_CLASSES / report_contract.CONFIDENCE_LEVELS /
+  run_index.OUTCOME_STATES / report_renderer.CONSENSUS_LABELS /
+  debate_state_machine.STANCES_BY_QUESTION_TYPE 各題型立場詞彙
+  affirmative、asset_a_stronger、asset_b_stronger、bearish、blue、bullish、consensus、crypto、failed_insufficient_valid_votes、green、hit、in_progress、insufficient_data、miss、negative、negative_side、neutral、no_clear_difference、no_consensus、open、orange、pending、positive、red、tw_stock、unclear_or_conditional、undecided、unreadable、unverifiable、us_stock、validation_failed、yellow
+
+命中狀態讀 OUTCOME_STATES 而非 OUTCOME_VERDICTS（Reviewer A 的 Finding A8-1）：
+  pending、unreadable 這兩個狀態不寫進紀錄、只從紀錄推導，因此不在 verdicts 裡，但畫面照樣顯示，
+  Spec A5 更明文點名 pending。第一輪只掃 verdicts，這兩個值植入頁面也抓不到。
+
+依 Spec A5 明文不在此限（屬資料本體）：標的代號、run_id、seat_id、evidence ID。
+
+------------------------------------------------------------------------
+台股（run_id 20260314T015926Z-2330-aaa111）
+
+  closed      可見字    171 字元｜英文枚舉值命中 0｜標的代號:0、seat_id:0、evidence ID:0
+  history     可見字    941 字元｜英文枚舉值命中 0｜標的代號:1、seat_id:0、evidence ID:0
+  not_found   可見字    117 字元｜英文枚舉值命中 0｜標的代號:0、seat_id:0、evidence ID:0
+  room        可見字   5503 字元｜英文枚舉值命中 0｜標的代號:2、seat_id:7、evidence ID:7
+  run_detail  可見字   1835 字元｜英文枚舉值命中 0｜標的代號:1、seat_id:7、evidence ID:7
+  settings    可見字   3034 字元｜英文枚舉值命中 0｜標的代號:0、seat_id:0、evidence ID:0
+
+------------------------------------------------------------------------
+加密資產（run_id 20260315T015926Z-btc-bbb222）
+
+  closed      可見字    171 字元｜英文枚舉值命中 0｜標的代號:0、seat_id:0、evidence ID:0
+  history     可見字    937 字元｜英文枚舉值命中 0｜標的代號:1、seat_id:0、evidence ID:0
+  not_found   可見字    117 字元｜英文枚舉值命中 0｜標的代號:0、seat_id:0、evidence ID:0
+  room        可見字   5488 字元｜英文枚舉值命中 0｜標的代號:2、seat_id:7、evidence ID:7
+  run_detail  可見字   1832 字元｜英文枚舉值命中 0｜標的代號:1、seat_id:7、evidence ID:7
+  settings    可見字   3034 字元｜英文枚舉值命中 0｜標的代號:0、seat_id:0、evidence ID:0
+
+------------------------------------------------------------------------
+鑑別力（同一段讀法對植入的英文原值）：green、tw_stock
+鑑別力（A8-1 的兩個推導狀態）：pending、unreadable
+屬性中的機器值不算畫面上的字：零命中（正確）

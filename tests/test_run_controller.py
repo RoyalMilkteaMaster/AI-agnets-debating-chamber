@@ -45,7 +45,12 @@ class RunControllerTest(unittest.TestCase):
         result = self.execute()
 
         self.assertEqual("20260314T015926Z-btc-aaa111", result.run_id)
-        self.assertEqual(self.data_root / "runs" / result.run_id, result.run_dir)
+        # ADR 0005：run 落在台北日期資料夾下，01:59:26Z 在台北是同日 09:59；
+        # 結尾雜湊由 `printf %s <run_id> | sha256sum | cut -c1-16` 取得。
+        self.assertEqual(
+            self.data_root / "runs" / "2026-03-14" / "0959-btc-99d78c28fc724ffd",
+            result.run_dir,
+        )
 
     def test_run_produces_the_shared_audit_artifacts(self):
         result = self.execute()
@@ -166,9 +171,15 @@ class RunControllerTest(unittest.TestCase):
         latest = json.loads((self.data_root / "runs" / "latest.json").read_text(encoding="utf-8"))
         self.assertEqual(second.run_id, latest["run_id"])
 
-    def test_unsupported_asset_fails_closed_without_creating_a_run(self):
+    def test_a_coin_outside_the_old_whitelist_runs_like_any_other(self):
+        result = self.execute("分析 DOGE 過去 14 日市場狀態")
+
+        self.assertIn("-doge-", result.run_id)
+        self.assertTrue((result.run_dir / "report.md").is_file())
+
+    def test_question_naming_no_asset_fails_closed_without_creating_a_run(self):
         with self.assertRaises(UnsupportedQuestionError):
-            self.execute("分析 DOGE 過去 14 日市場狀態")
+            self.execute("分析 過去 14 日市場狀態")
 
         self.assertFalse((self.data_root / "runs").exists())
 

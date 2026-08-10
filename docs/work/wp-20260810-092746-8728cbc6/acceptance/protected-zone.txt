@@ -1,0 +1,31 @@
+Ticket 09 驗收條件 7：保護區（聊天室、燈位、三種票數）行為回歸
+========================================================================
+
+
+tw_stock（run_id=20260314T015926Z-2330-aaa111）
+  一、三種票數：公開紀錄 votes.json 的數字 vs 畫面上的數字
+    偏多                （bullish）紀錄 6 ｜ 畫面 6 PASS
+    偏空                （bearish）紀錄 1 ｜ 畫面 1 PASS
+    方向不明              （neutral）紀錄 0 ｜ 畫面 0 PASS
+    恰好三種立場 PASS｜三個數字不全等（逐項比對有鑑別力）PASS
+    票數區沒有英文立場原值：PASS（0 命中）
+  二、聊天室
+    events.jsonl 有發言的席位共 7 席 PASS
+    每一席都在聊天室裡、且用這個市場那一套名字：PASS
+  三、燈位
+    report.json 的燈號：yellow（畫面上的詞：黃燈）
+    合併頁與 run 詳情頁都寫這個詞 PASS｜英文原值 0 命中 PASS
+
+crypto（run_id=20260315T015926Z-btc-bbb222）
+  一、三種票數：公開紀錄 votes.json 的數字 vs 畫面上的數字
+    偏多                （bullish）紀錄 6 ｜ 畫面 6 PASS
+    偏空                （bearish）紀錄 1 ｜ 畫面 1 PASS
+    方向不明              （neutral）紀錄 0 ｜ 畫面 0 PASS
+    恰好三種立場 PASS｜三個數字不全等（逐項比對有鑑別力）PASS
+    票數區沒有英文立場原值：PASS（0 命中）
+  二、聊天室
+    events.jsonl 有發言的席位共 7 席 PASS
+    每一席都在聊天室裡、且用這個市場那一套名字：PASS
+  三、燈位
+    report.json 的燈號：yellow（畫面上的詞：黃燈）
+    合併頁與 run 詳情頁都寫這個詞 PASS｜英文原值 0 命中 PASS

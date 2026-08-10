@@ -3,20 +3,25 @@
 import json
 import unittest
 
+from hoya_market_agents.debate_rules import debate_rules
 from hoya_market_agents.debate_state_machine import (
-    CHALLENGE_DEADLINE_MS,
-    DEBATE_START_MS,
-    FINAL_ROUND_END_MS,
-    FINAL_ROUND_START_MS,
-    FORCE_STOP_MS,
-    ROUND_ONE_WINDOW_MS,
-    THRESHOLD_FIVE_FROM_MS,
     LateMessageError,
     phase_at,
     required_votes_at,
 )
 from hoya_market_agents.seats import SEAT_IDS
 from tests.test_debate_state_machine import DebateHarness
+
+# 取值來源改成 config/debate_rules.json 的載入器；斷言值刻意不動，因為 Ticket
+# 02 的驗收就是「預設設定下行為零變化」。
+RULES = debate_rules()
+DEBATE_START_MS = RULES.debate_start_ms
+ROUND_ONE_WINDOW_MS = RULES.round_one_window_ms
+CHALLENGE_DEADLINE_MS = RULES.challenge_deadline_ms()
+THRESHOLD_FIVE_FROM_MS = RULES.reduced_threshold_from_ms
+FINAL_ROUND_START_MS = RULES.final_round_start_ms
+FINAL_ROUND_END_MS = RULES.final_round_end_ms
+FORCE_STOP_MS = RULES.force_stop_ms
 
 
 class DebateScheduleTest(unittest.TestCase):

@@ -1,0 +1,113 @@
+Ticket 09 驗收條件 7：既有測試全套執行結果
+========================================================================
+
+指令      ：python3 -m unittest discover -s tests
+執行環境  ：WSL Ubuntu-24.04、Python 3.12.3
+Code Root ：/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final
+共用資源鎖：docs/work/wp-20260810-092746-8728cbc6/.locks/full-suite（取得後執行，結束即釋放）
+執行次數  ：本票只跑這一次
+
+退出碼    ：0
+結果      ：Ran 2729 tests in 449.939s — OK (skipped=1)
+與基準比對：Coordinator 給的基準是 2729 tests、skipped=1，完全相符。
+
+唯一的 skip（不是 PASS，如實列出）：
+  tests/test_debate_rules.py —「Reviewer 在 DrvFs 上用大小寫別名穿透三個機制——身分比對關掉它。」
+  skip 理由（測試自己印的）：'此檔案系統大小寫敏感，別名指向不存在的檔案'
+  性質：環境條件式 skip，與本工作包的改動無關（WSL 的 ext4 大小寫敏感，別名檔不存在）。
+
+------------------------------------------------------------------------
+原始輸出（unittest 的進度點以摘要取代；末段是 test_webapp.ContrastTest 自己印的對比度實測）
+------------------------------------------------------------------------
+
+...................................................................................................................................................................................................................................................................................................................................................................................s................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................RED_AUDIT: cross-reference-failure -> /tmp/tmpzzey8etm
+[進度輸出 1653 個字元，內含 0 個 s（skip）、0 個 F、0 個 E]
+----------------------------------------------------------------------
+Ran 2729 tests in 449.939s
+
+OK (skipped=1)
+            text on page            15.27:1  needs 4.5:1
+            text on surface         16.10:1  needs 4.5:1
+            text on glass_surface   15.84:1  needs 4.5:1
+           muted on page             5.74:1  needs 4.5:1
+           muted on surface          6.05:1  needs 4.5:1
+           muted on glass_surface    5.95:1  needs 4.5:1
+            link on page             5.09:1  needs 4.5:1
+            link on surface          5.37:1  needs 4.5:1
+            link on glass_surface    5.28:1  needs 4.5:1
+          accent on page             5.09:1  needs 4.5:1
+          accent on surface          5.37:1  needs 4.5:1
+          accent on glass_surface    5.28:1  needs 4.5:1
+          affirm on page             5.65:1  needs 4.5:1
+          affirm on surface          5.95:1  needs 4.5:1
+          affirm on glass_surface    5.86:1  needs 4.5:1
+          oppose on page             5.50:1  needs 4.5:1
+          oppose on surface          5.80:1  needs 4.5:1
+          oppose on glass_surface    5.70:1  needs 4.5:1
+         abstain on page             6.17:1  needs 4.5:1
+         abstain on surface          6.51:1  needs 4.5:1
+         abstain on glass_surface    6.40:1  needs 4.5:1
+          danger on page             5.50:1  needs 4.5:1
+          danger on surface          5.80:1  needs 4.5:1
+          danger on glass_surface    5.70:1  needs 4.5:1
+         success on page             5.65:1  needs 4.5:1
+         success on surface          5.95:1  needs 4.5:1
+         success on glass_surface    5.86:1  needs 4.5:1
+          border on page             3.49:1  needs 3.0:1
+          border on surface          3.68:1  needs 3.0:1
+          border on glass_surface    3.62:1  needs 3.0:1
+ provider_claude on page             4.41:1  needs 3.0:1
+ provider_claude on surface          4.65:1  needs 3.0:1
+ provider_claude on glass_surface    4.57:1  needs 3.0:1
+ provider_gemini on page             6.74:1  needs 3.0:1
+ provider_gemini on surface          7.10:1  needs 3.0:1
+ provider_gemini on glass_surface    6.99:1  needs 3.0:1
+     accent_text on accent           5.37:1  needs 4.5:1
+     accent_text on google_blue      4.86:1  needs 4.5:1
+     accent_text on google_green     5.02:1  needs 4.5:1
+     accent_text on google_red       4.77:1  needs 4.5:1
+            text on google_yellow    9.43:1  needs 4.5:1
+ACCEPTED: consensus-6-1 -> /tmp/tmp5qvmrx_f
+ACCEPTED: consensus-6-1 -> /tmp/tmp5jligftn
+ACCEPTED: consensus-6-1 -> /tmp/tmpy9q2uami
+            text on page            15.27:1  needs 4.5:1
+            text on surface         16.10:1  needs 4.5:1
+            text on glass_surface   15.84:1  needs 4.5:1
+           muted on page             5.74:1  needs 4.5:1
+           muted on surface          6.05:1  needs 4.5:1
+           muted on glass_surface    5.95:1  needs 4.5:1
+            link on page             5.09:1  needs 4.5:1
+            link on surface          5.37:1  needs 4.5:1
+            link on glass_surface    5.28:1  needs 4.5:1
+          accent on page             5.09:1  needs 4.5:1
+          accent on surface          5.37:1  needs 4.5:1
+          accent on glass_surface    5.28:1  needs 4.5:1
+          affirm on page             5.65:1  needs 4.5:1
+          affirm on surface          5.95:1  needs 4.5:1
+          affirm on glass_surface    5.86:1  needs 4.5:1
+          oppose on page             5.50:1  needs 4.5:1
+          oppose on surface          5.80:1  needs 4.5:1
+          oppose on glass_surface    5.70:1  needs 4.5:1
+         abstain on page             6.17:1  needs 4.5:1
+         abstain on surface          6.51:1  needs 4.5:1
+         abstain on glass_surface    6.40:1  needs 4.5:1
+          danger on page             5.50:1  needs 4.5:1
+          danger on surface          5.80:1  needs 4.5:1
+          danger on glass_surface    5.70:1  needs 4.5:1
+         success on page             5.65:1  needs 4.5:1
+         success on surface          5.95:1  needs 4.5:1
+         success on glass_surface    5.86:1  needs 4.5:1
+          border on page             3.49:1  needs 3.0:1
+          border on surface          3.68:1  needs 3.0:1
+          border on glass_surface    3.62:1  needs 3.0:1
+ provider_claude on page             4.41:1  needs 3.0:1
+ provider_claude on surface          4.65:1  needs 3.0:1
+ provider_claude on glass_surface    4.57:1  needs 3.0:1
+ provider_gemini on page             6.74:1  needs 3.0:1
+ provider_gemini on surface          7.10:1  needs 3.0:1
+ provider_gemini on glass_surface    6.99:1  needs 3.0:1
+     accent_text on accent           5.37:1  needs 4.5:1
+     accent_text on google_blue      4.86:1  needs 4.5:1
+     accent_text on google_green     5.02:1  needs 4.5:1
+     accent_text on google_red       4.77:1  needs 4.5:1
+            text on google_yellow    9.43:1  needs 4.5:1

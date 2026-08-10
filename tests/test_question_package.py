@@ -1,16 +1,24 @@
 """Question Package normalizes the four approved types and opens everything else.
 
-A live competition question is drawn on the spot, so the package may not match any
-of the three demonstrated shapes. Anything naming an approved asset becomes an
-open proposition instead of a refusal; only a question with no approved asset at
-all still fails closed.
+A live question is drawn on the spot, so the package may not match any of the
+demonstrated shapes — and its target may be a stock, a coin nobody listed, or
+nothing tradable at all. Anything unmatched becomes an open proposition. Only a
+question that cannot describe a run at all is still refused.
 """
 
 import unittest
 
-from hoya_market_agents.question import UnsupportedQuestionError
+from hoya_market_agents.question import (
+    ASSET_CLASS_CRYPTO,
+    ASSET_CLASS_OPEN,
+    ASSET_CLASS_TW_STOCK,
+    ASSET_CLASS_US_STOCK,
+    UnsupportedQuestionError,
+)
 from hoya_market_agents.question_package import (
+    OPEN_QUESTION_TYPE,
     OPEN_STANCES,
+    UnknownAssetError,
     build_question_package,
 )
 
@@ -61,29 +69,55 @@ class QuestionPackageTest(unittest.TestCase):
         self.assertEqual("event_impact", package.question_type)
         self.assertEqual((), package.assets)
 
-    def test_question_without_any_approved_asset_fails_closed(self):
-        invalid_questions = (
-            "分析 DOGE 過去 14 日市場狀態",
+    def test_question_naming_no_tradable_asset_opens_instead_of_failing(self):
+        open_questions = (
             "幫我預測下週樂透號碼",
             "若美國通過股市新法案，標普會如何反應？",
+            "聯準會九月會不會降息",
         )
 
-        for question in invalid_questions:
+        for question in open_questions:
             with self.subTest(question=question):
-                with self.assertRaises(UnsupportedQuestionError):
-                    build_question_package(question)
+                package = build_question_package(question)
 
-    def test_lowercase_unsupported_ticker_in_market_or_event_context_fails_closed(self):
-        for question in (
-            "評估 doge 升級事件對加密市場的影響",
-            "分析 doge 市場狀態",
-            "doge 事件對加密市場的影響",
+                self.assertEqual(OPEN_QUESTION_TYPE, package.question_type)
+                self.assertEqual((), package.assets)
+                self.assertEqual(OPEN_STANCES, package.stance_options)
+
+    def test_ticker_outside_the_old_whitelist_reaches_its_own_question_type(self):
+        package = build_question_package("分析 DOGE 過去 14 日市場狀態")
+
+        self.assertEqual("single_asset_market_state", package.question_type)
+        self.assertEqual(("DOGE",), package.assets)
+        # 題目沒寫市場，就不替它猜一個；寫了「幣」才是 crypto。
+        self.assertEqual(ASSET_CLASS_OPEN, package.asset_class)
+        self.assertEqual(
+            ASSET_CLASS_CRYPTO,
+            build_question_package("分析 DOGE 幣價過去 14 日市場狀態").asset_class,
+        )
+
+    def test_a_lowercase_ticker_needs_a_naming_signal_to_reach_the_assets(self):
+        """沒有指認訊號的小寫代號不寫入 assets——猜錯會綁死錯的研究對象。"""
+        for question, question_type in (
+            ("評估 doge 升級事件對加密市場的影響", "event_impact"),
+            ("doge 事件對加密市場的影響", "event_impact"),
         ):
             with self.subTest(question=question):
-                with self.assertRaises(UnsupportedQuestionError) as caught:
-                    build_question_package(question)
+                package = build_question_package(question)
 
-                self.assertIn("DOGE", str(caught.exception))
+                self.assertEqual(question_type, package.question_type)
+                self.assertEqual((), package.assets)
+
+    def test_a_ticker_whose_shape_is_not_prose_does_reach_the_assets(self):
+        package = build_question_package("分析 DOGE 幣價未來的市場狀態")
+        self.assertEqual(("DOGE",), package.assets)
+
+        compared = build_question_package("比較 doge 與 eth 過去 14 日相對強弱")
+        self.assertEqual(("DOGE", "ETH"), compared.assets)
+
+    def test_blank_question_is_the_only_shape_left_that_fails_closed(self):
+        with self.assertRaises(UnsupportedQuestionError):
+            build_question_package("   ")
 
     def test_general_english_after_analysis_verb_is_not_treated_as_a_ticker(self):
         package = build_question_package("分析 price action，判斷 BTC 市場狀態")
@@ -199,7 +233,6 @@ class OpenPropositionTest(unittest.TestCase):
 
     def test_shapes_that_used_to_be_refused_now_open_instead(self):
         for question, assets in (
-            ("比較 BTC 與 doge 過去 14 日市場位置", ("BTC",)),
             ("請告訴我 BTC 是什麼", ("BTC",)),
             ("分析 BTC 與 ETH 市場狀態", ("BTC", "ETH")),
         ):
@@ -208,6 +241,12 @@ class OpenPropositionTest(unittest.TestCase):
 
                 self.assertEqual("open_proposition", package.question_type)
                 self.assertEqual(assets, package.assets)
+
+    def test_a_comparison_naming_an_unlisted_coin_is_a_comparison(self):
+        package = build_question_package("比較 BTC 與 doge 過去 14 日市場位置")
+
+        self.assertEqual("two_asset_comparison", package.question_type)
+        self.assertEqual(("BTC", "DOGE"), package.assets)
 
     def test_written_proposition_replaces_only_the_proposition_field(self):
         package = build_question_package(self.QUESTION).with_proposition(
@@ -221,6 +260,129 @@ class OpenPropositionTest(unittest.TestCase):
             "美國比特幣戰略儲備法案將推升 BTC 價格。",
             package.to_dict()["proposition"],
         )
+
+
+class OpenMarketIntakeTest(unittest.TestCase):
+    """Any market may start a run, and the package says which one it is."""
+
+    def test_taiwan_listing_is_packaged_with_its_class(self):
+        package = build_question_package("幫我分析 2330 未來七天會不會漲")
+
+        self.assertEqual(("2330",), package.assets)
+        self.assertEqual(ASSET_CLASS_TW_STOCK, package.asset_class)
+        self.assertEqual("2330", package.asset_slug)
+        self.assertEqual(7, package.period_days)
+        self.assertEqual(OPEN_QUESTION_TYPE, package.question_type)
+        self.assertEqual(OPEN_STANCES, package.stance_options)
+
+    def test_us_listing_is_packaged_with_its_class(self):
+        package = build_question_package("NVDA 這檔美股未來七天股價會不會漲")
+
+        self.assertEqual(("NVDA",), package.assets)
+        self.assertEqual(ASSET_CLASS_US_STOCK, package.asset_class)
+        self.assertEqual("nvda", package.asset_slug)
+
+    def test_share_class_listing_keeps_its_class_letter_through_the_package(self):
+        package = build_question_package("BRK.B 這檔美股未來七天股價會不會漲")
+
+        self.assertEqual(("BRK.B",), package.assets)
+        self.assertEqual(ASSET_CLASS_US_STOCK, package.asset_class)
+        self.assertEqual("brk-b", package.asset_slug)
+
+    def test_open_proposition_without_a_target_keeps_the_overall_market_slug(self):
+        package = build_question_package("聯準會九月會不會降息")
+
+        self.assertEqual(ASSET_CLASS_OPEN, package.asset_class)
+        self.assertEqual("overall-market", package.asset_slug)
+
+    def test_asset_class_survives_the_serialised_package(self):
+        package = build_question_package("幫我分析 2330 未來七天會不會漲")
+
+        self.assertEqual(ASSET_CLASS_TW_STOCK, package.to_dict()["asset_class"])
+
+    def test_unknown_asset_error_stays_importable_for_existing_callers(self):
+        self.assertTrue(issubclass(UnknownAssetError, UnsupportedQuestionError))
+
+    def test_a_stated_subject_reaches_the_package(self):
+        """The seam a menu-driven caller uses, checked at the package boundary."""
+        buyback = "台積電回購 50000 股後股價會不會上漲？"
+        self.assertEqual(("50000",), build_question_package(buyback).assets)
+
+        package = build_question_package(
+            buyback, assets=("2330",), asset_class=ASSET_CLASS_TW_STOCK
+        )
+
+        self.assertEqual(("2330",), package.assets)
+        self.assertEqual(ASSET_CLASS_TW_STOCK, package.asset_class)
+        self.assertEqual(("2330",), tuple(package.to_dict()["assets"]))
+
+    def test_a_stated_class_answers_the_bare_symbol_case(self):
+        question = "分析 DOGE 過去 14 日市場狀態"
+        self.assertEqual(ASSET_CLASS_OPEN, build_question_package(question).asset_class)
+
+        package = build_question_package(
+            question, assets=("DOGE",), asset_class=ASSET_CLASS_CRYPTO
+        )
+
+        self.assertEqual(("DOGE",), package.assets)
+        self.assertEqual(ASSET_CLASS_CRYPTO, package.asset_class)
+
+    def test_stating_nothing_leaves_the_package_unchanged(self):
+        for question in (
+            "幫我分析 2330 未來七天會不會漲",
+            "DOGE 幣價未來七天會不會漲",
+            "AI 泡沫會不會在今年破掉",
+            "比較 BTC 與 ETH 未來七天",
+        ):
+            with self.subTest(question=question):
+                self.assertEqual(
+                    build_question_package(question).to_dict(),
+                    build_question_package(
+                        question, assets=None, asset_class=None
+                    ).to_dict(),
+                )
+
+    def test_a_stated_subject_that_cannot_describe_a_run_fails_closed(self):
+        with self.assertRaises(UnknownAssetError):
+            build_question_package("任意題目", assets=("../etc/passwd",))
+        with self.assertRaises(UnsupportedQuestionError):
+            build_question_package("任意題目", asset_class="tw-stock")
+        with self.assertRaises(UnknownAssetError):
+            build_question_package("任意題目", assets={"NVDA", "AAPL"})
+        with self.assertRaises(UnknownAssetError):
+            build_question_package("任意題目", assets=("NVDA", "nvda"))
+        with self.assertRaises(UnknownAssetError):
+            build_question_package("任意題目", assets=("A" * 10000,))
+
+    def test_both_spellings_of_one_question_get_the_same_type(self):
+        """Targets and question type must be read off the same view of the text.
+
+        Before the width-folded reading was carried on the scope, the intake
+        gate folded and the type dispatcher did not, so ``ＢＴＣ ｖｓ ＥＴＨ``
+        found both targets and was still filed as an open proposition.
+        """
+        for ascii_spelling, wide_spelling in (
+            ("BTC vs ETH 過去七天", "ＢＴＣ ｖｓ ＥＴＨ 過去七天"),
+            ("分析 BTC market state", "分析 ＢＴＣ ｍａｒｋｅｔ ｓｔａｔｅ"),
+            ("BTC 過去 14 日的市場狀態如何？", "ＢＴＣ 過去 14 日的市場狀態如何？"),
+            ("比較 BTC 與 ETH 未來七天", "比較 ＢＴＣ 與 ＥＴＨ 未來七天"),
+        ):
+            with self.subTest(question=wide_spelling):
+                plain = build_question_package(ascii_spelling)
+                wide = build_question_package(wide_spelling)
+
+                self.assertEqual(plain.question_type, wide.question_type)
+                self.assertEqual(plain.assets, wide.assets)
+                self.assertEqual(plain.stance_options, wide.stance_options)
+
+    def test_the_package_still_quotes_the_question_verbatim(self):
+        """Prompts and artifacts must show the user's own text, not a folding."""
+        wide = "ＢＴＣ ｖｓ ＥＴＨ 過去七天"
+
+        package = build_question_package(wide)
+
+        self.assertEqual(wide, package.question)
+        self.assertEqual(wide, package.to_dict()["question"])
 
 
 if __name__ == "__main__":

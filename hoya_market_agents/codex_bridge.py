@@ -28,10 +28,13 @@ from .run_store import (
     RunStoreError,
     default_token,
     new_run_id,
+    resolve_run_dir,
 )
 from .seats import CODE_ROOT, load_roster
 
-CODEX_SEAT_IDS = ("spot-technical", "derivatives", "onchain")
+# roster ``provider == "codex"`` 的投影，順序即 roster 席位順序（Spec R5 對調後
+# 是 news 而不是 onchain）；一致性由 tests/test_codex_bridge.py 直接比對 roster。
+CODEX_SEAT_IDS = ("spot-technical", "derivatives", "news")
 CORE_ROLE = "core"
 TARGET_MODEL = "gpt-5.6-sol"
 REQUIRED_SKILLS = ("research",)
@@ -209,7 +212,7 @@ def prepare_launch_inputs(
             token_source(),
         )
         _require_safe_segment(competition_run_id, "competition run_id")
-        if (root / "runs" / competition_run_id).exists():
+        if resolve_run_dir(root, competition_run_id) is not None:
             continue
         reservation = _reserve_competition_run_id(
             root,
@@ -219,7 +222,7 @@ def prepare_launch_inputs(
             competition_challenge,
             observed_at,
         )
-        if reservation is not None and not (root / "runs" / competition_run_id).exists():
+        if reservation is not None and resolve_run_dir(root, competition_run_id) is None:
             return {
                 "schema_version": "1.0.0",
                 "status": "PREPARED",
@@ -345,7 +348,10 @@ def verify_codex_preflight(
 ):
     """Verify an existing Core-written artifact without creating any agent."""
     _require_safe_segment(run_id, "run_id")
-    path = _validated_data_root(data_root) / "runs" / run_id / HANDOFF_PATH
+    run_dir = resolve_run_dir(_validated_data_root(data_root), run_id)
+    if run_dir is None:
+        raise PreflightNotReadyError("找不到有效 Codex preflight artifact。")
+    path = run_dir / HANDOFF_PATH
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError) as exc:
@@ -459,7 +465,7 @@ def seal_public_checkpoint(
     _require_safe_segment(attempt_id, "attempt_id")
     validate_public_checkpoint(checkpoint)
     preflight = verify_codex_preflight(
-        run.path.parent.parent,
+        run.data_root,
         run.run_id,
         expected_challenge=preflight_challenge,
     )
@@ -476,7 +482,7 @@ def seal_public_checkpoint(
         seat_id, attempt_id
     )
     target = assert_seat_write_allowed(
-        run.path / name, run.path.parent.parent, run.run_id, seat_id
+        run.path / name, run.data_root, run.run_id, seat_id
     )
     try:
         run.write_json(name, checkpoint, source="public Codex thread checkpoint")
@@ -491,7 +497,11 @@ def seat_output_dir(data_root, run_id, seat_id):
     _require_safe_segment(run_id, "run_id")
     if seat_id not in CODEX_SEAT_IDS:
         raise CodexBridgeError("不是固定 GPT 席：{}".format(seat_id))
-    return _validated_data_root(data_root) / "runs" / run_id / "agents" / seat_id / "attempts"
+    root = _validated_data_root(data_root)
+    run_dir = resolve_run_dir(root, run_id)
+    if run_dir is None:
+        raise CodexBridgeError("Data Root 內找不到 run：{}".format(run_id))
+    return run_dir / "agents" / seat_id / "attempts"
 
 
 def assert_seat_write_allowed(target, data_root, run_id, seat_id):
@@ -522,7 +532,9 @@ def seal_seat_handoff(run, seat_id, attempt_id, raw_text):
     name = "agents/{}/attempts/{}/raw-codex-handoff.txt".format(
         seat_id, attempt_id
     )
-    target = assert_seat_write_allowed(run.path / name, run.path.parent.parent, run.run_id, seat_id)
+    target = assert_seat_write_allowed(
+        run.path / name, run.data_root, run.run_id, seat_id
+    )
     try:
         run.write_text(name, raw_text, source="verbatim Codex seat handoff")
     except (ArtifactAlreadyExistsError, RunStoreError) as exc:

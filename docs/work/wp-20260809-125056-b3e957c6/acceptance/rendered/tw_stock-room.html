@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>即時 Agent 辯論室・Hoya Bit 市場七席</title>
+<style>:root{--abstain:#92400e;--accent:#1d4ed8;--accent-text:#ffffff;--affirm:#166534;--border:#64748b;--danger:#b91c1c;--link:#1d4ed8;--muted:#475569;--oppose:#b91c1c;--page:#f1f5f9;--provider-claude:#9a3412;--provider-gemini:#6d28d9;--success:#166534;--surface:#ffffff;--text:#0f172a;--dim:.55;--font-mono:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,"Liberation Mono",monospace;--font-sans:system-ui,-apple-system,"Segoe UI","Microsoft JhengHei","PingFang TC","Noto Sans TC","Helvetica Neue",sans-serif;--line-base:1.55;--line-tight:1.25;--motion-fast:.18s;--radius-lg:.75rem;--radius-md:.5rem;--radius-pill:999px;--radius-sm:.25rem;--shell:86rem;--size-2xl:2.25rem;--size-2xs:.75rem;--size-lg:1.15rem;--size-md:1rem;--size-sm:.88rem;--size-xl:1.5rem;--size-xs:.8rem;--space-1:.25rem;--space-2:.375rem;--space-3:.5rem;--space-4:.75rem;--space-5:1rem;--space-6:1.5rem;--space-7:2rem;}@media (prefers-color-scheme: dark){:root{--abstain:#fcd34d;--accent:#93c5fd;--accent-text:#0f172a;--affirm:#4ade80;--border:#64748b;--danger:#fca5a5;--link:#93c5fd;--muted:#94a3b8;--oppose:#fca5a5;--page:#020617;--provider-claude:#fdba74;--provider-gemini:#c4b5fd;--success:#4ade80;--surface:#0f172a;--text:#f8fafc;}}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--page);color:var(--text);font-family:var(--font-sans);
+ font-size:var(--size-md);line-height:var(--line-base);}
+h1,h2,h3{line-height:var(--line-tight);}
+h1{margin:0 0 var(--space-2);font-size:var(--size-xl);letter-spacing:.01em;}
+a{color:var(--link);}
+a:hover{text-decoration:none;}
+code{font-family:var(--font-mono);font-size:var(--size-sm);}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px;
+ border-radius:var(--radius-sm);}
+.skip-link{position:absolute;left:-999px;top:0;background:var(--accent);
+ color:var(--accent-text);padding:var(--space-4) var(--space-5);z-index:10;
+ border-radius:0 0 var(--radius-md) 0;}
+.skip-link:focus{left:0;}
+.site-header,.top{background:var(--surface);border-bottom:1px solid var(--border);
+ padding:var(--space-6) clamp(var(--space-5),4vw,var(--space-7)) var(--space-5);}
+.header-top,.top{display:flex;justify-content:space-between;align-items:flex-start;
+ gap:var(--space-5);flex-wrap:wrap;}
+.site-note,.top p:last-child{margin:var(--space-1) 0;color:var(--muted);
+ font-size:var(--size-xs);word-break:break-all;}
+.eyebrow{margin:0;color:var(--accent);font-weight:700;font-size:var(--size-2xs);
+ letter-spacing:.08em;}
+.top-actions{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;
+ justify-content:flex-end;}
+.connection{background:var(--surface);border:1px solid var(--border);
+ color:var(--success);padding:var(--space-1) var(--space-4);
+ border-radius:var(--radius-pill);font-weight:700;font-size:var(--size-xs);}
+.stop-form{margin:0;}
+.stop-form button{font:inherit;font-weight:700;font-size:var(--size-sm);
+ padding:var(--space-3) var(--space-4);border:1px solid var(--border);
+ border-radius:var(--radius-sm);background:var(--surface);color:var(--link);
+ cursor:pointer;white-space:nowrap;}
+main{display:block;max-width:var(--shell);margin:0 auto;
+ padding:var(--space-6) clamp(var(--space-5),4vw,var(--space-7)) var(--space-7);}
+main:focus{outline:none;}
+.site-footer{max-width:var(--shell);margin:0 auto;
+ padding:0 clamp(var(--space-5),4vw,var(--space-7)) var(--space-7);
+ color:var(--muted);font-size:var(--size-xs);}
+.page-tabs{display:flex;gap:var(--space-1);padding:var(--space-1);
+ border:1px solid var(--border);border-radius:var(--radius-md);flex-wrap:wrap;
+ background:var(--surface);}
+.page-tabs a,.page-tabs [role=link]{color:var(--link);text-decoration:none;
+ font-size:var(--size-sm);padding:var(--space-3) var(--space-4);
+ border-radius:var(--radius-sm);font-weight:700;white-space:nowrap;}
+.page-tabs a[aria-current=page]{background:var(--accent);color:var(--accent-text);}
+.page-tabs [aria-disabled=true]{color:var(--muted);opacity:var(--dim);}
+.card,.panel,.metric,.detail-panel,fieldset.settings-group{background:var(--surface);
+ border:1px solid var(--border);border-radius:var(--radius-md);}
+.card{padding:var(--space-5) var(--space-6);margin:0 0 var(--space-5);}
+.panel{padding:var(--space-5);margin:0 0 var(--space-5);}
+.metric{padding:var(--space-4);}
+.detail-panel{padding:0;overflow:hidden;}
+.card h2,.panel h2{margin:0 0 var(--space-5);font-size:var(--size-lg);}
+.field-grid{display:grid;gap:var(--space-5);
+ grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));}
+.field{display:flex;flex-direction:column;gap:var(--space-2);}
+.field label{font-weight:600;font-size:var(--size-sm);}
+.field input,.run-bar select,.run-bar input{font:inherit;font-size:var(--size-sm);
+ padding:var(--space-3) var(--space-4);border:1px solid var(--border);
+ border-radius:var(--radius-sm);background:var(--surface);color:var(--text);
+ min-width:0;}
+.hint{margin:0;color:var(--muted);font-size:var(--size-xs);}
+.actions{display:flex;flex-wrap:wrap;gap:var(--space-4);align-items:center;
+ margin-top:var(--space-5);}
+button.primary,.focus-action,.feed-jump,.run-bar button{font:inherit;font-weight:700;
+ border:1px solid var(--accent);border-radius:var(--radius-sm);
+ background:var(--accent);color:var(--accent-text);cursor:pointer;
+ text-decoration:none;}
+button.primary{padding:var(--space-3) var(--space-6);}
+a.secondary{padding:var(--space-3) var(--space-4);border:1px solid var(--border);
+ border-radius:var(--radius-sm);text-decoration:none;}
+button.primary[disabled]{opacity:var(--dim);cursor:not-allowed;}
+.field input[disabled]{opacity:var(--dim);}
+.problems{border-color:var(--accent);}
+.problems ul,.notice ul{margin:var(--space-3) 0 0;padding-left:var(--space-6);}
+.empty p{margin:var(--space-3) 0;}
+pre{overflow-x:auto;background:var(--page);border:1px solid var(--border);
+ border-radius:var(--radius-sm);padding:var(--space-4);margin:var(--space-4) 0 0;}
+.table-scroll{overflow-x:auto;}
+table{border-collapse:collapse;width:100%;font-size:var(--size-sm);}
+caption{text-align:left;color:var(--muted);font-size:var(--size-xs);
+ padding-bottom:var(--space-3);}
+th,td{text-align:left;vertical-align:top;padding:var(--space-3) var(--space-4);
+ border-bottom:1px solid var(--border);}
+thead th{font-size:var(--size-xs);letter-spacing:.04em;color:var(--muted);
+ border-bottom:2px solid var(--border);white-space:nowrap;}
+tbody tr:last-child th,tbody tr:last-child td{border-bottom:none;}
+th[scope=row]{font-weight:600;white-space:nowrap;}
+th[scope=row] .hint{display:block;font-weight:400;}
+.nowrap{white-space:nowrap;font-variant-numeric:tabular-nums;}
+.light{white-space:nowrap;}
+.unchanged{color:var(--muted);}
+.changes{margin:0;padding-left:var(--space-5);}
+.verdict{margin:0 0 var(--space-5);font-size:var(--size-lg);font-weight:600;}
+dl.summary{display:grid;gap:var(--space-4) var(--space-6);margin:0;
+ grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));}
+dl.summary dt{color:var(--muted);font-size:var(--size-xs);}
+dl.summary dd{margin:var(--space-1) 0 0;word-break:break-all;}
+.report-frame{width:100%;height:min(75vh,46rem);border:1px solid var(--border);
+ border-radius:var(--radius-md);background:var(--surface);}
+ul.evidence{list-style:none;margin:0;padding:0;display:grid;gap:var(--space-5);
+ grid-template-columns:repeat(auto-fit,minmax(19rem,1fr));}
+ul.evidence>li{border:1px solid var(--border);border-radius:var(--radius-sm);
+ padding:var(--space-4) var(--space-5);background:var(--page);}
+.evidence-id{margin:0 0 var(--space-3);font-weight:600;}
+.evidence-id .hint{display:inline;margin-left:var(--space-3);}
+blockquote{margin:var(--space-3) 0;padding-left:var(--space-4);
+ border-left:3px solid var(--border);color:var(--muted);}
+.source code{word-break:break-all;}
+.run-bar{display:flex;align-items:center;gap:var(--space-4);flex-wrap:wrap;
+ margin:var(--space-5) 0 0;padding:var(--space-3) var(--space-5);
+ background:var(--surface);border:1px solid var(--border);
+ border-radius:var(--radius-md);font-size:var(--size-sm);color:var(--muted);}
+.run-bar code{font-weight:700;color:var(--accent);}
+.run-bar select{max-width:26rem;}
+.run-bar input{flex:1;min-width:12rem;}
+.run-bar a{color:var(--link);font-weight:700;}
+.run-bar button{padding:var(--space-2) var(--space-5);}
+.ask{align-items:baseline;}
+.ask-target{display:flex;align-items:baseline;gap:var(--space-3);flex-wrap:wrap;
+ flex:1;min-width:14rem;}
+.ask-target .hint{flex-basis:100%;}
+.ask-target input[disabled],.ask select[disabled]{opacity:var(--dim);}
+.tally-note{margin:var(--space-4) 0 0;color:var(--muted);font-size:var(--size-sm);}
+.focus-bar{display:flex;align-items:center;justify-content:space-between;
+ gap:var(--space-6);margin:var(--space-5) 0;
+ padding:var(--space-5) var(--space-6);background:var(--surface);
+ border:1px solid var(--border);border-left:.35rem solid var(--accent);
+ border-radius:var(--radius-md);}
+.focus-bar p{margin:var(--space-1) 0;}
+.focus-asset{color:var(--muted);font-weight:700;letter-spacing:.08em;
+ font-size:var(--size-xs);}
+.focus-bar h2{margin:var(--space-1) 0;font-size:var(--size-xl);}
+.focus-tally{margin-left:var(--space-2);color:var(--muted);font-size:var(--size-md);
+ font-weight:600;font-variant-numeric:tabular-nums;}
+.focus-detail{color:var(--muted);}
+.focus-action{flex:none;padding:var(--space-4) var(--space-5);}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+ gap:var(--space-3);margin:0 0 var(--space-5);}
+.metric small{display:block;color:var(--muted);font-size:var(--size-xs);}
+.metric strong{display:block;margin-top:var(--space-1);font-size:var(--size-lg);
+ font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.live-layout{display:grid;gap:var(--space-5);align-items:start;
+ grid-template-columns:minmax(0,1.7fr) minmax(20rem,.72fr);}
+.chat-panel{min-height:38rem;position:relative;}
+.secondary-grid{display:grid;grid-template-columns:1.1fr .8fr 1.2fr;
+ gap:var(--space-5);}
+.detail-panel summary{cursor:pointer;padding:var(--space-4) var(--space-5);
+ font-weight:700;color:var(--accent);}
+.detail-panel[open] summary{border-bottom:1px solid var(--border);}
+.detail-body{padding:var(--space-5);}
+.rules{display:flex;flex-direction:column;gap:var(--space-1);}
+.rule{display:flex;align-items:baseline;gap:var(--space-4);
+ border-left:4px solid var(--border);padding:var(--space-2) var(--space-4);
+ background:var(--page);font-size:var(--size-sm);}
+.rule time{min-width:4.2rem;font-weight:700;font-family:var(--font-mono);
+ font-variant-numeric:tabular-nums;}
+.rule.past{opacity:var(--dim);}
+.rule.current{border-color:var(--accent);background:var(--surface);font-weight:700;}
+.tally{display:grid;gap:var(--space-3);
+ grid-template-columns:repeat(auto-fit,minmax(5.5rem,1fr));}
+.tally div{padding:var(--space-4);border-radius:var(--radius-sm);
+ background:var(--page);text-align:center;}
+.tally-label{font-size:var(--size-xs);}
+.tally strong{display:block;font-size:var(--size-2xl);font-family:var(--font-mono);
+ font-variant-numeric:tabular-nums;}
+.agents{display:flex;flex-direction:column;gap:var(--space-2);}
+.agent{border:1px solid var(--border);border-radius:var(--radius-sm);
+ padding:var(--space-3) var(--space-4);background:var(--page);}
+.agent-head{display:grid;grid-template-columns:2.25rem 1fr auto;gap:var(--space-3);
+ align-items:center;}
+.avatar,.speaker-avatar{display:grid;place-items:center;
+ border-radius:var(--radius-pill);background:var(--surface);
+ border:1px solid var(--border);}
+.avatar{width:2.25rem;height:2.25rem;font-size:var(--size-lg);}
+.speaker-avatar{width:2rem;height:2rem;}
+.agent h3{margin:0;font-size:var(--size-sm);}
+.agent small,.speaker small{display:block;color:var(--muted);
+ font-size:var(--size-2xs);}
+.agent .stance{margin:0;font-size:var(--size-xs);font-weight:700;}
+.agent .status{grid-column:2/4;justify-self:start;background:var(--surface);
+ color:var(--accent);font-size:var(--size-2xs);
+ padding:var(--space-1) var(--space-2);border-radius:var(--radius-pill);}
+.feed{display:flex;flex-direction:column;gap:var(--space-4);max-height:48rem;
+ overflow:auto;padding-right:var(--space-1);}
+.feed-empty{color:var(--muted);}
+.message{width:min(52rem,96%);border:1px solid var(--border);
+ border-left:4px solid var(--accent);background:var(--page);
+ padding:var(--space-4) var(--space-5);
+ border-radius:var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg);
+ animation:bubble-in var(--motion-fast) ease-out;}
+.message-head{display:flex;justify-content:space-between;align-items:center;
+ gap:var(--space-4);}
+.speaker{display:flex;align-items:center;gap:var(--space-2);}
+.message time,.history-row time{color:var(--muted);font-size:var(--size-xs);
+ white-space:nowrap;font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.message p{margin:var(--space-2) 0;}
+.message-meta{display:flex;align-items:center;gap:var(--space-3);flex:none;}
+.message-reason strong,.stance-change strong{color:var(--muted);}
+.stance-change{font-size:var(--size-sm);}
+.stance-change.changed{color:var(--oppose);font-weight:700;}
+.badge{font-size:var(--size-2xs);font-weight:700;
+ padding:var(--space-1) var(--space-3);border-radius:var(--radius-pill);
+ background:var(--surface);border:1px solid var(--border);color:var(--muted);}
+.message-evidence{margin:var(--space-2) 0 0;color:var(--muted);
+ font-size:var(--size-2xs);}
+@keyframes bubble-in{from{opacity:0;transform:translateY(.5rem);}
+ to{opacity:1;transform:none;}}
+@media (prefers-reduced-motion:reduce){.message{animation:none;}}
+.feed-jump{position:absolute;left:50%;bottom:var(--space-5);
+ transform:translateX(-50%);padding:var(--space-3) var(--space-5);
+ border-radius:var(--radius-pill);}
+.history{list-style:none;margin:0;padding:0;}
+.history li{padding:var(--space-2) 0;border-bottom:1px solid var(--border);}
+.history-row{display:flex;align-items:center;gap:var(--space-3);
+ font-size:var(--size-sm);}
+.history-row time{min-width:4.2rem;}
+.history-seat{flex:1;min-width:0;}
+.history-row.changed{background:var(--page);border-left:3px solid var(--abstain);
+ padding-left:var(--space-3);}
+.history-flag{font-size:var(--size-2xs);font-weight:700;color:var(--abstain);
+ background:var(--surface);border:1px solid var(--border);
+ padding:var(--space-1) var(--space-3);border-radius:var(--radius-pill);}
+.notice.saved,.card.saved{border-color:var(--success);}
+.notice.refused,.card.refused{border-color:var(--danger);}
+.notice.locked{border-color:var(--border);}
+.notice.saved h2,.card.saved h2{color:var(--success);}
+.notice.refused h2,.card.refused h2{color:var(--danger);}
+.field-error{margin:0;color:var(--danger);font-size:var(--size-xs);font-weight:600;}
+.field input[aria-invalid="true"]{border-color:var(--danger);border-width:2px;}
+.hit-rate{margin:var(--space-1) 0 var(--space-4);font-size:var(--size-2xl);
+ font-weight:700;font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+.stat-row{display:flex;flex-wrap:wrap;gap:var(--space-4) var(--space-6);
+ margin:var(--space-4) 0 0;}
+.stat-row .stat{display:grid;gap:var(--space-1);}
+.stat-row dt{font-size:var(--size-sm);color:var(--muted);}
+.stat-row dd{margin:0;font-size:var(--size-lg);font-weight:700;
+ font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+fieldset.settings-group{padding:var(--space-4) var(--space-5) var(--space-5);
+ margin:0 0 var(--space-5);min-width:0;}
+fieldset.settings-group legend{padding:0 var(--space-2);font-weight:700;
+ font-size:var(--size-sm);font-family:var(--font-mono);}
+ul.timeline{list-style:none;margin:0;padding:0;display:grid;gap:var(--space-3);}
+ul.timeline>li{display:grid;gap:var(--space-1) var(--space-4);align-items:center;
+ grid-template-columns:minmax(9rem,auto) 1fr minmax(9rem,auto);}
+.timeline-name{font-family:var(--font-mono);font-size:var(--size-sm);}
+.timeline-bar{display:block;height:.75rem;border:1px solid var(--border);
+ border-radius:var(--radius-sm);background:var(--page);overflow:hidden;}
+.timeline-fill{display:block;height:100%;background:var(--accent);}
+.timeline-value{font-family:var(--font-mono);font-variant-numeric:tabular-nums;
+ font-size:var(--size-sm);color:var(--muted);}
+@media (max-width:70rem){.metrics{grid-template-columns:repeat(2,1fr);}
+ .live-layout,.secondary-grid{grid-template-columns:1fr;}
+ .focus-bar{align-items:flex-start;}
+ .focus-tally{display:block;margin-left:0;}}
+@media (max-width:38rem){.top,.header-top,.focus-bar{flex-direction:column;}
+ .top-actions,.page-tabs{width:100%;}
+ .page-tabs a,.page-tabs [role=link]{flex:1;text-align:center;
+  padding:var(--space-3) var(--space-1);}
+ .metrics,.tally{grid-template-columns:1fr;}
+ .focus-action{width:100%;text-align:center;}
+ ul.timeline>li{grid-template-columns:1fr;}}
+.ask:has(option[value=""]:checked) .ask-target{display:none;}.ask:has(option[value="crypto"]:checked) .ask-target:not([data-asset-class="crypto"]){display:none;}.ask:has(option[value="tw_stock"]:checked) .ask-target:not([data-asset-class="tw_stock"]){display:none;}.ask:has(option[value="us_stock"]:checked) .ask-target:not([data-asset-class="us_stock"]){display:none;}.ask:has(option[value="open"]:checked) .ask-target:not([data-asset-class="open"]){display:none;}.ask:not(:has(option[value=""]:checked)) .ask-prompt{display:none;}.stance-unknown{color:var(--muted);}.outcome-abstain{color:var(--abstain);}.outcome-danger{color:var(--danger);}.outcome-muted{color:var(--muted);}.outcome-success{color:var(--success);}.message.claude{border-left-color:var(--provider-claude);}.message.codex{border-left-color:var(--accent);}.message.gemini{border-left-color:var(--provider-gemini);}</style>
+<script src="/live.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要內容</a>
+<header class="top">
+<div><p class="eyebrow">HOYA BIT 即時研究流程</p>
+<h1>即時 Agent 辯論室</h1>
+<p id="question">分析 2330 過去 14 日市場狀態</p>
+<p class="run-state"><span id="live-state" data-state="finished">已完成</span>　<span id="live-round">第 1 輪</span><time id="live-elapsed" data-elapsed-ms="320000" hidden>05:20</time></p>
+</div>
+<div class="top-actions">
+<nav class="page-tabs" aria-label="主要頁面"><a href="/" aria-current="page">即時辯論</a><a href="/history">歷史與命中率</a><a href="/settings">設定</a><a href="/run/20260314T015926Z-2330-aaa111/report.html">市場報告</a><a href="/run/20260314T015926Z-2330-aaa111/debate.html">完整辯論</a></nav>
+<span class="connection" id="live-connection">連線中</span>
+<form class="stop-form" method="post" action="/shutdown">
+<button type="submit">關閉伺服器</button>
+</form>
+</div>
+</header>
+<main id="main" tabindex="-1">
+<form class="run-bar ask" method="post" action="/launch" aria-labelledby="ask-heading">
+<span id="ask-heading">提問並啟動七席</span>
+<label for="question">題目</label>
+<input id="question" name="question" type="text" value="" aria-describedby="question-hint" autocomplete="off" disabled>
+<label for="asset-class">資產類別</label>
+<select id="asset-class" name="asset_class" required disabled><option value="" selected>請選擇資產類別</option><option value="crypto">加密資產</option><option value="tw_stock">台股</option><option value="us_stock">美股</option><option value="open">開放題</option></select>
+<span class="ask-prompt hint">選定資產類別後，這裡會出現該類別的標的輸入框、格式提示與過往標的建議。</span>
+<span class="ask-target" data-asset-class="crypto"><label for="asset-crypto">加密資產標的</label><input id="asset-crypto" name="asset_crypto" type="text" value="" list="asset-list-crypto" aria-describedby="asset-hint-crypto" autocomplete="off" disabled><datalist id="asset-list-crypto"></datalist><span class="hint" id="asset-hint-crypto">幣種通常以交易所掛牌代號指稱（例如 BTC、ETH）。</span></span>
+<span class="ask-target" data-asset-class="tw_stock"><label for="asset-tw_stock">台股標的</label><input id="asset-tw_stock" name="asset_tw_stock" type="text" value="" list="asset-list-tw_stock" aria-describedby="asset-hint-tw_stock" autocomplete="off" disabled><datalist id="asset-list-tw_stock"><option value="2330"></option></datalist><span class="hint" id="asset-hint-tw_stock">台股證券的官方代號就是 TWSE／TPEx 掛牌的代號本身（例如 2330、0050、006208），常見為數字，部分商品（例如槓桿、反向、權證等）帶字母尾碼。</span></span>
+<span class="ask-target" data-asset-class="us_stock"><label for="asset-us_stock">美股標的</label><input id="asset-us_stock" name="asset_us_stock" type="text" value="" list="asset-list-us_stock" aria-describedby="asset-hint-us_stock" autocomplete="off" disabled><datalist id="asset-list-us_stock"></datalist><span class="hint" id="asset-hint-us_stock">美股代號常見為 1 到 5 個英文字母，部分商品另帶分隔符號與後綴。</span></span>
+<span class="ask-target" data-asset-class="open"><label for="asset-open">開放題標的</label><input id="asset-open" name="asset_open" type="text" value="" list="asset-list-open" aria-describedby="asset-hint-open" autocomplete="off" disabled><datalist id="asset-list-open"></datalist><span class="hint" id="asset-hint-open">開放題沒有市場慣例可循；填你要追蹤的標的代號，系統不會為它套用任何市場的交易時段或來源優先序。</span></span>
+<button type="submit" disabled>送出並啟動</button>
+<span id="ask-busy">目前有一個由本頁啟動的 run 還在進行，結束後才能再送出下一題。</span>
+<span id="question-hint">送出後會在背景啟動一次完整的七席研究，本頁只負責啟動與觀看。同一類別要分析多個標的時，以逗號分隔。</span>
+</form>
+<div class="run-bar">
+<span>目前 run：<code>20260314T015926Z-2330-aaa111</code></span>
+<label for="run-picker">歷史 run</label>
+<select id="run-picker" name="run" aria-label="回看歷史 run">
+<option value="">選擇要回看的 run…</option><option value="20260314T015926Z-2330-aaa111" selected>分析 2330 過去 14 日市場狀態｜有報告</option>
+</select>
+<a href="/live">回到目前 run</a>
+</div>
+<section class="focus-bar" aria-labelledby="focus-headline">
+<div>
+<p class="focus-asset" id="focus-asset">2330</p>
+<h2><span id="focus-headline">已達共識：偏多</span><span class="focus-tally" id="focus-tally">偏多 6｜偏空 1｜方向不明 0</span></h2>
+<p class="focus-detail" id="focus-detail"><span class="light">🟡 黃燈</span></p>
+<div id="live-outcome"><p class="focus-detail">燈號 <span class="light">🟡 黃燈</span>　達成共識　採納立場 偏多</p><p><a href="/run/20260314T015926Z-2330-aaa111">開啟這一場的 run 詳情</a></p></div>
+</div>
+<a class="focus-action" id="focus-action" href="#rules-detail">共識門檻降為 5 票</a>
+</section>
+<section class="metrics" aria-label="流程計時與門檻"><div class="metric"><small>十五分鐘剩餘時間</small><strong id="live-total-remaining" data-countdown-from="900000">09:40</strong></div><div class="metric"><small>報告期限剩餘時間</small><strong id="live-report-remaining" data-countdown-from="780000">07:40</strong></div><div class="metric"><small>目前階段</small><strong id="live-phase">已完成</strong></div><div class="metric"><small>目前共識門檻</small><strong id="live-threshold">6 票</strong></div></section>
+<div class="live-layout">
+<section class="panel chat-panel" aria-labelledby="live-feed-heading">
+<p class="eyebrow">現在正在發生</p>
+<h2 id="live-feed-heading">公開辯論直播</h2>
+<div class="feed" id="live-feed" data-cursor="20260314T015926Z-2330-aaa111@57817" role="log" aria-live="polite" aria-relevant="additions" aria-label="辯論聊天室" tabindex="0"><article class="message codex" data-seq="0"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📈</span><div><strong>Codex・圖表偵探</strong><small>Agent 1｜圖表偵探</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+04:30</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="stance-change"><strong>是否變更立場：</strong>首次表態</p><p class="message-evidence"><strong>引用證據：</strong>spot-technical-01</p></article><article class="message codex" data-seq="1"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">⚙️</span><div><strong>Codex・籌碼雷達</strong><small>Agent 2｜籌碼雷達</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+04:30</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="stance-change"><strong>是否變更立場：</strong>首次表態</p><p class="message-evidence"><strong>引用證據：</strong>derivatives-01</p></article><article class="message claude" data-seq="2"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">⛓️</span><div><strong>Claude・資金流獵人</strong><small>Agent 3｜資金流獵人</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+04:30</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="stance-change"><strong>是否變更立場：</strong>首次表態</p><p class="message-evidence"><strong>引用證據：</strong>onchain-01</p></article><article class="message claude" data-seq="3"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📣</span><div><strong>Claude・官方哨兵</strong><small>Agent 4｜官方哨兵</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+04:30</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="stance-change"><strong>是否變更立場：</strong>首次表態</p><p class="message-evidence"><strong>引用證據：</strong>official-events-01</p></article><article class="message codex" data-seq="4"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📰</span><div><strong>Codex・新聞探員</strong><small>Agent 5｜新聞探員</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+04:30</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="stance-change"><strong>是否變更立場：</strong>首次表態</p><p class="message-evidence"><strong>引用證據：</strong>news-01</p></article><article class="message claude" data-seq="5"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🌐</span><div><strong>Claude・社群觀察員</strong><small>Agent 6｜社群觀察員</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+04:30</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="stance-change"><strong>是否變更立場：</strong>首次表態</p><p class="message-evidence"><strong>引用證據：</strong>social-macro-01</p></article><article class="message gemini" data-seq="6"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+04:30</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="stance-change"><strong>是否變更立場：</strong>首次表態</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message codex" data-seq="7"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📈</span><div><strong>Codex・圖表偵探</strong><small>Agent 1｜圖表偵探</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 counter-evidence 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>spot-technical-01</p></article><article class="message codex" data-seq="8"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">⚙️</span><div><strong>Codex・籌碼雷達</strong><small>Agent 2｜籌碼雷達</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 counter-evidence 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>derivatives-01</p></article><article class="message claude" data-seq="9"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">⛓️</span><div><strong>Claude・資金流獵人</strong><small>Agent 3｜資金流獵人</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 counter-evidence 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>onchain-01</p></article><article class="message claude" data-seq="10"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📣</span><div><strong>Claude・官方哨兵</strong><small>Agent 4｜官方哨兵</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 counter-evidence 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>official-events-01</p></article><article class="message codex" data-seq="11"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📰</span><div><strong>Codex・新聞探員</strong><small>Agent 5｜新聞探員</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 counter-evidence 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>news-01</p></article><article class="message claude" data-seq="12"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🌐</span><div><strong>Claude・社群觀察員</strong><small>Agent 6｜社群觀察員</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 counter-evidence 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>social-macro-01</p></article><article class="message gemini" data-seq="13"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 spot-technical 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message gemini" data-seq="14"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 derivatives 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message gemini" data-seq="15"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 onchain 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message gemini" data-seq="16"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 official-events 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message gemini" data-seq="17"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 news 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message gemini" data-seq="18"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席以已引用的證據反駁 social-macro 的公開立場。</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message codex" data-seq="19"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📈</span><div><strong>Codex・圖表偵探</strong><small>Agent 1｜圖表偵探</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席回應反方挑戰並維持原立場。</p><p class="message-evidence"><strong>引用證據：</strong>spot-technical-01</p></article><article class="message codex" data-seq="20"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">⚙️</span><div><strong>Codex・籌碼雷達</strong><small>Agent 2｜籌碼雷達</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席回應反方挑戰並維持原立場。</p><p class="message-evidence"><strong>引用證據：</strong>derivatives-01</p></article><article class="message claude" data-seq="21"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">⛓️</span><div><strong>Claude・資金流獵人</strong><small>Agent 3｜資金流獵人</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席回應反方挑戰並維持原立場。</p><p class="message-evidence"><strong>引用證據：</strong>onchain-01</p></article><article class="message claude" data-seq="22"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📣</span><div><strong>Claude・官方哨兵</strong><small>Agent 4｜官方哨兵</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席回應反方挑戰並維持原立場。</p><p class="message-evidence"><strong>引用證據：</strong>official-events-01</p></article><article class="message codex" data-seq="23"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📰</span><div><strong>Codex・新聞探員</strong><small>Agent 5｜新聞探員</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席回應反方挑戰並維持原立場。</p><p class="message-evidence"><strong>引用證據：</strong>news-01</p></article><article class="message claude" data-seq="24"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🌐</span><div><strong>Claude・社群觀察員</strong><small>Agent 6｜社群觀察員</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席回應反方挑戰並維持原立場。</p><p class="message-evidence"><strong>引用證據：</strong>social-macro-01</p></article><article class="message gemini" data-seq="25"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席回應反方挑戰並維持原立場。</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message gemini" data-seq="26"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🔎</span><div><strong>Gemini・基本面研究員</strong><small>Agent 7｜基本面研究員</small></div></div><div class="message-meta"><span class="badge stance-oppose">偏空</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="message-evidence"><strong>引用證據：</strong>counter-evidence-01</p></article><article class="message codex" data-seq="27"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📈</span><div><strong>Codex・圖表偵探</strong><small>Agent 1｜圖表偵探</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="message-evidence"><strong>引用證據：</strong>spot-technical-01</p></article><article class="message codex" data-seq="28"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">⚙️</span><div><strong>Codex・籌碼雷達</strong><small>Agent 2｜籌碼雷達</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="message-evidence"><strong>引用證據：</strong>derivatives-01</p></article><article class="message claude" data-seq="29"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">⛓️</span><div><strong>Claude・資金流獵人</strong><small>Agent 3｜資金流獵人</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="message-evidence"><strong>引用證據：</strong>onchain-01</p></article><article class="message claude" data-seq="30"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📣</span><div><strong>Claude・官方哨兵</strong><small>Agent 4｜官方哨兵</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="message-evidence"><strong>引用證據：</strong>official-events-01</p></article><article class="message codex" data-seq="31"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">📰</span><div><strong>Codex・新聞探員</strong><small>Agent 5｜新聞探員</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="message-evidence"><strong>引用證據：</strong>news-01</p></article><article class="message claude" data-seq="32"><div class="message-head"><div class="speaker"><span class="speaker-avatar" aria-hidden="true">🌐</span><div><strong>Claude・社群觀察員</strong><small>Agent 6｜社群觀察員</small></div></div><div class="message-meta"><span class="badge stance-affirm">偏多</span><time>T+05:20</time></div></div><p class="message-reason"><strong>判斷／挑戰理由：</strong>本席依據已引用的證據說明目前立場。</p><p class="message-evidence"><strong>引用證據：</strong>social-macro-01</p></article></div>
+<button class="feed-jump" id="feed-jump" type="button" hidden>有新發言 ↓</button>
+</section>
+<aside>
+<section class="panel" aria-labelledby="live-tally-heading">
+<h2 id="live-tally-heading">即時票數</h2>
+<div class="tally" id="live-tally"><div class="stance-affirm"><span class="tally-label">偏多</span><strong>6</strong></div><div class="stance-oppose"><span class="tally-label">偏空</span><strong>1</strong></div><div class="stance-abstain"><span class="tally-label">方向不明</span><strong>0</strong></div></div>
+<p class="tally-note" id="tally-note"></p>
+</section>
+<section class="panel" aria-labelledby="live-seats-heading">
+<h2 id="live-seats-heading">七席研究 Agent</h2>
+<div class="agents" id="live-seats"><article class="agent codex" data-seat-id="spot-technical"><div class="agent-head"><span class="avatar" aria-hidden="true">📈</span><div><h3>Codex・圖表偵探</h3><small>Agent 1｜圖表偵探</small></div><p class="stance stance-affirm">偏多</p><span class="status">最終投票</span></div></article><article class="agent codex" data-seat-id="derivatives"><div class="agent-head"><span class="avatar" aria-hidden="true">⚙️</span><div><h3>Codex・籌碼雷達</h3><small>Agent 2｜籌碼雷達</small></div><p class="stance stance-affirm">偏多</p><span class="status">最終投票</span></div></article><article class="agent claude" data-seat-id="onchain"><div class="agent-head"><span class="avatar" aria-hidden="true">⛓️</span><div><h3>Claude・資金流獵人</h3><small>Agent 3｜資金流獵人</small></div><p class="stance stance-affirm">偏多</p><span class="status">最終投票</span></div></article><article class="agent claude" data-seat-id="official-events"><div class="agent-head"><span class="avatar" aria-hidden="true">📣</span><div><h3>Claude・官方哨兵</h3><small>Agent 4｜官方哨兵</small></div><p class="stance stance-affirm">偏多</p><span class="status">最終投票</span></div></article><article class="agent codex" data-seat-id="news"><div class="agent-head"><span class="avatar" aria-hidden="true">📰</span><div><h3>Codex・新聞探員</h3><small>Agent 5｜新聞探員</small></div><p class="stance stance-affirm">偏多</p><span class="status">最終投票</span></div></article><article class="agent claude" data-seat-id="social-macro"><div class="agent-head"><span class="avatar" aria-hidden="true">🌐</span><div><h3>Claude・社群觀察員</h3><small>Agent 6｜社群觀察員</small></div><p class="stance stance-affirm">偏多</p><span class="status">最終投票</span></div></article><article class="agent gemini" data-seat-id="counter-evidence"><div class="agent-head"><span class="avatar" aria-hidden="true">🔎</span><div><h3>Gemini・基本面研究員</h3><small>Agent 7｜基本面研究員</small></div><p class="stance stance-oppose">偏空</p><span class="status">最終投票</span></div></article></div>
+</section>
+</aside>
+</div>
+<div class="secondary-grid">
+<details class="detail-panel" id="rules-detail">
+<summary>規則與時間線</summary>
+<div class="detail-body"><div class="rules"><div class="rule past"><time>T+00:00</time><span>開始多方蒐證</span></div><div class="rule past"><time>T+01:30</time><span>允許可信二手來源</span></div><div class="rule current"><time>T+04:00</time><span>封存證據並開始辯論（門檻 6 票）</span></div><div class="rule"><time>T+08:00</time><span>共識門檻降為 5 票（門檻 5 票）</span></div><div class="rule"><time>T+10:00</time><span>強制結算並以 4 票定案（門檻 4 票）</span></div><div class="rule"><time>T+13:00</time><span>正式報告期限</span></div><div class="rule"><time>T+15:00</time><span>人工閱讀準備結束</span></div></div></div>
+</details>
+<details class="detail-panel" id="vote-history-detail">
+<summary>票數變化</summary>
+<div class="detail-body"><ol class="history"><li class="history-row"><time>T+04:30</time><span class="history-seat">圖表偵探</span><span class="badge stance-affirm">首次表態：偏多</span></li><li class="history-row"><time>T+04:30</time><span class="history-seat">籌碼雷達</span><span class="badge stance-affirm">首次表態：偏多</span></li><li class="history-row"><time>T+04:30</time><span class="history-seat">資金流獵人</span><span class="badge stance-affirm">首次表態：偏多</span></li><li class="history-row"><time>T+04:30</time><span class="history-seat">官方哨兵</span><span class="badge stance-affirm">首次表態：偏多</span></li><li class="history-row"><time>T+04:30</time><span class="history-seat">新聞探員</span><span class="badge stance-affirm">首次表態：偏多</span></li><li class="history-row"><time>T+04:30</time><span class="history-seat">社群觀察員</span><span class="badge stance-affirm">首次表態：偏多</span></li><li class="history-row"><time>T+04:30</time><span class="history-seat">基本面研究員</span><span class="badge stance-oppose">首次表態：偏空</span></li></ol></div>
+</details>
+<details class="detail-panel" id="evidence-panel">
+<summary>可驗證證據</summary>
+<div class="detail-body"><ul class="evidence"><li><p class="evidence-id">spot-technical-01<span class="hint">spot-technical</span></p><p>本席提交的測試證據陳述，僅用於驗證流程。</p><blockquote>close 68,420</blockquote><p class="hint">來源等級 1・example-source:spot-technical</p><p class="source"><code>https://example.invalid/spot-technical/1</code></p></li><li><p class="evidence-id">derivatives-01<span class="hint">derivatives</span></p><p>本席提交的測試證據陳述，僅用於驗證流程。</p><blockquote>close 68,420</blockquote><p class="hint">來源等級 1・example-source:derivatives</p><p class="source"><code>https://example.invalid/derivatives/1</code></p></li><li><p class="evidence-id">onchain-01<span class="hint">onchain</span></p><p>本席提交的測試證據陳述，僅用於驗證流程。</p><blockquote>close 68,420</blockquote><p class="hint">來源等級 1・example-source:onchain</p><p class="source"><code>https://example.invalid/onchain/1</code></p></li><li><p class="evidence-id">official-events-01<span class="hint">official-events</span></p><p>本席提交的測試證據陳述，僅用於驗證流程。</p><blockquote>close 68,420</blockquote><p class="hint">來源等級 1・example-source:official-events</p><p class="source"><code>https://example.invalid/official-events/1</code></p></li><li><p class="evidence-id">news-01<span class="hint">news</span></p><p>本席提交的測試證據陳述，僅用於驗證流程。</p><blockquote>close 68,420</blockquote><p class="hint">來源等級 2・example-source:news</p><p class="source"><code>https://example.invalid/news/1</code></p></li><li><p class="evidence-id">social-macro-01<span class="hint">social-macro</span></p><p>本席提交的測試證據陳述，僅用於驗證流程。</p><blockquote>close 68,420</blockquote><p class="hint">來源等級 2・example-source:social-macro</p><p class="source"><code>https://example.invalid/social-macro/1</code></p></li><li><p class="evidence-id">counter-evidence-01<span class="hint">counter-evidence</span></p><p>本席提交的測試證據陳述，僅用於驗證流程。</p><blockquote>close 68,420</blockquote><p class="hint">來源等級 2・example-source:counter-evidence</p><p class="source"><code>https://example.invalid/counter-evidence/1</code></p></li></ul></div>
+</details>
+</div>
+</main>
+<footer class="site-footer"><p>本頁只讀取 run artifact，不會修改任何一份紀錄。</p></footer>
+</body>
+</html>

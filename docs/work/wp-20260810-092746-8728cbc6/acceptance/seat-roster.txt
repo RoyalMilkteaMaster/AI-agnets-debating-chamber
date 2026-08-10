@@ -1,0 +1,60 @@
+Ticket 09 驗收條件 5：席位定案名、白話說明與 roster fail-closed
+========================================================================
+
+一、席位卡定案名與 blurb（roster 為唯一權威，這裡逐席讀渲染後的字）
+
+  tw_stock（套組：stock）
+    spot-technical     技術面分析師           名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看線圖：價量、均線、支撐壓力，判斷走勢強弱與關鍵價位
+    derivatives        籌碼面分析師           名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看期貨與選擇權部位、融資融券：判斷大戶與散戶各押哪一邊
+    onchain            法人動向分析師          名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看法人與大股東的錢往哪走：買賣超、持股變化、資金流向
+    official-events    官方公告哨兵           名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：盯官方公告與行事曆：重大訊息、財報法說日程、主管機關動作
+    news               新聞探員             名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：查證具名媒體報導、整理事件時間線，過濾未經證實的消息
+    social-macro       輿情與大盤觀察員         名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看散戶討論風向與大環境：論壇情緒、宏觀消息、大盤與產業連動
+    counter-evidence   基本面分析師           名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看公司本身體質：營收財報、估值比較、產業供需
+    每一席恰好只出現這一套的名稱（沒有混套）：PASS
+    離線報告席名與 webapp 逐席一致：PASS
+
+  crypto（套組：crypto）
+    spot-technical     技術面分析師           名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看線圖：價量、均線、支撐壓力，判斷走勢強弱與關鍵價位
+    derivatives        合約槓桿分析師          名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看合約市場的槓桿狀態：多空部位、資金費率、清算風險
+    onchain            鏈上資金追蹤師          名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看鏈上的錢往哪走：巨鯨動向、交易所進出、籌碼供給
+    official-events    官方公告哨兵           名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：盯官方消息：項目方公告、監管動作、重大事件時程
+    news               新聞探員             名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：查證具名媒體報導、整理事件時間線，過濾未經證實的消息
+    social-macro       輿情與幣市社群觀察員       名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看社群風向與大環境：討論熱度、宏觀消息、BTC 連動
+    counter-evidence   項目體質分析師          名稱在席位卡 PASS｜blurb 在席位卡 PASS
+      blurb：看項目本身體質：鎖倉量、協議收入、代幣解鎖時程
+    每一席恰好只出現這一套的名稱（沒有混套）：PASS
+    離線報告席名與 webapp 逐席一致：PASS
+
+二、美股與台股共用同一套（Spec R-005：stock 套為台股與美股共用）
+  seat_display_names(us_stock) == seat_display_names(tw_stock)：PASS
+    spot-technical     技術面分析師
+    derivatives        籌碼面分析師
+    onchain            法人動向分析師
+    official-events    官方公告哨兵
+    news               新聞探員
+    social-macro       輿情與大盤觀察員
+    counter-evidence   基本面分析師
+
+三、roster fail-closed（改測試副本，config/agent_roster.json 不動）
+  缺 crypto 套組          載入失敗 PASS
+    錯誤訊息：席位 spot-technical 缺少 crypto 套組設定。
+  stock 套缺 blurb       載入失敗 PASS
+    錯誤訊息：席位 onchain 的 stock 套組缺少 blurb。
+  crypto 套 blurb 是空白   載入失敗 PASS
+    錯誤訊息：席位 news 的 crypto 套組缺少 blurb。
+  鑑別力                  現行 roster 照樣載得進來（7 席）PASS
+  roster_version：3.0.0

@@ -85,8 +85,8 @@ python3 -m hoya_market_agents submit-seat --run-id <run_id> \
 
 | seats | provider | model |
 | --- | --- | --- |
-| core, spot-technical, derivatives, onchain | Codex | `gpt-5.6-sol` |
-| official-events, news, social-macro | Claude | `opus` |
+| core, spot-technical, derivatives, news | Codex | `gpt-5.6-sol` |
+| onchain, official-events, social-macro | Claude | `opus` |
 | counter-evidence | Antigravity | `gemini-3.1-pro-high` |
 
 - Roster 凍結於 `config/agent_roster.json`；不得替換模型、席位或席數。

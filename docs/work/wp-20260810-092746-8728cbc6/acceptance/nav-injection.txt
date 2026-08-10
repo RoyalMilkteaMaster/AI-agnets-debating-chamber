@@ -1,0 +1,59 @@
+Ticket 09 驗收條件 3：離線兩頁經伺服器瀏覽的導覽注入
+========================================================================
+
+tw_stock（run_id=20260314T015926Z-2330-aaa111）
+  report.html          回應狀態 200                                     PASS
+  report.html          站內導覽存在且是五個                                   PASS
+  report.html          四個站內連結可回站內                                   PASS
+  report.html          兩個報告分頁指向這一趟 run 自己的檔案                        PASS
+  report.html          離線頁自己的兩分頁導覽仍在                                PASS
+  report.html          注入區零 script                                  PASS
+  report.html          磁碟檔案雜湊不變                                     PASS
+  report.html          磁碟檔案位元組數不變                                   PASS
+  report.html          送出的位元組＝原檔在 <body> 之後插入一段，原檔位元組一個不動           PASS
+    磁碟 sha256 前：76ab9d1f5a013709｜後：76ab9d1f5a013709｜位元組 27665 → 27665
+    站內導覽指向：{'即時辯論': '/', '歷史與命中率': '/history', '市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html', '設定': '/settings'}
+  debate.html          回應狀態 200                                     PASS
+  debate.html          站內導覽存在且是五個                                   PASS
+  debate.html          四個站內連結可回站內                                   PASS
+  debate.html          兩個報告分頁指向這一趟 run 自己的檔案                        PASS
+  debate.html          離線頁自己的兩分頁導覽仍在                                PASS
+  debate.html          注入區零 script                                  PASS
+  debate.html          磁碟檔案雜湊不變                                     PASS
+  debate.html          磁碟檔案位元組數不變                                   PASS
+  debate.html          送出的位元組＝原檔在 <body> 之後插入一段，原檔位元組一個不動           PASS
+    磁碟 sha256 前：6e8d3e94c71d1c47｜後：6e8d3e94c71d1c47｜位元組 36703 → 36703
+    站內導覽指向：{'即時辯論': '/', '歷史與命中率': '/history', '市場報告': '/run/20260314T015926Z-2330-aaa111/report.html', '完整辯論': '/run/20260314T015926Z-2330-aaa111/debate.html', '設定': '/settings'}
+
+crypto（run_id=20260315T015926Z-btc-bbb222）
+  report.html          回應狀態 200                                     PASS
+  report.html          站內導覽存在且是五個                                   PASS
+  report.html          四個站內連結可回站內                                   PASS
+  report.html          兩個報告分頁指向這一趟 run 自己的檔案                        PASS
+  report.html          離線頁自己的兩分頁導覽仍在                                PASS
+  report.html          注入區零 script                                  PASS
+  report.html          磁碟檔案雜湊不變                                     PASS
+  report.html          磁碟檔案位元組數不變                                   PASS
+  report.html          送出的位元組＝原檔在 <body> 之後插入一段，原檔位元組一個不動           PASS
+    磁碟 sha256 前：870e38809c3383e1｜後：870e38809c3383e1｜位元組 27700 → 27700
+    站內導覽指向：{'即時辯論': '/', '歷史與命中率': '/history', '市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html', '設定': '/settings'}
+  debate.html          回應狀態 200                                     PASS
+  debate.html          站內導覽存在且是五個                                   PASS
+  debate.html          四個站內連結可回站內                                   PASS
+  debate.html          兩個報告分頁指向這一趟 run 自己的檔案                        PASS
+  debate.html          離線頁自己的兩分頁導覽仍在                                PASS
+  debate.html          注入區零 script                                  PASS
+  debate.html          磁碟檔案雜湊不變                                     PASS
+  debate.html          磁碟檔案位元組數不變                                   PASS
+  debate.html          送出的位元組＝原檔在 <body> 之後插入一段，原檔位元組一個不動           PASS
+    磁碟 sha256 前：cf9b9a42cf7db3d1｜後：cf9b9a42cf7db3d1｜位元組 36790 → 36790
+    站內導覽指向：{'即時辯論': '/', '歷史與命中率': '/history', '市場報告': '/run/20260315T015926Z-btc-bbb222/report.html', '完整辯論': '/run/20260315T015926Z-btc-bbb222/debate.html', '設定': '/settings'}
+
+無插入點的 HTML 原樣送出（artifact_with_site_nav 的略過路徑）
+  完全沒有 <body>              原樣送出 PASS
+  只有註解裡的 <body>            原樣送出 PASS
+  註解沒有關閉                   原樣送出 PASS
+  屬性沒有收尾                   原樣送出 PASS
+  鑑別力                      有插入點時才插入 PASS
+
+預覽面板（Sec-Fetch-Dest: iframe）不加站內導覽：PASS

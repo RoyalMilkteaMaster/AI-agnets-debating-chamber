@@ -8,14 +8,26 @@ from pathlib import Path
 
 from hoya_market_agents.claude_adapter import CLAUDE_SEAT_SESSIONS
 from hoya_market_agents.codex_bridge import CODEX_SEAT_IDS
+from hoya_market_agents.seats import seat_identities
 from hoya_market_agents.system_preflight import (
     REQUIRED_CHECK_IDS,
+    PreflightError,
     build_competition_authorization,
     build_preflight_manifest,
     load_frozen_roster,
     write_competition_authorization,
     write_preflight_manifest,
 )
+
+
+def seat_policy(seat):
+    """The four frozen provider-policy fields of one roster seat."""
+    return (
+        seat["provider"],
+        seat["target_model"],
+        seat["allowed_tools"],
+        seat["required_skills"],
+    )
 
 
 def passing_checks():
@@ -64,6 +76,44 @@ class FrozenRosterTest(unittest.TestCase):
             all(seat["required_skills"] == ["research"] for seat in roster["seats"])
         )
 
+    def test_the_two_swapped_seats_sit_in_their_new_provider_family(self):
+        """Spec R5：相似資訊面跨家族——資金流／鏈上獵人歸 claude，新聞探員歸 codex。
+
+        提供者換家族就換整組政策：模型與該家族的搜尋工具名稱都得跟著換，
+        否則賽前預檢會拿 codex 的工具名去要求一個 claude 席。
+        """
+        seats = {seat["seat_id"]: seat for seat in load_frozen_roster()["seats"]}
+
+        self.assertEqual(
+            ("claude", "opus", ["WebSearch", "WebFetch"], ["research"]),
+            seat_policy(seats["onchain"]),
+        )
+        self.assertEqual(
+            ("codex", "gpt-5.6-sol", ["web_search"], ["research"]),
+            seat_policy(seats["news"]),
+        )
+
+    def test_the_reader_facing_provider_family_follows_the_roster(self):
+        """對調後徽章仍說 Codex 的席位，等於對讀者說謊；roster 是唯一權威。
+
+        這條斷言住在 roster 測試而不是顯示測試：它要守的是「roster 改了、
+        顯示端的 provider 值沒跟著改」這個漂移，權威在這裡。
+        """
+        expected = {
+            seat["seat_id"]: (
+                "gemini" if seat["provider"] == "antigravity" else seat["provider"]
+            )
+            for seat in load_frozen_roster()["seats"]
+        }
+
+        self.assertEqual(
+            expected,
+            {
+                seat_id: identity.provider
+                for seat_id, identity in seat_identities().items()
+            },
+        )
+
     def test_roster_rejects_provider_or_tool_policy_drift(self):
         roster = load_frozen_roster()
         for mutation in ("provider", "tools", "skills"):
@@ -82,6 +132,89 @@ class FrozenRosterTest(unittest.TestCase):
 
                 with self.assertRaises(ValueError):
                     load_frozen_roster(path)
+
+    def test_the_frozen_roster_carries_every_seats_three_filled_profile_sets(self):
+        """賽前的 roster 也要有讀者看得到的那三套（Spec R-005）。
+
+        預檢凍結的是同一個檔案，所以「七席齊、三套齊、每套具 display_name／
+        focus／blurb」在這裡也必須成立——賽前才發現席位卡沒有名字就太晚了。
+        """
+        for seat in load_frozen_roster()["seats"]:
+            profiles = seat["profiles"]
+            self.assertEqual({"stock", "crypto", "open"}, set(profiles), seat["seat_id"])
+            for set_name, profile in profiles.items():
+                for field in ("display_name", "focus", "blurb"):
+                    self.assertTrue(
+                        profile.get(field), (seat["seat_id"], set_name, field)
+                    )
+
+    def test_roster_rejects_a_profile_set_that_lost_a_required_field(self):
+        """缺一句白話說明就不是可以出賽的 roster，而且錯誤要讀得懂。
+
+        欄位規則只有 ``seats`` 那一份（``load_roster``），這裡驗的是賽前預檢確實
+        走過它，而不是自己再抄一份判斷。
+        """
+        for field in ("display_name", "focus", "blurb"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                changed = deepcopy(load_frozen_roster())
+                del changed["seats"][5]["profiles"]["crypto"][field]
+                path = Path(temporary) / "roster.json"
+                path.write_text(json.dumps(changed, ensure_ascii=False), encoding="utf-8")
+
+                with self.assertRaises(ValueError) as caught:
+                    load_frozen_roster(path)
+                message = str(caught.exception)
+                self.assertIn("social-macro", message)
+                self.assertIn("crypto", message)
+                self.assertIn(field, message)
+
+    def test_the_roster_is_read_once_and_that_read_is_the_one_verified(self):
+        """Reviewer B F-B05-2 的回歸測試。
+
+        預檢讀一份、驗證另一份的話，兩次讀取之間被換掉的檔案就能矇混過關：驗的是
+        完整的那一份，回傳並寫進 manifest 的卻是缺欄位的那一份。所以這裡同時釘住
+        兩件事——**只讀一次**，而且被驗的就是被回傳的那一份。
+        """
+        complete = load_frozen_roster()
+        incomplete = deepcopy(complete)
+        for seat in incomplete["seats"]:
+            for set_name in ("stock", "crypto", "open"):
+                seat["profiles"][set_name].pop("blurb", None)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "agent_roster.json"
+            path.write_text("{}", encoding="utf-8")
+            reads = []
+            original_read_text = Path.read_text
+
+            def counting_read_text(self, *args, **kwargs):
+                if self == path:
+                    reads.append(len(reads) + 1)
+                    # 第一次給缺 blurb 的，之後給完整的：只要多讀一次就會被放行。
+                    served = incomplete if len(reads) == 1 else complete
+                    return json.dumps(served, ensure_ascii=False)
+                return original_read_text(self, *args, **kwargs)
+
+            Path.read_text = counting_read_text
+            try:
+                with self.assertRaises(PreflightError) as caught:
+                    load_frozen_roster(path)
+            finally:
+                Path.read_text = original_read_text
+
+        self.assertEqual([1], reads, "roster 只能讀一次")
+        self.assertIn("blurb", str(caught.exception))
+
+    def test_roster_rejects_a_seat_that_lost_its_profile_sets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            changed = deepcopy(load_frozen_roster())
+            del changed["seats"][0]["profiles"]
+            path = Path(temporary) / "roster.json"
+            path.write_text(json.dumps(changed, ensure_ascii=False), encoding="utf-8")
+
+            with self.assertRaises(ValueError) as caught:
+                load_frozen_roster(path)
+            self.assertIn("spot-technical", str(caught.exception))
 
     def test_wsl_path_translation_is_a_required_system_check(self):
         self.assertIn("path_translation", REQUIRED_CHECK_IDS)

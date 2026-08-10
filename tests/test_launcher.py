@@ -14,6 +14,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.fakes import FixedClock, ScriptedTokenSource
 
@@ -27,6 +28,7 @@ from hoya_market_agents.launcher import (
     PROPOSITION_SCHEMA,
     PROPOSITION_TIMEOUT_SECONDS,
     default_proposition_adapter,
+    ready_certificate_problem,
     run_launch,
 )
 from hoya_market_agents.prompt_builder import build_seat_prompt
@@ -38,7 +40,16 @@ from hoya_market_agents.system_preflight import write_ready_certificate
 
 QUESTION = "BTC 過去 14 日的市場狀態如何？"
 OPEN_QUESTION = "若美國通過比特幣戰略儲備法案，BTC 與市場情緒會如何反應？"
-UNSUPPORTED_QUESTION = "幫我預測下週樂透號碼"
+TW_STOCK_QUESTION = "幫我分析 2330 未來七天會不會漲"
+US_STOCK_QUESTION = "NVDA 這檔美股未來七天股價會不會漲"
+UNLISTED_COIN_QUESTION = "DOGE 幣價未來七天會不會漲"
+NO_ASSET_QUESTION = "聯準會九月會不會降息"
+# 命題撰寫升為所有題型的主路徑，所以每一次 launch 都會呼叫它一次；測試一律注入。
+DEFAULT_PROPOSITION = {
+    "proposition": "本題標的在指定期間內將上漲。",
+    "affirmative_means": "認為會漲。",
+    "negative_means": "認為不會漲。",
+}
 # One hour before FixedClock's start, so the freshness advisory stays silent.
 CERTIFICATE_STAMP = "2026-03-14T00:59:26Z"
 STALE_CERTIFICATE_STAMP = "2026-03-13T00:59:26Z"
@@ -227,6 +238,9 @@ class LauncherTest(unittest.TestCase):
         self.err = Stream()
         self.runner = None
         self.factory_options = {}
+        self.proposition_adapter = FakePropositionAdapter(DEFAULT_PROPOSITION)
+        # 席位交回來的證據卡標的：預設五幣時代的 BTC，開放標的題各自指定。
+        self.card_asset = "BTC"
 
     # ---------- fixtures ----------
 
@@ -250,7 +264,14 @@ class LauncherTest(unittest.TestCase):
     def certificate_path(self):
         return self.data_root / "preflight" / "latest-ready.json"
 
+    def default_cards_for(self, run_id, attempt):
+        return [
+            evidence_card(run_id, attempt.seat_id, attempt.attempt_id, self.card_asset)
+        ]
+
     def runner_factory(self, queue_seats=LOCAL_SEAT_IDS, inbox_seats=(), cards_for=None):
+        cards_for = cards_for or self.default_cards_for
+
         def factory(*, run, data_root, results_queue, **options):
             self.factory_options = options
             self.runner = FakeSeatRunner(
@@ -267,12 +288,16 @@ class LauncherTest(unittest.TestCase):
             "runner_factory": self.runner_factory(),
             "live_starter": self.live_starter,
             "sleeper": self.sleeper,
+            "proposition_adapter": self.proposition_adapter,
             "out": self.out,
             "err": self.err,
             "phase": PHASE_RESEARCH,
         }
         options.update(overrides)
         return run_launch(question, self.data_root, **options)
+
+    def question_record(self):
+        return json.loads((self.run_dir() / "question.json").read_text(encoding="utf-8"))
 
     def handshake(self):
         return json.loads(self.out.lines[0])
@@ -295,10 +320,14 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(handshake["status"], "LAUNCHED")
         self.assertEqual(handshake["run_id"], "20260314T015926Z-btc-abc123")
         self.assertEqual(handshake["live_url"], LIVE_URL)
-        self.assertEqual(
-            handshake["run_dir"],
-            str(self.data_root / "runs" / handshake["run_id"]),
-        )
+        # ADR 0005：run 目錄按台北日期分層，名字是給人看的 HHMM-題目-hash。
+        # 注入時鐘停在 2026-03-14T01:59:26Z，台北時間是同日 09:59；結尾雜湊
+        # 由 `printf %s <run_id> | sha256sum | cut -c1-16` 取得。
+        run_dir = Path(handshake["run_dir"])
+        self.assertTrue(run_dir.is_dir())
+        self.assertEqual(self.data_root / "runs" / "2026-03-14", run_dir.parent)
+        self.assertTrue(run_dir.name.startswith("0959-"), run_dir.name)
+        self.assertTrue(run_dir.name.endswith("-ca3de1ec8607db5e"), run_dir.name)
         self.assertEqual(
             handshake["inbox_dir"],
             str(self.data_root / "inbox" / handshake["run_id"]),
@@ -339,7 +368,9 @@ class LauncherTest(unittest.TestCase):
 
         self.launch()
 
-        package = build_question_package(QUESTION)
+        package = build_question_package(QUESTION).with_proposition(
+            DEFAULT_PROPOSITION["proposition"]
+        )
         seats = {seat.seat_id: seat for seat in load_roster()}
         shared = build_seat_prompt(package, seats["news"], "research").shared_section
         for seat in self.handshake()["codex_seats"]:
@@ -383,20 +414,198 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(seal["elapsed_ms"], 270_000)
         self.assertEqual(seal["record_count"], len(LOCAL_SEAT_IDS))
 
-    # ---------- open proposition ----------
+    # ---------- open market intake ----------
 
-    def test_an_approved_question_type_never_calls_the_proposition_writer(self):
+    def test_every_question_type_gets_its_proposition_written(self):
+        """命題訂定是主路徑：核准題型也要拿到正方／反方詞彙。"""
         self.write_certificate()
-        adapter = FakePropositionAdapter()
 
-        self.launch(proposition_adapter=adapter)
+        self.launch()
 
-        self.assertEqual([], adapter.calls)
-        question = json.loads(
-            (self.run_dir() / "question.json").read_text(encoding="utf-8")
+        [call] = self.proposition_adapter.calls
+        self.assertFalse(call["allow_search"])
+        self.assertIn(QUESTION, call["prompt"])
+        self.assertIn("偏多", call["prompt"])
+        self.assertIn("偏空", call["prompt"])
+
+        question = self.question_record()
+        self.assertEqual("single_asset_market_state", question["question_type"])
+        self.assertEqual(DEFAULT_PROPOSITION["proposition"], question["proposition"])
+        self.assertEqual(
+            dict(DEFAULT_PROPOSITION, source="codex"), question["open_proposition"]
         )
-        self.assertIsNone(question["proposition"])
-        self.assertIsNone(question["open_proposition"])
+
+    def test_a_stated_subject_beats_the_questions_own_wording(self):
+        """A menu-driven caller states the run's subject; the text does not.
+
+        「台積電回購 50000 股…」 is a standard buyback question that the text
+        reader gets wrong — it names the share count 50000 as a Taiwan listing,
+        and the gateway then rejects every card about 2330. Stating the subject
+        removes the parser from that decision entirely, and the run binds to
+        2330 end to end: slug, ``question.json`` and the evidence gateway.
+        """
+        self.write_certificate()
+        buyback = "台積電回購 50000 股後股價會不會上漲？"
+        adapter = FakePropositionAdapter(
+            {
+                "proposition": "2330 未來七天股價將上漲。",
+                "affirmative_means": "認為 2330 未來七天會漲。",
+                "negative_means": "認為 2330 未來七天不會漲。",
+            }
+        )
+
+        self.card_asset = "2330"
+        code = self.launch(
+            question=buyback,
+            proposition_adapter=adapter,
+            assets=("2330",),
+            asset_class="tw_stock",
+        )
+
+        self.assertEqual(code, 0, self.err.text)
+        self.assertEqual("20260314T015926Z-2330-abc123", self.handshake()["run_id"])
+        question = self.question_record()
+        self.assertEqual(buyback, question["question"])
+        self.assertEqual(["2330"], question["assets"])
+        self.assertEqual("tw_stock", question["asset_class"])
+
+    def test_stating_no_subject_leaves_the_launch_reading_unchanged(self):
+        self.write_certificate()
+
+        code = self.launch(assets=None, asset_class=None)
+
+        self.assertEqual(code, 0, self.err.text)
+        self.assertEqual("20260314T015926Z-btc-abc123", self.handshake()["run_id"])
+        self.assertEqual(["BTC"], self.question_record()["assets"])
+
+    def test_a_stated_subject_that_cannot_describe_a_run_is_rejected(self):
+        """Intake refuses it, so no run directory is ever started.
+
+        Each of these used to get as far as building a run id. The long one
+        then failed at ``mkdir`` with a filesystem error and exit 1, after the
+        run already had a name; the set produced a different name in each
+        process.
+        """
+        self.write_certificate()
+
+        for stated in (
+            ("../etc/passwd",),
+            {"NVDA", "AAPL"},
+            ("NVDA", "nvda"),
+            ("A" * 10000,),
+            tuple("AB{:02d}".format(index) for index in range(100)),
+            "2330",
+            2330,
+        ):
+            with self.subTest(stated=type(stated).__name__):
+                code = self.launch(assets=stated)
+
+                self.assertEqual(2, code)
+                self.assertIn("啟動遭拒", self.err.text)
+                self.assertEqual([], sorted(p.name for p in self.runs_root().iterdir()))
+
+    def runs_root(self):
+        root = self.data_root / "runs"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def test_taiwan_listing_is_accepted_and_recorded_with_its_class(self):
+        self.write_certificate()
+        adapter = FakePropositionAdapter(
+            {
+                "proposition": "2330 未來七天股價將上漲。",
+                "affirmative_means": "認為 2330 未來七天會漲。",
+                "negative_means": "認為 2330 未來七天不會漲。",
+            }
+        )
+
+        self.card_asset = "2330"
+        code = self.launch(question=TW_STOCK_QUESTION, proposition_adapter=adapter)
+
+        self.assertEqual(code, 0, self.err.text)
+        self.assertEqual(sorted(self.sealed()["adopted_seat_ids"]), sorted(LOCAL_SEAT_IDS))
+        self.assertEqual("20260314T015926Z-2330-abc123", self.handshake()["run_id"])
+        question = self.question_record()
+        self.assertEqual(TW_STOCK_QUESTION, question["question"])
+        self.assertEqual("tw_stock", question["asset_class"])
+        self.assertEqual(["2330"], question["assets"])
+        self.assertEqual(7, question["period_days"])
+        self.assertEqual("2330 未來七天股價將上漲。", question["proposition"])
+        self.assertEqual(
+            {
+                "proposition": "2330 未來七天股價將上漲。",
+                "affirmative_means": "認為 2330 未來七天會漲。",
+                "negative_means": "認為 2330 未來七天不會漲。",
+                "source": "codex",
+            },
+            question["open_proposition"],
+        )
+
+    def test_us_listing_is_accepted_and_recorded_with_its_class(self):
+        self.write_certificate()
+
+        self.card_asset = "NVDA"
+        code = self.launch(question=US_STOCK_QUESTION)
+
+        self.assertEqual(code, 0, self.err.text)
+        self.assertEqual("20260314T015926Z-nvda-abc123", self.handshake()["run_id"])
+        question = self.question_record()
+        self.assertEqual("us_stock", question["asset_class"])
+        self.assertEqual(["NVDA"], question["assets"])
+
+    def test_share_class_listing_adopts_cards_spelled_the_other_way(self):
+        """BRK.B／brk-b 是同一檔股票；拼法不同不該讓整場零證據。"""
+        self.write_certificate()
+
+        self.card_asset = "brk-b"
+        code = self.launch(question="BRK.B 這檔美股未來七天股價會不會漲")
+
+        self.assertEqual(code, 0, self.err.text)
+        self.assertEqual("20260314T015926Z-brk-b-abc123", self.handshake()["run_id"])
+        self.assertEqual(sorted(self.sealed()["adopted_seat_ids"]), sorted(LOCAL_SEAT_IDS))
+        question = self.question_record()
+        self.assertEqual("us_stock", question["asset_class"])
+        self.assertEqual(["BRK.B"], question["assets"])
+
+    def test_a_bare_lower_case_legacy_coin_launches_exactly_as_before(self):
+        self.write_certificate()
+
+        code = self.launch(question="btc 會不會漲")
+
+        self.assertEqual(code, 0, self.err.text)
+        self.assertEqual("20260314T015926Z-btc-abc123", self.handshake()["run_id"])
+        question = self.question_record()
+        self.assertEqual("crypto", question["asset_class"])
+        self.assertEqual(["BTC"], question["assets"])
+
+    def test_coin_outside_the_old_whitelist_is_accepted(self):
+        self.write_certificate()
+
+        self.card_asset = "DOGE"
+        code = self.launch(question=UNLISTED_COIN_QUESTION)
+
+        self.assertEqual(code, 0, self.err.text)
+        self.assertEqual("20260314T015926Z-doge-abc123", self.handshake()["run_id"])
+        question = self.question_record()
+        self.assertEqual("crypto", question["asset_class"])
+        self.assertEqual(["DOGE"], question["assets"])
+
+    def test_a_question_naming_no_asset_still_launches(self):
+        self.write_certificate()
+
+        self.card_asset = "美國聯邦資金利率"
+        code = self.launch(question=NO_ASSET_QUESTION)
+
+        self.assertEqual(code, 0, self.err.text)
+        self.assertEqual(sorted(self.sealed()["adopted_seat_ids"]), sorted(LOCAL_SEAT_IDS))
+        self.assertEqual(
+            "20260314T015926Z-overall-market-abc123", self.handshake()["run_id"]
+        )
+        question = self.question_record()
+        self.assertEqual("open", question["asset_class"])
+        self.assertEqual([], question["assets"])
+        self.assertEqual("open_proposition", question["question_type"])
+        self.assertIn("題目未指名特定標的", self.proposition_adapter.calls[0]["prompt"])
 
     def test_open_question_is_turned_into_one_votable_proposition(self):
         self.write_certificate()
@@ -554,10 +763,11 @@ class LauncherTest(unittest.TestCase):
 
     # ---------- refusals ----------
 
-    def test_unsupported_question_exits_two_without_creating_a_run(self):
+    def test_an_unreadable_question_exits_two_without_creating_a_run(self):
+        """開放標的後唯一還會被拒的，是連 run 都無法定義的題目。"""
         self.write_certificate()
 
-        code = self.launch(question=UNSUPPORTED_QUESTION)
+        code = self.launch(question="   ")
 
         self.assertEqual(code, 2)
         self.assertIn("啟動遭拒", self.err.text)
@@ -778,6 +988,103 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("啟動失敗", self.err.text)
         self.assertEqual(self.handshake()["status"], "LAUNCHED")
+
+    # ---------- the dashboard launch no longer starts (Ticket 10) ----------
+
+    def test_a_launch_with_no_hook_of_its_own_starts_no_process(self):
+        """Watching is the resident web app's job; launch does not spawn one."""
+        self.write_certificate()
+
+        with mock.patch("subprocess.Popen") as popen:
+            code = self.launch(live_starter=None)
+
+        self.assertEqual(code, 0, self.err.text)
+        popen.assert_not_called()
+        self.assertFalse((self.data_root / "logs" / "live-server.log").exists())
+
+    def test_a_hook_that_is_handed_in_is_still_called_once(self):
+        """FP direction: the seam has to still work, or the two above prove nothing."""
+        self.write_certificate()
+
+        code = self.launch()
+
+        self.assertEqual(code, 0, self.err.text)
+        [(called_root, called_run_id)] = self.live_starter.calls
+        self.assertEqual(self.data_root, called_root)
+        self.assertEqual(json.loads(self.out.text.splitlines()[0])["run_id"], called_run_id)
+
+    def test_the_handshake_names_the_page_a_reader_watches_on(self):
+        self.write_certificate()
+
+        self.launch()
+
+        self.assertEqual(self.handshake()["live_url"], LIVE_URL)
+        self.assertTrue(LIVE_URL.endswith("/live"))
+
+
+class ReadyCertificateProblemTest(unittest.TestCase):
+    """The sentence the web app shows before spawning is the launcher's own."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.data_root = Path(self._tmp.name) / "data"
+        self.data_root.mkdir()
+
+    def write_certificate(self):
+        manifest = {
+            "schema_version": "1.0.0",
+            "status": "READY",
+            "provider_capabilities_ready": True,
+            "generated_at_utc": CERTIFICATE_STAMP,
+        }
+        path = self.data_root / "preflight" / PREFLIGHT_ID / "manifest.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        write_ready_certificate(self.data_root, PREFLIGHT_ID, manifest, path)
+        return path
+
+    def test_a_data_root_with_a_valid_certificate_has_no_problem_to_report(self):
+        self.write_certificate()
+
+        self.assertIsNone(ready_certificate_problem(self.data_root))
+
+    def test_a_missing_certificate_is_reported_and_names_the_file(self):
+        problem = ready_certificate_problem(self.data_root)
+
+        self.assertIsNotNone(problem)
+        self.assertIn("latest-ready.json", problem)
+
+    def test_a_certificate_that_is_not_ready_is_reported(self):
+        self.write_certificate()
+        path = self.data_root / "preflight" / "latest-ready.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["provider_capabilities_ready"] = False
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        self.assertIn("provider_capabilities_ready", ready_certificate_problem(self.data_root))
+
+    def test_a_manifest_edited_after_the_certificate_was_written_is_reported(self):
+        manifest_path = self.write_certificate()
+        manifest_path.write_text("{}", encoding="utf-8")
+
+        self.assertIn("fail closed", ready_certificate_problem(self.data_root))
+
+    def test_it_is_the_same_sentence_a_launch_would_have_printed(self):
+        err = Stream()
+
+        run_launch(
+            QUESTION,
+            self.data_root,
+            clock=FixedClock(),
+            out=Stream(),
+            err=err,
+            phase=PHASE_RESEARCH,
+        )
+
+        self.assertIn(ready_certificate_problem(self.data_root), err.text)
 
 
 if __name__ == "__main__":

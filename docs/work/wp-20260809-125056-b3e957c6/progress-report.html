@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-Hant" data-report-profile="progress" data-report-status="completed">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>前端重設計與七席換套｜工作進度</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --背景: #f3f6f4;
+      --卡片: #ffffff;
+      --文字: #17332d;
+      --次要: #64756f;
+      --主色: #176b55;
+      --主色淡: #dff3eb;
+      --警示: #9a5a10;
+      --警示淡: #fff0d6;
+      --錯誤: #9d2c2c;
+      --錯誤淡: #fde5e5;
+      --邊線: #d9e2de;
+      --陰影: 0 12px 30px rgba(23, 51, 45, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--文字); background: var(--背景); font-family: "Microsoft JhengHei", system-ui, sans-serif; line-height: 1.6; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 28px auto 60px; }
+    header, section { background: var(--卡片); border: 1px solid var(--邊線); border-radius: 18px; box-shadow: var(--陰影); }
+    header { padding: 28px; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 8px; font-size: clamp(1.8rem, 4vw, 3rem); }
+    h2 { margin-bottom: 18px; font-size: 1.25rem; }
+    h3 { margin-bottom: 6px; font-size: 1.05rem; }
+    .眉題 { margin-bottom: 6px; color: var(--主色); font-weight: 800; letter-spacing: .08em; }
+    .識別 { margin: 0; color: var(--次要); word-break: break-all; }
+    .連線 { display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; padding: 6px 12px; border-radius: 999px; background: var(--主色淡); color: var(--主色); font-weight: 700; }
+    .連線::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+    .連線.離線 { background: #ecefed; color: var(--次要); }
+    .摘要 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 24px; }
+    .摘要 article { padding: 16px; border-radius: 14px; background: #f7faf8; border: 1px solid var(--邊線); }
+    .摘要 small { display: block; color: var(--次要); }
+    .摘要 strong { display: block; margin-top: 5px; font-size: 1.15rem; overflow-wrap: anywhere; }
+    section { margin-top: 20px; padding: 24px; }
+    .進度條 { height: 12px; overflow: hidden; border-radius: 999px; background: #e6ece9; }
+    .進度條 span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--主色); transition: width .25s ease; }
+    .票卡列表 { display: grid; gap: 14px; }
+    .票卡 { padding: 18px; border: 1px solid var(--邊線); border-radius: 14px; }
+    .票卡標頭 { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+    .狀態 { flex: 0 0 auto; padding: 4px 10px; border-radius: 999px; background: #edf2f0; color: var(--次要); font-size: .9rem; font-weight: 800; }
+    .狀態.完成 { background: var(--主色淡); color: var(--主色); }
+    .狀態.阻擋 { background: var(--錯誤淡); color: var(--錯誤); }
+    .狀態.執行中, .狀態.Review中, .狀態.修正中 { background: var(--警示淡); color: var(--警示); }
+    .欄位 { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; margin-top: 12px; }
+    .欄位 dt { color: var(--次要); font-weight: 700; }
+    .欄位 dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .阻擋區[hidden], .歷史區[hidden] { display: none; }
+    .阻擋卡 { padding: 18px; border-left: 5px solid var(--錯誤); border-radius: 12px; background: var(--錯誤淡); white-space: pre-wrap; }
+    .歷史列表 { margin: 0; padding-left: 1.3rem; }
+    .歷史列表 li + li { margin-top: 8px; }
+    a { color: var(--主色); font-weight: 700; }
+    .空白 { margin: 0; color: var(--次要); }
+    @media (max-width: 780px) {
+      .摘要 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .欄位 { grid-template-columns: 1fr; }
+      .欄位 dt { margin-top: 7px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="眉題">非同步工作進度</p>
+      <h1 id="顯示名稱"></h1>
+      <p class="識別">工作識別碼：<span id="工作識別碼"></span></p>
+      <div id="連線狀態" class="連線 離線" role="status" aria-live="polite">載入本機進度快照</div>
+      <div class="摘要" aria-label="工作摘要">
+        <article><small>總進度</small><strong id="總進度"></strong></article>
+        <article><small>目前 Ticket</small><strong id="目前工作"></strong></article>
+        <article><small>目前階段</small><strong id="目前階段"></strong></article>
+        <article><small>最後更新</small><strong id="最後更新"></strong></article>
+      </div>
+    </header>
+
+    <section aria-labelledby="進度標題">
+      <h2 id="進度標題">Ticket 進度</h2>
+      <div class="進度條" aria-hidden="true"><span id="進度條"></span></div>
+      <div id="票卡列表" class="票卡列表" style="margin-top:18px"></div>
+    </section>
+
+    <section id="阻擋區" class="阻擋區" aria-labelledby="阻擋標題" hidden>
+      <h2 id="阻擋標題">需要裁決的阻擋</h2>
+      <div id="阻擋列表"></div>
+    </section>
+
+    <section id="歷史區" class="歷史區" aria-labelledby="歷史標題" hidden>
+      <h2 id="歷史標題">過去的結案報告</h2>
+      <ul id="歷史列表" class="歷史列表"></ul>
+    </section>
+  </main>
+
+  <script>
+    const 初始資料 = {"報告狀態":"completed","顯示名稱":"前端重設計與七席換套","工作識別碼":"wp-20260809-125056-b3e957c6","完成數":8,"總數":8,"完成比例":100,"目前工作":"01｜01 席位方向套組單一權威","目前階段":"完成","最後更新":"2026-08-10 08:44:22 +0800","Tickets":[{"編號":"01","名稱":"01 席位方向套組單一權威","狀態":"完成","原始需求":"…_renderer.py`）與 `run_verifier.py` 的版面與內容不動。**唯一開口**：席位標籤來源須支援換套，台股報告不得印幣圈席名。」\nSpec〈實作決策／資料與所有權〉第 1 條：「`config/agent_roster.json` 是席位資訊的**單一權威**……散落在其他模組的席位標籤寫死表全部刪除。」\nSpec〈實作決策／模組責任與公開介面〉`seats.py`、`report_renderer.py` 兩條。\nSpec〈實作決策／Schema、API contract 與系統互動〉：roster schema 升版、套組選擇規則、顯示規則。\nSpec〈實作決策／相容、遷移與技術限制〉：`seat_id`（含 `counter-evidence`）與 `output_dir` 永不改；roster schema 升版後預檢與測試 fixtures 同步更新。\nSpec A3 第 1、2、3、5 條。","目標":"讓 `config/agent_roster.json` 成為席位顯示名稱與研究方向的唯一權威：每席具備 `stock`／`crypto`／`open` 三套 `profiles`，載入時 fail-closed；離線報告與 prompt 全部改讀同一個讀取口，依 run 的資產類別自動選套。","目前紀錄":"…點合理、紅→綠可信；`_red_outcome` 11 參數與契約必填 root 防線記為後續事項不阻擋；「standards 軸結論維持通過」。\nD-1 關閉。最終 Snapshot 增補：report_workflow=bd93f38b、debate_driver=82fe0de5、test_report_renderer=8e715041。\n移交殘留（結案報告列出）：report_contract 的 `asset_class` 必填／值層驗證（root 防線，兩位 Reviewer 均建議優先排入後續）；cli.py render-fixture 潛伏點（一行修法已記錄）；`_red_outcome` 參數數可讀性負債。\nDeveloper 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過","驗收摘要":"Developer 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過\n前端操作：適用性：不適用\n判定依據：本票不產生任何網頁畫面變更；webapp 端的席位標籤改讀屬 Ticket 03。離線報告的席位標籤變化由 renderer 測試與 fixture 輸出比對覆蓋。\n操作環境與實際網址：不適用\n使用的原生瀏覽器工具：不適用\n操作步驟與預期結果：不適用\n操作結果：不適用\n操作證據：不適用","品味評分":"尚未完成 Standards Review","範圍警示":"…舊名、未指名市場→open）。第三生產點查證：report_workflow 骨架生產點僅 1；範圍外 competition_drill（不可達）與 cli render-fixture（潛伏無症狀）如實記錄未越權修。**全套 2548 tests OK (skipped=1)、exit 0**。\nReviewer A delta review（resume 原 session）：**通過**——A3-1/A3-3 退化路徑成立（完整鏈驗證）、裁定十最小性成立（AST 驗 10 呼叫點、debate_driver 僅三 hunk）、open 預設符合裁定三、範圍外處置可接受；「spec 軸結論在含 D-1 修正的範圍上維持通過」。","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/tickets/01-seat-profile-authority.md"},{"編號":"02","名稱":"02 提供者對調（資金流獵人→claude、新聞探員→codex）","狀態":"完成","原始需求":"…產類別自動切換名稱與方向，seat_id 與 output_dir 永不改，含分工細表與提供者對調\nSpec R5〈七席分工細表（已核准）〉提供者欄的兩個「（對調）」標記，與其後說明：「提供者對調原則：相似資訊面跨模型家族（籌碼↔資金流、官方↔新聞），維持 codex 3／claude 3／gemini 1。」\nSpec〈實作決策／Schema、API contract 與系統互動〉：「提供者對調（onchain 席→claude、news 席→codex）在同一批完成，維持 3／3／1。」\nSpec〈實作決策／相容、遷移與技術限制〉：「`seat_id`（含歷史名 `counter-evidence`）與 `output_dir` **永不改**：歷史 run 目錄、提供者對應（`ANTIGRAVITY_SEAT_IDS`）、賽前預檢全部綁著它。」「roster schema 升版後，預檢與測試 fixtures 同步更新。」","目標":"把相似資訊面拆到不同模型家族：`onchain` 席（資金流獵人／鏈上獵人）由 codex 改為 claude，`news` 席（新聞探員）由 claude 改為 codex，維持 codex 3／claude 3／gemini 1，且所有提供者路由來源與 roster 一致。","目前紀錄":"…ver／renderer／run_verifier 逐 blob 與基準相同；REPLACEMENT_MODELS 判斷通過（替補不可派發仍由 `_require_primary_model` fail-closed 拒絕）。**Findings：零。結論：通過。**\n### 共識（2026-08-09 18:05 +0800）\n雙 Reviewer 首輪零 Finding，無修正輪。共識成立。最終 Snapshot＝Review snapshot（基準樹 `5c74fd8b`＋17 檔 blob 雜湊，見 Ready for Review 紀錄）。首次完整驗收 2223 tests OK (skipped=1)、exit 0。\nDeveloper 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過","驗收摘要":"Developer 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過\n前端操作：適用性：不適用\n判定依據：本票只改提供者路由與預檢，不涉及任何使用者介面需求。\n操作環境與實際網址：不適用\n使用的原生瀏覽器工具：不適用\n操作步驟與預期結果：不適用\n操作結果：不適用\n操作證據：不適用","品味評分":"尚未完成 Standards Review","範圍警示":"行尾紀律：17 檔逐檔 byte 級比對基準樹，行尾不一致 0 檔。範圍外抽樣 9 檔（含 debate_driver、run_verifier、webapp/pages）與基準逐 byte IDENTICAL。","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/tickets/02-provider-swap.md"},{"編號":"03","名稱":"03 全站設計系統核心","狀態":"完成","原始需求":"…次授權範圍。」\nSpec R1 表格「run 詳情｜功能保留現況，版面套新設計系統（R3 適用於所有網頁頁面）」。\nSpec R7 全繁體中文中「標籤必須從既有權威帶出」的席位名稱部分（webapp 端）。\nSpec〈實作決策／資料與所有權〉：「設計 token（色彩／字級／間距）以資料形式落在 webapp `pages.py`，沿用既有 `THEMES` 模式；不散進各頁字串。」\nSpec〈實作決策／模組責任與公開介面〉webapp `pages.py` 條。\nSpec〈實作決策／相容、遷移與技術限制〉：「`ContrastTest` 直接從 token 表計算 WCAG AA，不維護第二份色值。」「設計參考 taste-skill 與 ui-ux-pro-max-skill clone 至工作區並記錄 commit SHA（比照 research skill 慣例），不進 Code Root。」\nSpec A4 全部三條。","目標":"建立全站唯一的設計系統：設計 token 以資料形式落在 `webapp/pages.py`（沿用既有 `THEMES` 模式），全站收斂為單一樣式表，所有網頁頁面（含 run 詳情頁與保護區外衣）套同一套視覺，`ContrastTest` 直接從 token 表計算 WCAG AA，webapp 席位標籤改讀 Ticket 01 的讀取口。","目前紀錄":"…d。Developer 與兩位 Finding Owner 無未解事項。最終 Snapshot：pages.py=92c3b29a、live.py=c0171e16、test_webapp.py=62e71827、test_design_tokens.py=17760f72（settings.py／views.py／server.py 未動）。首次完整驗收 2259 OK；Findings 後指定重驗 2264 OK (skipped=1)、exit 0。未解風險（移交）：views.py 席位標籤讀 open 套（已列入 Ticket 04 派工契約）；`--affirm` 為 R2 凍結下宣告未用的 token（測試釘死）。\nDeveloper 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過","驗收摘要":"Developer 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過\n前端操作：…、對比度 50 對實測、保護區五區塊 DOM 前後 IDENTICAL，見執行與 Review 紀錄）。\n操作環境與實際網址：不適用\n使用的原生瀏覽器工具：不適用\n操作步驟與預期結果：不適用\n1. 啟動 webapp，開主頁 → 頁首、焦點列、四個計時、聊天室、即時票數、七席、三個摺疊面板全部存在且套新樣式。\n2. 開設定頁 → 版面與主頁同一套視覺語彙；改一項規則存檔後重新整理 → 顯示新值。\n3. 開 run 詳情頁 → 功能與改版前相同，版面已套新設計系統。\n4. 開歷史／命中率頁 → 已套新樣式（合併留待 Ticket 04）。\n5. 切換淺色／深色 palette → 兩套皆通過對比度斷言。\n6. 檢視主頁原始碼 → 無外部網域資源、無 inline script。\n操作結果：不適用\n操作證據：不適用","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/tickets/03-design-system-core.md"},{"編號":"04","名稱":"04 歷史與命中率合併頁","狀態":"完成","原始需求":"…單併入合併頁。」\nSpec R1 第三條：「沒產出報告的 run：歷史列表顯示其狀態；主頁可回看該 run 的聊天過程。」\nSpec〈實作決策／模組責任與公開介面〉webapp `views.py` 條：「負責合併頁的資料整形（統計卡、run 列表帶命中結果、手動記錄結果表單），routes 不含查詢邏輯。」\nSpec〈實作決策／Schema、API contract 與系統互動〉端點契約前兩條：`GET /history`、`GET /stats` 302 轉跳 `/history`。\nSpec〈產品限制〉：「webapp 零 SQL；唯一取數路徑是 `run_index.query_runs`。」「run artifact 唯讀。」\nSpec〈實作決策／相容、遷移與技術限制〉：「頁尾誠實：會寫檔的頁面不得沿用唯讀頁尾。」\nSpec R7 全繁體中文（合併頁的枚舉值全部翻譯）。\nSpec A5 全部四條（本票負責合併頁部分）。","目標":"把原歷史查詢頁與命中率統計頁合併成單一「歷史與命中率頁」（上方統計卡、下方 run 列表帶命中結果），手動記錄結果表單併入同一頁，`GET /stats` 302 轉跳 `/history`，舊書籤不失效。","目前紀錄":"…erver=424f981b、outcome=3064f209、test_webapp=cbb762ee、test_webapp_history_merge=dab726ba（基準樹 `24278938`）。首次完整驗收 2314 OK；修正輪全套 2322 OK (skipped=1)、exit 0；第三輪僅文案／測試變更，test_webapp* 646 OK。\n未解風險（移交／殘留）：`report_renderer.py:38` 死別名（零 importer，結案報告殘留清單）；`launch.py:52` 舊頁名文案（Ticket 05 處理）；持續寫入下的降級路徑多讀 2 輪（僅索引連續改寫時發生，已有文案與測試）。\nDeveloper 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過","驗收摘要":"Developer 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過\n前端操作：…驗收並明示「結案」授權；輔以票面原核准慣例之渲染後 HTML 存檔＋關鍵元素斷言證據（十項前端證據含 /stats 302 標頭與篩選六案，見執行與 Review 紀錄）。\n操作環境與實際網址：不適用\n使用的原生瀏覽器工具：不適用\n操作步驟與預期結果：不適用\n1. 開 `/history` → 上方統計卡、下方 run 列表帶命中結果，同一頁看完。\n2. 開 `/stats` → 自動轉跳到 `/history`，網址列變成 `/history`。\n3. 在合併頁對一筆到期 run 手動記錄結果並送出 → 頁面顯示更新後的結果，列表該列同步變更。\n4. 套用篩選條件與清除條件 → 行為與改版前一致。\n5. 找一筆沒產出報告的 run → 列表顯示中文狀態，非空白、非英文原值。\n操作結果：不適用\n操作證據：不適用","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/tickets/04-history-stats-merge.md"},{"編號":"05","名稱":"05 標的選單發問","狀態":"完成","原始需求":"…asset_class` 接縫。標的輸入依資產類別給對應格式提示；建議清單來自過往 run 的標的——**取得方式**：webapp 呼叫既有 `run_index.query_runs` 後在 Python 端對標的欄位去重，不新增 SQL、不擴充 `run_index`（維持零 SQL 與唯一取數路徑）。」\nSpec〈實作決策／模組責任與公開介面〉：「`launcher.py` 接縫：標的表單送出後，以 T05 的 `assets`／`asset_class` 參數啟動 run；webapp 端不再執行純文字資產解析。」\nSpec〈產品限制〉：「webapp 零 SQL；唯一取數路徑是 `run_index.query_runs`。」\nSpec R7 全繁體中文（選單項目與格式提示）。\nSpec A3 第 4 條：「發問流程可用選單選定資產類別與標的，不依賴純文字解析。」\nSpec A5（選單枚舉值必翻；標的代號不在此限）。","目標":"主頁發問區改為「資產類別選單＋標的輸入」，經 T05 的 `assets`／`asset_class` 接縫啟動 run，webapp 端不再做純文字資產解析；標的建議清單由 `run_index.query_runs` 結果在 Python 端去重取得。","目前紀錄":"…inding、B 通過且唯一建議級 Finding 已 closed。最終 Snapshot：launch=098f8ec6、pages=0da9dd48、server=553575de、views=a7bd3302、test_webapp=bd0590d4、test_webapp_asset_picker=24918d98（基準樹 `674b21aa`）。完整驗收 2399 tests OK (skipped=1)、exit 0（產品樹自該輪未變）。\n未解風險（記錄）：裁定七取捨（開放題標的必填）列入結案報告供使用者確認；`:has()` 依賴（退化安全側）；`webapp/__init__.py` 模組清單補述屬範圍外殘留。\nDeveloper 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過","驗收摘要":"Developer 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過\n前端操作：…操作驗收並明示「結案」授權；輔以票面原核准慣例之渲染後 HTML 存檔＋關鍵元素斷言證據（選單四類別提示切換、去重前後對照、launcher 實收參數，見執行與 Review 紀錄）。\n操作環境與實際網址：不適用\n使用的原生瀏覽器工具：不適用\n操作步驟與預期結果：不適用\n1. 開主頁 → 發問區出現資產類別選單與標的輸入框。\n2. 選「台股」→ 標的輸入框顯示台股格式提示；輸入框出現過往台股標的建議。\n3. 選「虛擬貨幣」→ 提示與建議清單跟著換成幣圈。\n4. 題目文字刻意寫別的市場、選單選台股並送出 → 啟動的 run 的 `asset_class` 為 `tw_stock`，`assets` 為選單所選標的。\n5. 不選類別直接送出 → 表單顯示中文錯誤，未啟動 run。\n操作結果：不適用\n操作證據：不適用","品味評分":"尚未完成 Standards Review","範圍警示":"未解風險（記錄）：裁定七取捨（開放題標的必填）列入結案報告供使用者確認；`:has()` 依賴（退化安全側）；`webapp/__init__.py` 模組清單補述屬範圍外殘留。","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/tickets/05-asset-picker.md"},{"編號":"06","名稱":"06 離線報告 PDF 手動匯出","狀態":"完成","原始需求":"…，不得留下半成品檔或假稱成功。」\nSpec〈實作決策／資料與所有權〉：「run artifact 維持唯讀。run 目錄的核准寫入路徑由兩條（launch 起子程序、`outcome.json`）增為三條，第三條只新增 `.pdf`。」\nSpec〈實作決策／模組責任與公開介面〉：「webapp 新增 PDF 匯出模組：接受可注入的轉換器，把該 run 現成 HTML 轉為 PDF；預設實作為 Edge 無頭模式，在 WSL 下以 `wslpath` 轉換路徑。」\nSpec〈實作決策／Schema、API contract 與系統互動〉端點契約第 3 條與「系統互動」條。\nSpec〈實作決策／相容、遷移與技術限制〉：「頁尾誠實：會寫檔的頁面不得沿用唯讀頁尾（PDF 匯出頁屬會寫檔）。」「離線 bundle 導覽只能包含真實存在的檔案；`run_verifier` 會檢查每個相對連結目標存在。」\nSpec A2 第 2、3、4 條。","目標":"在報告頁提供「匯出 PDF」按鈕，經 `POST /run/\u003cid\u003e/export-pdf` 以 Edge 無頭模式把該 run 現成的 HTML 轉成 `report.pdf` 與 `debate.pdf` 寫入 run 資料夾；轉換器可注入；失敗回誠實錯誤頁且不留半成品。","目前紀錄":"…ort=fafd8b67、server=e3dda505、pages=a2785288、__init__=04be79b6、test_webapp_pdf_export=095a8c08、test_webapp=6666033c（基準樹 `23109528`）。首次完整驗收 2473 OK；兩輪修正後 2488、2497 OK (skipped=1)、exit 0。\n未解風險（記錄）：同 run 第二請求被拒非排隊（刻意，頁面明示）；lock 表不回收（本機單人可忽略，理由入註解）；跨程序僅靠 no-clobber（現況唯一寫入者；未來出現第二寫入者時行為是誠實拒絕）；重匯出需自行移走舊 PDF（webapp 無刪除權，刻意）。\nDeveloper 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過","驗收摘要":"Developer 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過\n前端操作：…親自實機操作驗收並明示「結案」授權；輔以票面原核准慣例之渲染存檔＋斷言證據，且真實 Edge 轉檔已在拋棄式 Data Root 實測通過（真 PDF 落地、既有檔案雜湊不變，見執行與 Review 紀錄），未假稱截圖。\n操作環境與實際網址：不適用\n使用的原生瀏覽器工具：不適用\n操作步驟與預期結果：不適用\n1. 開一個已產出報告的 run 頁面 → 右上角「市場報告」「完整辯論」可點，「匯出 PDF」按鈕可用。\n2. 按「匯出 PDF」→ 頁面回報成功，run 資料夾出現 `report.pdf` 與 `debate.pdf`。\n3. 開一個尚未產出報告的 run → 「匯出 PDF」為停用狀態。\n4. 以注入的失敗轉換器重跑 → 顯示誠實錯誤頁，資料夾無新增 `.pdf`。\n操作結果：不適用\n操作證據：不適用","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/tickets/06-pdf-export.md"},{"編號":"07","名稱":"07 關閉伺服器與入口動線","狀態":"完成","原始需求":"…動、頁面「關閉伺服器」按鈕與備援關閉捷徑\nSpec R4 入口動線改造（全部六條）：刪除 `辯論室預覽.html`；`開啟辯論室.bat` 退役（刪除）；桌面捷徑隱藏視窗啟動、偵測已在跑時只開瀏覽器；頁面右上角「關閉伺服器」按鈕走優雅停機並寫 `server_stop`；備援「關閉辯論室」捷徑；伺服器仍為前景程序模型，關閉一律走優雅路徑。\nSpec〈實作決策／模組責任與公開介面〉：「Code Root `scripts/`：承載啟動與關閉邏輯，工作區根目錄現行的 `start-webapp.ps1` 併入此處。工作區根目錄只留兩個捷徑……」\nSpec〈實作決策／Schema、API contract 與系統互動〉端點契約第 4 條：「`POST /shutdown`：先回覆「已關閉」頁面，再優雅停機，照常寫 `server_stop`。」\nSpec〈實作決策／相容、遷移與技術限制〉：「無殘留執行緒。」\nSpec A1 全部五條。","目標":"頁面右上角「關閉伺服器」按鈕經 `POST /shutdown` 優雅停機並照常寫 `server_stop`；啟動與關閉邏輯移入 Code Root `scripts/`；工作區根目錄只留「開啟辯論室」與「關閉辯論室」兩個隱藏視窗捷徑，刪除 `辯論室預覽.html` 與 `開啟辯論室.bat`。","目前紀錄":"…fff215c、test_webapp_shutdown=0446d13b、webapp-common=4e8994c9、start=9b091c0e、stop=8d5ed328、install-shortcuts=0acdd1cf（基準樹 `d0df5fb9`）。完整驗收 2517→2520 tests OK (skipped=1)、exit 0。\n未解風險（記錄）：埠占用誤判已在跑（明文揭露）；跨語言三值雙份（註解指權威）；stop 腳本預設 8765；.lnk 不入 git（install-shortcuts 可重建）；daemon 執行緒形狀（兩條斷言釘住）；PowerShell 自動化測試層屬跨票框架決策（移交事項）。\nDeveloper 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過","驗收摘要":"Developer 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過\n前端操作：…以本票 Developer 的實機程序驗證（捷徑六段驗證、零新 PID、優雅停機、server_stop 落 log）與渲染存檔＋斷言證據（見執行與 Review 紀錄）。\n操作環境與實際網址：不適用\n使用的原生瀏覽器工具：不適用\n操作步驟與預期結果：不適用\n1. 雙擊「開啟辯論室」捷徑 → 無主控台黑框，瀏覽器自動開到主頁。\n2. 伺服器已在跑時再雙擊一次 → 只開新分頁，不產生第二個伺服器程序。\n3. 頁面右上角按「關閉伺服器」→ 出現「已關閉」頁面，隨後伺服器停止監聽。\n4. 重新啟動後改用「關閉辯論室」捷徑 → 伺服器同樣停止。\n5. 檢視工作區根目錄 → 沒有 `辯論室預覽.html`、沒有 `開啟辯論室.bat`、沒有第二份 `start-webapp.ps1`。\n操作結果：不適用\n操作證據：不適用","品味評分":"尚未完成 Standards Review","範圍警示":"尚無範圍或複雜度警示","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/tickets/07-shutdown-and-entry.md"},{"編號":"08","名稱":"08 端到端驗收（A1–A5 逐條）","狀態":"完成","原始需求":"…改，含分工細表與提供者對調\nR-006：標的選單發問：資產類別選單＋標的輸入框，接 T05 的 assets／asset_class 接縫，建議清單來自過往 run 標的\nR-007：全繁體中文：webapp 畫面不得出現英文資料原值，標籤從既有權威帶出\nR-008：PDF 手動匯出：報告頁按鈕以 Edge 無頭模式轉出 report.pdf 與 debate.pdf 存入該 run 資料夾\nSpec A1 入口與停機（五條）。\nSpec A2 規則生效、報告可點、PDF 落地（四條）。\nSpec A3 換套與標的選單（五條）。\nSpec A4 保護區與全站綠燈（三條）。\nSpec A5 全繁體中文（四條，含「資料原值」定義與不在此限的清單）。\nSpec〈測試決策／公開行為〉全部八項。\nSpec〈測試決策／既有測試模式〉：「驗收基準：既有全綠 ＋ 渲染後繁體中文 grep ＋ 對比度實測數字。」「環境無瀏覽器，不得假稱有截圖。」","目標":"以股票題與幣題兩組 fixture 跑完整流程，逐條驗證 Spec A1–A5，補齊跨票才看得出來的回歸缺口（換套一致性、保護區行為、繁中 grep、對比度實測數字），並產出可交付的驗收證據。","目前紀錄":"…／34 tests／7 類別）；acceptance/ 更新檔 blob：matrix=cb92ec99、a5-grep=2c10cd1a、seat-label=72b93332、end-to-end-runs=fd7afd11、full-suite=512fe989。**全套 2556 tests OK (skipped=1)、exit 0**（帳目 2548＋8）。零產品碼改動（雙 Reviewer 抽查確認）。\n殘留（結案報告列出）：`live-tally`/`live-feed` id 未匯出常數（產品碼、範圍外）；名稱位置斷言由版面測試擁有；T01 契約值層驗證仍未關；A1-1 目視項與真 Edge 一次性證據的邊界。\nDeveloper 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過","驗收摘要":"Developer 結論：通過\nReviewer 模式：both\nReviewer A 結論：通過\nReviewer B 結論：通過\n未關閉阻擋或重要 Findings：0\nTicket 最終驗收：通過\n前端操作：…操作步驟與預期結果：不適用\n1. 雙擊「開啟辯論室」→ 無黑框、瀏覽器開主頁。\n2. 用標的選單選「台股」＋一檔標的發問 → 一頁式辯論室正常運作，七席顯示股票套名稱。\n3. run 產出後 → 右上角兩份報告可點；離線報告席位名稱與 webapp 一致，且無幣圈席名。\n4. 按「匯出 PDF」→ run 資料夾出現兩份 PDF，既有檔案未變。\n5. 開 `/stats` → 轉跳 `/history`；合併頁上統計卡、下 run 列表帶命中結果。\n6. 進設定頁改規則存檔 → 重新整理即見新值。\n7. 改用幣題重跑一次 → 七席顯示幣圈套名稱。\n8. 逐頁檢視 → 全繁體中文、無外部資源、無 inline script。\n9. 按「關閉伺服器」→ 出現已關閉頁面並優雅停機。\n操作結果：不適用\n操作證據：不適用","品味評分":"尚未完成 Standards Review","範圍警示":"已知範圍外殘留（不要試圖在本票修）：`report[\"asset_class\"]` 值層驗證（T01 移交，修正點在 report_contract、本票禁改）；`report_renderer.py:38` 死別名；CATEGORY_LABELS 幣圈語彙；tracer／manifest 通用 focus；「Four boundaries」docstring 計數。\n殘留（結案報告列出）：`live-tally`/`live-feed` id 未匯出常數（產品碼、範圍外）；名稱位置斷言由版面測試擁有；T01 契約值層驗證仍未關；A1-1 目視項與真 Edge 一次性證據的邊界。","下一步":"本 Ticket 已完成","阻擋內容":"","路徑":"/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/tickets/08-end-to-end-acceptance.md"}],"阻擋":[],"歷史報告":[{"名稱":"wp-20260809-125056-b3e957c6｜結案報告","連結":"/history/wp-20260809-125056-b3e957c6","本機連結":"file:///mnt/d/workstationD/hoya%20bit/hoya-bit-market-agents-final/docs/work/wp-20260809-125056-b3e957c6/completion-report.html"}]};
+
+    function 設定文字(識別, 內容) {
+      document.getElementById(識別).textContent = 內容 || "—";
+    }
+
+    function 建立欄位(名稱, 內容) {
+      const 標題 = document.createElement("dt");
+      標題.textContent = 名稱;
+      const 值 = document.createElement("dd");
+      值.textContent = 內容 || "—";
+      return [標題, 值];
+    }
+
+    function 更新頁面(資料) {
+      document.documentElement.dataset.reportStatus = 資料.報告狀態 || "in-progress";
+      document.title = `${資料.顯示名稱 || "未命名工作"}｜工作進度`;
+      設定文字("顯示名稱", 資料.顯示名稱);
+      設定文字("工作識別碼", 資料.工作識別碼);
+      設定文字("總進度", `${資料.完成數 || 0}／${資料.總數 || 0} Tickets 完成`);
+      設定文字("目前工作", 資料.目前工作);
+      設定文字("目前階段", 資料.目前階段);
+      設定文字("最後更新", 資料.最後更新);
+      document.getElementById("進度條").style.width = `${資料.完成比例 || 0}%`;
+
+      const 票卡列表 = document.getElementById("票卡列表");
+      票卡列表.replaceChildren();
+      if (!資料.Tickets || 資料.Tickets.length === 0) {
+        const 空白 = document.createElement("p");
+        空白.className = "空白";
+        空白.textContent = "目前沒有可讀取的 Ticket。";
+        票卡列表.appendChild(空白);
+      } else {
+        for (const Ticket of 資料.Tickets) {
+          const 卡片 = document.createElement("article");
+          卡片.className = "票卡";
+          const 標頭 = document.createElement("div");
+          標頭.className = "票卡標頭";
+          const 標題 = document.createElement("h3");
+          標題.textContent = `${Ticket.編號}｜${Ticket.名稱}`;
+          const 狀態 = document.createElement("span");
+          狀態.className = `狀態 ${String(Ticket.狀態 || "").replaceAll(" ", "")}`;
+          狀態.textContent = Ticket.狀態 || "未知";
+          標頭.append(標題, 狀態);
+          const 欄位 = document.createElement("dl");
+          欄位.className = "欄位";
+          for (const [名稱, 內容] of [
+            ["對應原始需求", Ticket.原始需求],
+            ["Ticket 目的", Ticket.目標],
+            ["目前紀錄", Ticket.目前紀錄],
+            ["測試與 Review", Ticket.驗收摘要],
+            ["品味評分", Ticket.品味評分],
+            ["範圍與複雜度", Ticket.範圍警示],
+            ["下一步", Ticket.下一步],
+          ]) {
+            欄位.append(...建立欄位(名稱, 內容));
+          }
+          卡片.append(標頭, 欄位);
+          票卡列表.appendChild(卡片);
+        }
+      }
+
+      const 阻擋區 = document.getElementById("阻擋區");
+      const 阻擋列表 = document.getElementById("阻擋列表");
+      阻擋列表.replaceChildren();
+      阻擋區.hidden = !資料.阻擋 || 資料.阻擋.length === 0;
+      for (const 內容 of 資料.阻擋 || []) {
+        const 卡片 = document.createElement("div");
+        卡片.className = "阻擋卡";
+        卡片.textContent = 內容;
+        阻擋列表.appendChild(卡片);
+      }
+
+      const 歷史區 = document.getElementById("歷史區");
+      const 歷史列表 = document.getElementById("歷史列表");
+      歷史列表.replaceChildren();
+      歷史區.hidden = !資料.歷史報告 || 資料.歷史報告.length === 0;
+      for (const 報告 of 資料.歷史報告 || []) {
+        const 項目 = document.createElement("li");
+        const 連結 = document.createElement("a");
+        連結.href = location.protocol === "file:" ? 報告.本機連結 : 報告.連結;
+        連結.textContent = 報告.名稱;
+        項目.appendChild(連結);
+        歷史列表.appendChild(項目);
+      }
+    }
+
+    更新頁面(初始資料);
+
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      const 連線狀態 = document.getElementById("連線狀態");
+      const 事件來源 = new EventSource("/events");
+      事件來源.addEventListener("progress", (事件) => 更新頁面(JSON.parse(事件.data)));
+      事件來源.onopen = () => {
+        連線狀態.className = "連線";
+        連線狀態.textContent = "已連線，進度會非同步更新";
+      };
+      事件來源.onerror = () => {
+        連線狀態.className = "連線 離線";
+        連線狀態.textContent = "連線中斷，畫面保留最後進度";
+      };
+    }
+  </script>
+</body>
+</html>

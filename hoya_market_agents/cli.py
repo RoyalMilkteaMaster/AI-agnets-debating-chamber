@@ -13,6 +13,7 @@ import hashlib
 import json
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -32,7 +33,6 @@ from .codex_bridge import (
     verify_codex_preflight,
 )
 from .fake_provider import FakeProvider
-from .live_dashboard import create_live_server
 from .question import UnsupportedQuestionError
 from .report_contract import ReportContractError, canonical_sha256, validate_market_report
 from .report_audit_renderer import render_debate_html
@@ -40,11 +40,18 @@ from .report_fixtures import FIXTURE_CASES, load_fixture
 from .report_renderer import render_market_html, render_market_markdown
 from .report_workflow import build_red_audit_report
 from .run_controller import RunController
+from .run_index import RunIndexError, query_runs, rebuild_index
 from .run_store import RunStore, RunStoreError
 from .run_verifier import RunVerificationError, verify_run
 from .seats import RosterError
 from .prompt_builder import load_research_snapshot
 from .real_provider import CODEX_MODE_CLI, CODEX_MODES
+from .webapp import (
+    DEFAULT_PORT as WEBAPP_DEFAULT_PORT,
+    WebappError,
+    WebappLogError,
+    serve_webapp,
+)
 from .system_preflight import (
     REQUIRED_CHECK_IDS,
     PreflightError,
@@ -88,7 +95,13 @@ def build_parser():
         help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
     )
     launch.add_argument(
-        "--no-live", action="store_true", help="不啟動背景即時儀表板"
+        "--no-live",
+        action="store_true",
+        help=(
+            "不呼叫 launch 的 live 掛鉤。launch 本身已不再開啟任何直播頁"
+            "（直播改由 webapp 的 /live 提供），所以從命令列傳這個旗標沒有任何差別；"
+            "保留它是為了不讓既有的呼叫方式失敗。"
+        ),
     )
     launch.add_argument(
         "--handshake-file", help="把 LAUNCHED 握手內容原子寫入的檔案路徑"
@@ -200,11 +213,32 @@ def build_parser():
     verify = subcommands.add_parser("verify-run", help="唯讀驗證一個完整 run artifact bundle")
     verify.add_argument("--run-id", required=True)
     verify.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
-    live = subcommands.add_parser("live", help="啟動唯讀的即時 Agent 辯論儀表板")
-    live.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
-    live.add_argument("--run-id", help="指定 run_id；省略時監看最新建立的 run 目錄")
-    live.add_argument("--host", choices=("127.0.0.1", "localhost"), default="127.0.0.1")
-    live.add_argument("--port", type=int, default=8765)
+    backfill = subcommands.add_parser(
+        "index-backfill", help="掃描 runs/ 全量重建可查詢的 run 索引"
+    )
+    backfill.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    index_query = subcommands.add_parser("index-query", help="查詢 run 索引")
+    index_query.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    index_query.add_argument("--date-from", help="台北日期下界 YYYY-MM-DD（含）")
+    index_query.add_argument("--date-to", help="台北日期上界 YYYY-MM-DD（含）")
+    # 這兩個刻意不用 choices：合法值的權威分別在 config/market_scopes.json 與
+    # report_contract.CONFIDENCE_LEVELS，改設定檔不該同時要改 CLI。
+    index_query.add_argument("--asset-class", help="資產類別，值由 market_scopes 設定檔決定")
+    index_query.add_argument("--confidence", help="信心燈號級別")
+    index_query.add_argument("--keyword", help="題目原文的字面子字串（%% 與 _ 不是萬用字元）")
+    index_query.add_argument("--limit", type=int, help="最多回傳幾筆")
+    webapp = subcommands.add_parser(
+        "webapp", help="啟動 127.0.0.1 常駐網頁：查歷史 run、開 run 詳情"
+    )
+    webapp.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
+    webapp.add_argument(
+        "--port",
+        type=int,
+        default=WEBAPP_DEFAULT_PORT,
+        help="監聽埠（預設 {}）；被占用時明確失敗，不會自動改用其他埠".format(
+            WEBAPP_DEFAULT_PORT
+        ),
+    )
     return parser
 
 
@@ -233,8 +267,12 @@ def main(argv=None, stdin=None, stdout=None, stderr=None):
         return _verify_run(args, out, err)
     if args.command == "drill":
         return _drill(args, out, err)
-    if args.command == "live":
-        return _live(args, out, err)
+    if args.command == "index-backfill":
+        return _index_backfill(args, out, err)
+    if args.command == "index-query":
+        return _index_query(args, out, err)
+    if args.command == "webapp":
+        return _webapp(args, out, err)
 
     data_root = Path(args.data_root)
     controller = RunController(
@@ -940,27 +978,53 @@ def _report_result(result, out):
     print("\n".join(lines), file=out)
 
 
-def _live(args, out, err):
-    if not 1 <= args.port <= 65535:
-        print("啟動失敗：port 必須介於 1 到 65535。", file=err)
-        return EXIT_REJECTED
+def _index_backfill(args, out, err):
+    """Rebuild the whole run index from the run directories on disk."""
     try:
-        server = create_live_server(
-            Path(args.data_root), run_id=args.run_id, host=args.host, port=args.port
+        summary = rebuild_index(Path(args.data_root))
+    except (RunIndexError, sqlite3.Error, OSError) as exc:
+        print("BACKFILL FAILED：{}：{}".format(type(exc).__name__, exc), file=err)
+        return EXIT_FAILED
+    print(json.dumps(summary, ensure_ascii=False, indent=2), file=out)
+    return EXIT_OK
+
+
+def _index_query(args, out, err):
+    """Print the matching indexed runs as one JSON array."""
+    try:
+        rows = query_runs(
+            Path(args.data_root),
+            date_from=args.date_from,
+            date_to=args.date_to,
+            asset_class=args.asset_class,
+            confidence_level=args.confidence,
+            keyword=args.keyword,
+            limit=args.limit,
         )
-    except OSError as exc:
+    except ValueError as exc:
+        # 參數本身不合法（例如負數 --limit），不是索引的問題。
+        print("QUERY REJECTED：{}".format(exc), file=err)
+        return EXIT_REJECTED
+    except RunIndexError as exc:
+        print("QUERY FAILED：{}".format(exc), file=err)
+        return EXIT_FAILED
+    print(json.dumps(rows, ensure_ascii=False, indent=2), file=out)
+    return EXIT_OK
+
+
+def _webapp(args, out, err):
+    """Serve the resident local pages until interrupted.
+
+    A port that is already taken is a failure, not something to work around:
+    the competition build's habit of quietly moving to another port is what
+    left users reading a stale page. The message says which port and what to
+    do, and the exit code is non-zero.
+    """
+    try:
+        serve_webapp(Path(args.data_root), port=args.port, out=out)
+    except (WebappError, WebappLogError) as exc:
         print("啟動失敗：{}".format(exc), file=err)
         return EXIT_FAILED
-    url = "http://{}:{}/".format(args.host, server.server_address[1])
-    print("即時 Agent 辯論室：{}".format(url), file=out)
-    print("演練重播：{}?replay=1&speed=20".format(url), file=out)
-    print("按 Ctrl+C 停止唯讀儀表板。", file=out)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("即時儀表板已停止。", file=out)
-    finally:
-        server.server_close()
     return EXIT_OK
 
 

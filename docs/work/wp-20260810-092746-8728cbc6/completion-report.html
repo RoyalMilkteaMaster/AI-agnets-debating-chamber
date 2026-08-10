@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>結案報告 — 前端白話化與 Google 風重設計（wp-20260810-092746-8728cbc6）</title>
+<style>
+  :root { --ink:#202124; --sub:#5f6368; --line:#dadce0; --bg:#ffffff; --soft:#f8f9fa;
+          --blue:#1a73e8; --red:#d93025; --green:#188038; --yellow:#f9ab00; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font-family:"Microsoft JhengHei","微軟正黑體",system-ui,sans-serif;
+         line-height:1.65; font-size:15px; }
+  main { max-width:980px; margin:0 auto; padding:32px 24px 64px; }
+  h1 { font-size:26px; font-weight:700; margin:0 0 4px; }
+  h2 { font-size:19px; font-weight:700; margin:40px 0 12px; padding-top:16px; border-top:1px solid var(--line); }
+  h3 { font-size:16px; margin:20px 0 8px; }
+  .meta { color:var(--sub); font-size:13px; margin-bottom:20px; }
+  .verdict { background:var(--soft); border:1px solid var(--line); border-radius:12px; padding:16px 20px; margin:20px 0; }
+  .verdict strong { color:var(--green); }
+  table { border-collapse:collapse; width:100%; margin:12px 0; font-size:13.5px; }
+  th,td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--soft); font-weight:700; white-space:nowrap; }
+  code { font-family:Consolas,monospace; font-size:12.5px; background:var(--soft); padding:1px 5px; border-radius:4px; }
+  .ok { color:var(--green); font-weight:700; }
+  .warn { color:var(--yellow); font-weight:700; }
+  .risk { color:var(--red); font-weight:700; }
+  ul,ol { margin:8px 0; padding-left:22px; }
+  li { margin:4px 0; }
+  .small { font-size:12.5px; color:var(--sub); }
+  .tablewrap { overflow-x:auto; }
+  .checklist li { margin:8px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>結案報告 — 前端白話化與 Google 風重設計</h1>
+<div class="meta">工作識別碼 wp-20260810-092746-8728cbc6 ｜ 2026-08-10 ｜ 專案：hoya-bit-market-agents-final（main @ 9b8a451，工作樹未提交）｜ milktea-skills 1.0.0</div>
+
+<div class="verdict">
+<strong>總體結果：9/9 張 Ticket 完成，R-001～R-006 全數交付。</strong><br>
+全套測試 <code>Ran 2729 / OK (skipped=1) / exit 0</code>（skip 為既有大小寫別名基準）。T09 七條端到端驗收全 PASS、證據留存 <code>acceptance/</code> 並可從 repo 內工具重跑。實機伺服器已以新程式碼重啟並通過 HTTP 抽驗。<span class="warn">待辦一項</span>：本平台無瀏覽器自動化能力，最終視覺走查需由使用者完成（見 §8 清單）。
+</div>
+
+<h2>1. 執行環境與角色配置</h2>
+<ul>
+<li>環境（全票共用）：Windows 宿主＋WSL Ubuntu-24.04（python3 3.12.3）；測試一律於 WSL 執行，全套鎖 <code>mkdir</code> 原子取得。</li>
+<li>Developer（每票新開）：Claude milktea-build subagent、模型 <code>claude-opus-5</code>（平台無 effort 欄位，採後端預設；T08 票面 Sonnet 偏好因無法保證 ≥high 下限，依既定規則改 opus 並記錄）。</li>
+<li>Reviewer A（Spec 軸）／Reviewer B（Standards 軸）：Codex CLI 0.146.0 native，每票獨立 session、首輪互不可見；定向複驗以 <code>codex exec resume</code> 沿用原 session。OCR v1.8.10 因快照為 tree 物件不適用，依規原生審查。</li>
+<li>T01–T04、T06–T07 於前一執行 Task 以相同角色配置完成；本 Task 完成 T05、T08、T09。</li>
+</ul>
+
+<h2>2. 原始需求逐項狀態</h2>
+<div class="tablewrap"><table>
+<tr><th>需求</th><th>內容</th><th>狀態</th><th>使用者可感結果</th></tr>
+<tr><td>R-001</td><td>設定頁白話中文</td><td class="ok">完成</td><td>每個規則項中文標籤＋一句白話說明、分組標題中文；未翻譯鍵顯示原鍵名＋「尚未翻譯」照常可編輯</td></tr>
+<tr><td>R-002</td><td>五導覽全站常駐</td><td class="ok">完成</td><td>除「伺服器已關閉」頁外每頁五導覽；報告導覽指向最新有報告 run／自身 run，無報告時停用樣式</td></tr>
+<tr><td>R-003</td><td>設定獨立</td><td class="ok">完成</td><td>「設定」與四導覽分開，位於「關閉伺服器」左邊（19 頁實測順序一致）</td></tr>
+<tr><td>R-004</td><td>全站 Google 風重設計</td><td class="ok">完成</td><td>白底＋紅藍綠黃點綴＋毛玻璃；深色模式退場（成品零 <code>prefers-color-scheme</code>）；微軟正黑體優先；對比 41 組全達 WCAG AA（最小餘裕 4.77）</td></tr>
+<tr><td>R-005</td><td>席位名稱與白話說明</td><td class="ok">完成</td><td>股票／幣圈套定案名逐字上線；席位卡顯示 blurb 且隨 SSE 幀與名稱成對同步；離線報告席名隨 roster 一致；roster 缺項 fail-closed</td></tr>
+<tr><td>R-006</td><td>開放題下架</td><td class="ok">完成</td><td>發問選單只剩台股／美股／幣（來源驅動）；後端 open 能力與歷史開放題回看完整保留</td></tr>
+</table></div>
+
+<h2>3. 各 Ticket 交付與 Review 結果</h2>
+<div class="tablewrap"><table>
+<tr><th>Ticket</th><th>最終快照樹</th><th>Findings（提出→關閉）</th><th>結果</th></tr>
+<tr><td>T01 design_tokens 權威</td><td><code>3caf0dc2</code></td><td>前 Task 完成</td><td class="ok">完成</td></tr>
+<tr><td>T02 五導覽與設定分離</td><td><code>6682b693</code></td><td>前 Task 完成</td><td class="ok">完成</td></tr>
+<tr><td>T03 全站 Google 風換裝</td><td><code>1a88fec6</code></td><td>前 Task 完成</td><td class="ok">完成</td></tr>
+<tr><td>T04 設定頁白話中文</td><td><code>d818ea7b</code></td><td>前 Task 完成</td><td class="ok">完成</td></tr>
+<tr><td>T05 席位定案名與 blurb</td><td><code>e5d1faf8</code></td><td>4 Major → 4 關閉（A:1、B:3）</td><td class="ok">完成</td></tr>
+<tr><td>T06 離線 renderer 換裝</td><td><code>76a8977e</code></td><td>前 Task 完成（F-A06-1 withdrawn）</td><td class="ok">完成</td></tr>
+<tr><td>T07 導覽注入器</td><td><code>02d9895f</code></td><td>前 Task 完成</td><td class="ok">完成</td></tr>
+<tr><td>T08 發問選單移除開放題</td><td><code>f1f6c953</code></td><td>0（雙 Reviewer 首輪零 Finding）</td><td class="ok">完成</td></tr>
+<tr><td>T09 端到端驗收與證據</td><td><code>9214747e</code></td><td>1 建議級 → 1 關閉</td><td class="ok">完成</td></tr>
+</table></div>
+<p class="small">本 Task 重要修正：T05 的 blurb 原以初始 DOM 快取供重畫使用，兩位 Reviewer 分別證明主流程（等待頁→新 run）與跨 run 路徑都會產生「名稱與說明不同套」——修正後 blurb 併入 SSE 幀與名稱同源；另修正預檢雙讀 TOCTOU（單次讀取、驗證與回傳同一份）並升版 roster schema 3.0.0。詳見各 Ticket「執行與 Review 紀錄」。</p>
+
+<h2>4. 驗收方式與實際結果</h2>
+<h3>4.1 T09 端到端證據（<code>acceptance/</code>，可重跑）</h3>
+<ul>
+<li>七條驗收條件全 PASS；<code>checks.json</code> 11 項機器可讀判定全 <code>ok=true</code>，生成器與重跑入口在 <code>acceptance/tools/</code>（實測自 /tmp 重跑 11 項全 PASS，41 檔中 36 檔逐位元組重現，5 檔僅暫存路徑行差異）。</li>
+<li>關鍵數字：R-001 逐鍵表 18 鍵逐字相符；19 頁導覽順序「…→設定→關閉伺服器」；4 份離線頁 sha256 與位元組前後不變、注入僅於 <code>&lt;body&gt;</code> 後加一段；對比 41 組全達標；A5 繁中 grep 18 頁 0 命中（窄豁免六方向鑑別通過）；渲染樣本 32 份。</li>
+<li>Reviewer 獨立複核：A 重掃 A5、比對 SHA-256；B 獨立重算 WCAG 41 組、植入式鑑別、逐檔位元組比對。</li>
+</ul>
+<h3>4.2 全套測試</h3>
+<p><code>python3 -m unittest discover -s tests</code> → <code>Ran 2729 tests / OK (skipped=1) / exit 0</code>。基準推移：2696（開工）→ 2713（T05 首輪 +17）→ 2717（T05 修正輪 +4）→ 2729（T08 +12）；skipped=1 全程不變（test_debate_rules 大小寫別名，如實記 skip 不計 PASS）。</p>
+<h3>4.3 實機伺服器抽驗（本次結案時）</h3>
+<ul>
+<li>發現埠 8765 上有改版前啟動的舊程序（首頁仍含開放題選項）——已走專案優雅停止路徑（server_stop 正常寫入）重啟。</li>
+<li>新程序 HTTP 抽驗：首頁發問選單無開放題 ✓；設定頁繁中白話、零 <code>prefers-color-scheme</code> ✓；歷史頁保留開放題回看入口 ✓；run 詳情頁導覽 ✓；經伺服器的離線報告出現「站內導覽」與 <code>hoya-site-nav</code> scoped style ✓；即時頁席位卡含 blurb ✓。</li>
+</ul>
+
+<h2>5. Coordinator 裁決清單（請使用者複核）</h2>
+<h3>5.1 前一執行 Task（T01–T07 期間）</h3>
+<ol>
+<li>T01：tests/test_webapp.py 8 處雙 palette 斷言＋:3202 字體斷言補授權改寫（R-004 使舊斷言過期）。</li>
+<li>T02：404／無法啟動頁依 R-002 指向最新報告 run（server.py 三個渲染呼叫點窄授權）；500 頁保留 None。</li>
+<li>T03：test_design_tokens.py 的 T01 守門紀錄行授權更新。</li>
+<li>T04：R-001 定案文案與 A5 標準衝突→窄豁免，僅 <code>note-confidence.light_scale[*].level</code> 子樹（parser 層實作＋四條守衛測試）。</li>
+<li>T07：「樣式走站內樣式表 route」條文在錯誤前提上→注入自帶 scoped style（.hoya-site-nav、值取自 design_tokens、aria-label「站內導覽」、舊 run 亦有新設計風＝Spec 已核准代價）。</li>
+<li>T06 F-A06-1 withdrawn：舊 run 跨版本 verify_run 在本包之前即不成立，列既存架構風險。</li>
+</ol>
+<h3>5.2 本 Task（T05／T08／T09）</h3>
+<ol>
+<li>T05：三個既有測試檔舊席名字面值更新授權（R-005 使舊斷言過期）。</li>
+<li>T05：test_frontend_redesign_acceptance 長短名包含歧義判定修正授權（次數判定＋雙向鑑別測試）。</li>
+<li>T05：預檢委派 seats.load_roster 單一權威授權。</li>
+<li>T05：修 blurb 錯配之寫入邊界窄擴充（webapp/live.py＋LIVE_SCRIPT；server.py 經驗證無需修改）。</li>
+<li>T05：roster_version 2.0.0→3.0.0（文件僅載明「升版」未指定號碼；新增必填欄位＝不相容變更→semver 主版進位；Reviewer B 複驗認可）。</li>
+<li>T08：_asset_picker_rules() 一併改為市場來源授權（僅服務發問表單，避免殘留死規則）。</li>
+<li>T08：target_format_hint() open 分支與 _NON_MARKET_TARGET_HINTS 保留授權（票面要求保留後端 open 能力）。</li>
+<li>T09：checks.json 不記載「包含自身之樹」的雜湊（自指問題），最終快照 SHA 以票面紀錄為權威登記。</li>
+</ol>
+<h3>5.3 備考（不阻擋結案，交使用者決定是否另開票）</h3>
+<ul>
+<li>tests/test_webapp.py:1151 測試名 over-claim（前 Task 記錄）。</li>
+<li>毛玻璃配方在 pages.py 與兩個 renderer 共三份（整併候選）。</li>
+<li>「是否要真正的站內樣式表 route」（T07 裁決時擱置的方向性議題）。</li>
+<li>target_format_hint() open 分支現無頁面呼叫者（暫時死碼，是否清理）。</li>
+</ul>
+
+<h2>6. 已知風險與未涵蓋範圍</h2>
+<ul>
+<li><span class="warn">最終視覺走查未完成</span>：本平台無瀏覽器自動化能力；毛玻璃真實合成、字體落點、行動版佈局、OS 深色實機切換，皆待使用者依 §8 清單確認（自動化證據：渲染 HTML＋獨立對比度計算＋成品零深色媒體查詢）。</li>
+<li>舊 run 逐字稿沿用舊席名＝Spec 已核准代價；舊 run 經伺服器瀏覽呈新設計風＝Spec 已核准代價。</li>
+<li>T09 渲染兩趟 run 的外部邊界（席位池／Core 撰稿／命題撰寫）為注入替身：證明「接線與呈現對」，不證明「真 provider 可跑」。</li>
+<li>跨版本 verify_run 對舊 run 不成立（F-A06-1，withdrawn）：既存架構風險，先於本包存在。</li>
+<li>roster_version 3.0.0 為對外宣告變更；已確認程式中無版號字面值比對，唯一消費端為預檢 manifest 與稽核證據。</li>
+<li>T05 首輪曾觀察到自訂批跑順序下 test_codex_bridge 偶發 1 fail＋1 error；單獨跑與 discover 正式順序皆綠、與本包改動無關，如實記錄未追查。</li>
+</ul>
+
+<h2>7. 回復方式</h2>
+<ul>
+<li>git 全程唯讀：本包全部變更皆在工作樹、未提交、未動 index（<code>git status</code>／<code>git diff</code> 可直接檢視）。commit 與否由使用者決定。</li>
+<li>各票基準樹與最終快照樹雜湊記錄於各 Ticket「執行與 Review 紀錄」，任何檔案可用 <code>git cat-file -p &lt;樹&gt;:&lt;路徑&gt;</code> 取回任一階段內容。</li>
+<li>注意既知地雷：大量檔案未入 index，<code>git diff &lt;樹&gt; -- &lt;路徑&gt;</code> 會誤報整檔刪除；請一律用樹對樹的 <code>git diff-tree</code>。</li>
+</ul>
+
+<h2>8. 請使用者做最終視覺確認</h2>
+<p>伺服器已啟動：<strong><a href="http://127.0.0.1:8765/">http://127.0.0.1:8765/</a></strong>（資料root：專案預設；停止：頁面右上「關閉伺服器」）</p>
+<ol class="checklist">
+<li><strong>首頁／發問</strong>：白底 Google 風、header 五導覽、「設定」在「關閉伺服器」左邊；發問選單只有台股／美股／幣。</li>
+<li><strong>即時辯論頁</strong>：七張席位卡＝定案名＋卡片下方一句白話說明（台股題股票套、幣題幣圈套）。</li>
+<li><strong>歷史與命中率</strong>：篩選選單仍可選開放題；開啟一個歷史開放題 run 能正常回看。</li>
+<li><strong>設定頁</strong>：規則項是中文標籤＋白話說明、分組標題中文。</li>
+<li><strong>run 詳情→報告</strong>：經伺服器開 report.html／debate.html 出現五導覽且可回站內。</li>
+<li><strong>深色測試</strong>：把作業系統切成深色再重新整理——畫面應仍是同一套白底。</li>
+</ol>
+
+<h2>9. 證據位置</h2>
+<ul>
+<li>驗收證據本體：<code>docs/work/wp-20260810-092746-8728cbc6/acceptance/</code>（summary、checks.json、9 份 txt、32 份渲染 HTML、tools/ 重跑入口）。</li>
+<li>過程證據（diff、Reviewer 回報、重現／探針 log）：session scratchpad <code>C:\Users\leslie\AppData\Local\Temp\claude\d--workstationD-hoya-bit\0fbeada5-380e-464b-b8d1-47036237db5d\scratchpad\</code>（t05／t08／t09）；前 Task 證據於 <code>…\1ba50945-…\scratchpad\</code>（t01–t07）。</li>
+<li>Reviewer sessions（可 resume 追溯）：T05 A <code>019feb0c-c242…</code>／B <code>019feb0c-c99e…</code>；T08 A <code>019feb4a-d3c6…</code>／B <code>019feb4a-dcf6…</code>；T09 A <code>019feb70-e4bc…</code>／B <code>019feb70-f0d6…</code>。</li>
+</ul>
+
+<p class="small">本報告只引用可重現證據；無修改前基準的數字未虛構。舊進度頁 progress-report.html 屬已除役的前版流程快照，以本報告為準。</p>
+</main>
+</body>
+</html>

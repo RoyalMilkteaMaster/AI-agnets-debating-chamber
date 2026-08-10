@@ -31,7 +31,7 @@ EvidenceCard contract 與操作邊界等價注入七席。這不代表 Ticket #2
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 --version
 ```
 
@@ -43,7 +43,7 @@ python3 --version
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m unittest discover -s tests -v
 ```
 
@@ -51,7 +51,7 @@ python3 -m unittest discover -s tests -v
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m unittest tests.test_question_package tests.test_prompt_builder -v
 ```
 
@@ -63,7 +63,7 @@ python3 -m unittest tests.test_question_package tests.test_prompt_builder -v
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents drill --provider-mode fake \
   --question "分析 BTC 過去 14 日市場狀態"
 ```
@@ -77,7 +77,7 @@ python3 -m hoya_market_agents drill --provider-mode fake \
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents preflight --provider system --seats 7 \
   --mode fixture --preflight-id rehearsal-fixture
 ```
@@ -110,7 +110,7 @@ runtime 證明。
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents preflight --provider system --seats 7 \
   --mode real --codex-run-id <CODEX_RUN_ID> \
   --codex-challenge <CODEX_CHALLENGE> \
@@ -137,7 +137,7 @@ output 經 canonical normalize 必須精確等於該席正式 evidence records�
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m unittest tests.test_claude_adapter -v
 ```
 
@@ -149,7 +149,7 @@ session UUID：
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents preflight --provider claude --seats 3
 ```
 
@@ -160,7 +160,7 @@ python3 -m hoya_market_agents preflight --provider claude --seats 3
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m unittest tests.test_antigravity_adapter -v
 ```
 
@@ -171,7 +171,7 @@ python3 -m unittest tests.test_antigravity_adapter -v
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents preflight --provider antigravity --seats 1
 ```
 
@@ -184,7 +184,7 @@ success、timeout 或 error 後清除，輸出不包含 OAuth token 或帳號資
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents run --provider-mode fake --question "分析 BTC 過去 14 日市場狀態"
 ```
 
@@ -199,7 +199,7 @@ python3 -m hoya_market_agents run --provider-mode fake --question "分析 BTC �
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents live \
   --data-root "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data" \
   --host 127.0.0.1 --port 8765
@@ -218,7 +218,7 @@ python3 -m hoya_market_agents live \
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents run --provider-mode fake \
   --question "分析 ETH 過去 7 日市場狀態" \
   --data-root /tmp/hoya-run-sandbox
@@ -231,31 +231,36 @@ python3 -m hoya_market_agents run --provider-mode fake \
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents"
+cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
 python3 -m hoya_market_agents verify-run --run-id <RUN_ID>
 ```
 
 ## 輸出位置
 
-- Code Root：`/mnt/d/workstationD/hoya bit/hoya-bit-market-agents`（程式、設定、測試、文件）
+- Code Root：`/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final`（程式、設定、測試、文件）
 - Data Root：`/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data`（執行結果，不進 Git）
 
-每次執行建立一個新的 `run_id` 目錄，**永不覆寫**先前的執行：
+每次執行建立一個新的 run 目錄，**永不覆寫**先前的執行。目錄依台北日期分層，
+資料夾名是給人看的標籤：台北 `HHMM`＋題目 slug＋**整串 `run_id` 的 16 碼
+SHA-256 前綴**。run 的身分仍是含 UTC 時戳的 `run_id`，記在每一份 artifact 裡；
+要由 `run_id` 找回目錄請用 `run_store.resolve_run_dir`，不要自己拼路徑
+（ADR 0005）：
 
 ```text
 <Data Root>/runs/
-├─ <run-id>/
-│  ├─ manifest.json      # 題目、資產、期間、七席、attempt、artifact SHA-256、範圍限制
-│  ├─ evidence.jsonl     # 合併後的不可變證據快照
-│  ├─ debate.jsonl       # 共享原文辯論紀錄
-│  ├─ events.jsonl       # 執行中逐筆追加的公開事件，供 SSE 直播推送
-│  ├─ votes.json         # 七席有效立場與票數
-│  ├─ report.json        # 報告 contract（Markdown 與 HTML 的唯一來源）
-│  ├─ report.md
-│  ├─ report.html        # 單一自包含檔案，離線可開啟
-│  ├─ debate.html        # 完整公開辯論與證據頁，離線可開啟
-│  └─ agents/<seat-id>/  # 每席只寫自己的目錄：prompt、研究、辯論、投票
-└─ latest.json           # 唯一可變檔案，指向最近一次執行
+├─ <YYYY-MM-DD>/        # 台北日期
+│  └─ <HHMM-題目slug-hash>/
+│     ├─ manifest.json  # 題目、資產、期間、七席、attempt、artifact SHA-256、範圍限制
+│     ├─ evidence.jsonl # 合併後的不可變證據快照
+│     ├─ debate.jsonl   # 共享原文辯論紀錄
+│     ├─ events.jsonl   # 執行中逐筆追加的公開事件，供 SSE 直播推送
+│     ├─ votes.json     # 七席有效立場與票數
+│     ├─ report.json    # 報告 contract（Markdown 與 HTML 的唯一來源）
+│     ├─ report.md
+│     ├─ report.html    # 單一自包含檔案，離線可開啟
+│     ├─ debate.html    # 完整公開辯論與證據頁，離線可開啟
+│     └─ agents/<seat-id>/  # 每席只寫自己的目錄：prompt、研究、辯論、投票
+└─ latest.json          # 唯一可變檔案，指向最近一次執行
 ```
 
 七個固定席位 ID：`spot-technical`、`derivatives`、`onchain`、`official-events`、

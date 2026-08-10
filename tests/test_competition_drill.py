@@ -13,7 +13,10 @@ from pathlib import Path
 
 from hoya_market_agents import question_package as question_package_module
 from hoya_market_agents.cli import main
-from hoya_market_agents.competition_drill import run_fake_competition_drill
+from hoya_market_agents.competition_drill import (
+    FALLBACK_EVIDENCE_ASSET,
+    run_fake_competition_drill,
+)
 from hoya_market_agents.debate_state_machine import STANCES_BY_QUESTION_TYPE
 from hoya_market_agents.question import UnsupportedQuestionError
 from hoya_market_agents.question_package import build_question_package
@@ -182,9 +185,9 @@ class CompetitionDrillTest(unittest.TestCase):
         actual_models = {
             "spot-technical": "gpt-5.6-sol",
             "derivatives": "gpt-5.6-sol",
-            "onchain": "gpt-5.6-sol",
+            "onchain": "claude-opus-5",
             "official-events": "claude-opus-5",
-            "news": "claude-opus-5",
+            "news": "gpt-5.6-sol",
             "social-macro": "claude-opus-5",
             "counter-evidence": "gemini-3.1-pro-high",
         }
@@ -378,7 +381,7 @@ class DrillCoversEveryApprovedQuestionTypeTest(unittest.TestCase):
         )
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def assert_drill(self, question, question_type, stances, assets):
+    def assert_drill(self, question, question_type, stances, assets, asset_class=None):
         code, out, err = self.drill_cli(question)
 
         self.assertEqual(0, code, err)
@@ -389,6 +392,8 @@ class DrillCoversEveryApprovedQuestionTypeTest(unittest.TestCase):
         recorded = json.loads((run_dir / "question.json").read_text(encoding="utf-8"))
         self.assertEqual(question_type, recorded["question_type"])
         self.assertEqual(list(assets), recorded["assets"])
+        if asset_class is not None:
+            self.assertEqual(asset_class, recorded["asset_class"])
 
         votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
         self.assertEqual(set(stances), set(votes["tally"]))
@@ -408,7 +413,10 @@ class DrillCoversEveryApprovedQuestionTypeTest(unittest.TestCase):
             if line.strip()
         ]
         self.assertEqual(7, len(evidence))
-        self.assertEqual(set(assets), {card["asset"] for card in evidence})
+        self.assertEqual(
+            set(assets) or {FALLBACK_EVIDENCE_ASSET},
+            {card["asset"] for card in evidence},
+        )
         return run_dir, recorded
 
     def test_single_asset_market_state_drill_uses_market_stances(self):
@@ -417,6 +425,7 @@ class DrillCoversEveryApprovedQuestionTypeTest(unittest.TestCase):
             "single_asset_market_state",
             ("bullish", "bearish", "neutral"),
             ("ETH",),
+            asset_class="crypto",
         )
 
     def test_two_asset_comparison_drill_uses_comparison_stances_and_both_assets(self):
@@ -425,6 +434,7 @@ class DrillCoversEveryApprovedQuestionTypeTest(unittest.TestCase):
             "two_asset_comparison",
             ("asset_a_stronger", "asset_b_stronger", "no_clear_difference"),
             ("XRP", "BTC"),
+            asset_class="crypto",
         )
 
     def test_event_impact_drill_uses_event_stances(self):
@@ -433,6 +443,7 @@ class DrillCoversEveryApprovedQuestionTypeTest(unittest.TestCase):
             "event_impact",
             ("positive", "negative", "unclear_or_conditional"),
             ("SOL",),
+            asset_class="crypto",
         )
 
     def test_open_proposition_drill_uses_open_stances_and_a_degraded_proposition(self):
@@ -450,8 +461,48 @@ class DrillCoversEveryApprovedQuestionTypeTest(unittest.TestCase):
 
         self.assertEqual(OPEN_QUESTION, recorded["proposition"])
 
-    def test_question_outside_every_approved_type_still_fails_closed(self):
-        code, _, err = self.drill_cli("幫我預測下週樂透號碼")
+    def test_taiwan_listing_runs_the_whole_drill(self):
+        _, recorded = self.assert_drill(
+            "幫我分析 2330 未來七天會不會漲",
+            "open_proposition",
+            ("affirmative", "negative_side", "undecided"),
+            ("2330",),
+            asset_class="tw_stock",
+        )
+
+        self.assertEqual(7, recorded["period_days"])
+        self.assertEqual("幫我分析 2330 未來七天會不會漲", recorded["proposition"])
+
+    def test_us_listing_runs_the_whole_drill(self):
+        self.assert_drill(
+            "NVDA 這檔美股未來七天股價會不會漲",
+            "open_proposition",
+            ("affirmative", "negative_side", "undecided"),
+            ("NVDA",),
+            asset_class="us_stock",
+        )
+
+    def test_coin_outside_the_old_whitelist_runs_the_whole_drill(self):
+        self.assert_drill(
+            "分析 DOGE 幣價過去 14 日市場狀態",
+            "single_asset_market_state",
+            ("bullish", "bearish", "neutral"),
+            ("DOGE",),
+            asset_class="crypto",
+        )
+
+    def test_a_question_naming_no_asset_runs_the_whole_drill(self):
+        """開放命題不再 fail closed，整條管線照跑。"""
+        self.assert_drill(
+            "幫我預測下週樂透號碼",
+            "open_proposition",
+            ("affirmative", "negative_side", "undecided"),
+            (),
+            asset_class="open",
+        )
+
+    def test_a_blank_question_is_the_only_shape_left_that_fails_closed(self):
+        code, _, err = self.drill_cli("   ")
 
         self.assertEqual(1, code)
         self.assertIn("DRILL FAILED", err)

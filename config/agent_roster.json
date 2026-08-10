@@ -1,6 +1,8 @@
 {
-  "roster_version": "1.0.0",
+  "roster_version": "3.0.0",
   "note": "Competition roster. Target/actual model, controlled search tools and research skill are checked during live preflight.",
+  "_schema": "3.0.0 起每套 profile 的 blurb 為必填：少了它舊 roster 一律載不進來，屬不相容變更，故主版號由 2.0.0 進位。",
+  "_profiles": "每席的顯示名稱、研究方向與白話說明唯一權威（ADR 0006、Spec R-005）。stock 套為台股與美股共用，crypto 套為幣圈語彙，open 套供開放題與跨類題使用，名稱沿用舊值。seat_id 與 output_dir 永不隨套組或職能改變。席位層的 focus 是 open 套 focus 的投影，供賽前預檢的必填欄位使用，不得與 open 套不同。blurb 是席位卡下方給讀者看的一句白話說明，只供顯示，不進研究 prompt。",
   "core": {
     "role": "core",
     "provider": "codex",
@@ -14,7 +16,24 @@
       "provider": "codex",
       "target_model": "gpt-5.6-sol",
       "allowed_tools": ["web_search"],
-      "required_skills": ["research"]
+      "required_skills": ["research"],
+      "profiles": {
+        "stock": {
+          "display_name": "技術面分析師",
+          "focus": "台股與美股：價量、均線、支撐壓力、缺口",
+          "blurb": "看線圖：價量、均線、支撐壓力，判斷走勢強弱與關鍵價位"
+        },
+        "crypto": {
+          "display_name": "技術面分析師",
+          "focus": "現貨價量與技術結構",
+          "blurb": "看線圖：價量、均線、支撐壓力，判斷走勢強弱與關鍵價位"
+        },
+        "open": {
+          "display_name": "圖表偵探",
+          "focus": "現貨價格、成交量與技術結構",
+          "blurb": "看價量與技術結構，判斷走勢強弱"
+        }
+      }
     },
     {
       "seat_id": "derivatives",
@@ -23,16 +42,50 @@
       "provider": "codex",
       "target_model": "gpt-5.6-sol",
       "allowed_tools": ["web_search"],
-      "required_skills": ["research"]
+      "required_skills": ["research"],
+      "profiles": {
+        "stock": {
+          "display_name": "籌碼面分析師",
+          "focus": "台股：期貨選擇權（外資台指期淨部位、P/C）、融資融券、借券賣出；美股：選擇權流向（P/C、IV）、空單餘額、融資餘額",
+          "blurb": "看期貨與選擇權部位、融資融券：判斷大戶與散戶各押哪一邊"
+        },
+        "crypto": {
+          "display_name": "合約槓桿分析師",
+          "focus": "衍生品、OI、Funding、清算",
+          "blurb": "看合約市場的槓桿狀態：多空部位、資金費率、清算風險"
+        },
+        "open": {
+          "display_name": "槓桿雷達",
+          "focus": "衍生品、OI、Funding、清算與基差",
+          "blurb": "看衍生品部位與槓桿狀態"
+        }
+      }
     },
     {
       "seat_id": "onchain",
       "focus": "鏈上、供給、巨鯨與交易所流量",
       "output_dir": "onchain",
-      "provider": "codex",
-      "target_model": "gpt-5.6-sol",
-      "allowed_tools": ["web_search"],
-      "required_skills": ["research"]
+      "provider": "claude",
+      "target_model": "opus",
+      "allowed_tools": ["WebSearch", "WebFetch"],
+      "required_skills": ["research"],
+      "profiles": {
+        "stock": {
+          "display_name": "法人動向分析師",
+          "focus": "台股：三大法人買賣超、外資持股比、集保股權分散；美股：13F 持倉變化、內部人申報（Form 4）、ETF 資金流",
+          "blurb": "看法人與大股東的錢往哪走：買賣超、持股變化、資金流向"
+        },
+        "crypto": {
+          "display_name": "鏈上資金追蹤師",
+          "focus": "鏈上、供給、巨鯨、交易所流量",
+          "blurb": "看鏈上的錢往哪走：巨鯨動向、交易所進出、籌碼供給"
+        },
+        "open": {
+          "display_name": "鏈上獵人",
+          "focus": "鏈上、供給、巨鯨與交易所流量",
+          "blurb": "看鏈上資金與供給動向"
+        }
+      }
     },
     {
       "seat_id": "official-events",
@@ -41,16 +94,50 @@
       "provider": "claude",
       "target_model": "opus",
       "allowed_tools": ["WebSearch", "WebFetch"],
-      "required_skills": ["research"]
+      "required_skills": ["research"],
+      "profiles": {
+        "stock": {
+          "display_name": "官方公告哨兵",
+          "focus": "台股：重大訊息、財報／法說／除權息是否落在預測窗內、金管會處分；美股：8-K／10-Q、財報日程、監管動作",
+          "blurb": "盯官方公告與行事曆：重大訊息、財報法說日程、主管機關動作"
+        },
+        "crypto": {
+          "display_name": "官方公告哨兵",
+          "focus": "官方公告、監管、事件催化",
+          "blurb": "盯官方消息：項目方公告、監管動作、重大事件時程"
+        },
+        "open": {
+          "display_name": "官方哨兵",
+          "focus": "官方公告、監管及事件催化",
+          "blurb": "盯官方公告、監管與重大事件"
+        }
+      }
     },
     {
       "seat_id": "news",
       "focus": "新聞查證與事件時間線",
       "output_dir": "news",
-      "provider": "claude",
-      "target_model": "opus",
-      "allowed_tools": ["WebSearch", "WebFetch"],
-      "required_skills": ["research"]
+      "provider": "codex",
+      "target_model": "gpt-5.6-sol",
+      "allowed_tools": ["web_search"],
+      "required_skills": ["research"],
+      "profiles": {
+        "stock": {
+          "display_name": "新聞探員",
+          "focus": "台股與美股：具名媒體查證、事件時間線",
+          "blurb": "查證具名媒體報導、整理事件時間線，過濾未經證實的消息"
+        },
+        "crypto": {
+          "display_name": "新聞探員",
+          "focus": "具名媒體查證、事件時間線",
+          "blurb": "查證具名媒體報導、整理事件時間線，過濾未經證實的消息"
+        },
+        "open": {
+          "display_name": "新聞探員",
+          "focus": "新聞查證與事件時間線",
+          "blurb": "查證具名媒體報導、整理事件時間線"
+        }
+      }
     },
     {
       "seat_id": "social-macro",
@@ -59,16 +146,50 @@
       "provider": "claude",
       "target_model": "opus",
       "allowed_tools": ["WebSearch", "WebFetch"],
-      "required_skills": ["research"]
+      "required_skills": ["research"],
+      "profiles": {
+        "stock": {
+          "display_name": "輿情與大盤觀察員",
+          "focus": "台股：散戶情緒（PTT 等）、宏觀、大盤與產業連動（費半、ADR）；美股：社群情緒、宏觀、SPX／板塊連動",
+          "blurb": "看散戶討論風向與大環境：論壇情緒、宏觀消息、大盤與產業連動"
+        },
+        "crypto": {
+          "display_name": "輿情與幣市社群觀察員",
+          "focus": "社群、宏觀及 BTC 關聯",
+          "blurb": "看社群風向與大環境：討論熱度、宏觀消息、BTC 連動"
+        },
+        "open": {
+          "display_name": "社群觀察員",
+          "focus": "社群、重要帳戶、宏觀及 BTC 關聯",
+          "blurb": "看社群情緒與宏觀環境"
+        }
+      }
     },
     {
       "seat_id": "counter-evidence",
-      "focus": "反方證據與資料品質檢查",
+      "focus": "關鍵數據與事實查核",
       "output_dir": "counter-evidence",
       "provider": "antigravity",
       "target_model": "gemini-3.1-pro-high",
       "allowed_tools": ["search_web"],
-      "required_skills": ["research"]
+      "required_skills": ["research"],
+      "profiles": {
+        "stock": {
+          "display_name": "基本面分析師",
+          "focus": "台股：月營收、財報與財測、估值 vs 同業、產業供需；美股：財報數字與指引、估值、產業供需",
+          "blurb": "看公司本身體質：營收財報、估值比較、產業供需"
+        },
+        "crypto": {
+          "display_name": "項目體質分析師",
+          "focus": "TVL、協議收入、代幣解鎖與供給日曆、開發活動",
+          "blurb": "看項目本身體質：鎖倉量、協議收入、代幣解鎖時程"
+        },
+        "open": {
+          "display_name": "基本面研究員",
+          "focus": "關鍵數據與事實查核",
+          "blurb": "查核題目相關的關鍵數據與事實"
+        }
+      }
     }
   ]
 }

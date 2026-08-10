@@ -2,19 +2,21 @@
 
 The renderer under test is read-only for these tests: every expectation here is
 derived from the recorded snapshot, the Traditional-Chinese label tables and the
-three-page navigation contract shared with ``report_renderer``.
+shared navigation contract it holds with ``report_renderer``. That navigation is
+**two pages** — ``report.html`` and ``debate.html`` — and its authority is the
+bundle's own required-artifact list rather than a count written down anywhere. It
+was three until Ticket 10 retired the live room, whose ``live.html`` was never a
+file in a run directory at all.
 """
 
 import html
 import re
 import unittest
 
+from hoya_market_agents import design_tokens
 from hoya_market_agents.report_audit_renderer import (
     CONSENSUS_LABELS,
     MISSING,
-    SEAT_AVATARS,
-    SEAT_CHAT_NAMES,
-    SEAT_LABELS,
     SOURCE_TIER_LABELS,
     STANCE_LABELS,
     DebateAuditError,
@@ -23,7 +25,24 @@ from hoya_market_agents.report_audit_renderer import (
 )
 from hoya_market_agents.report_fixtures import load_fixture
 from hoya_market_agents.report_renderer import render_market_html
-from hoya_market_agents.seats import SEAT_IDS
+from hoya_market_agents.seats import (
+    SEAT_AVATARS,
+    SEAT_IDS,
+    seat_identities,
+    seat_profiles,
+)
+
+
+def chat_names(asset_class=None):
+    """How this page must name each seat: the roster byline plus its Agent number.
+
+    Derived from the seat authority rather than written down here, so the page and
+    the authority cannot drift apart while both stay green.
+    """
+    return {
+        seat_id: "{}（{}）".format(identity.display_name, identity.agent_number)
+        for seat_id, identity in seat_identities(asset_class).items()
+    }
 
 # Anything that would make a browser fetch a resource when the file is opened.
 _RESOURCE_LOADERS = re.compile(
@@ -34,7 +53,45 @@ _RESOURCE_LOADERS = re.compile(
 
 _HREF = re.compile(r'href="([^"]*)"')
 
+# Every colour written out longhand, the page's one stylesheet, and the token
+# block that is the only place a colour may be written at all.
+_COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)")
+_STYLE = re.compile(r"<style>(.*?)</style>", re.DOTALL)
+_TOKEN_BLOCK = re.compile(r"^:root\{[^}]*\}")
+# The structural elements a reader navigates by: the page's 章節, not its
+# nesting.
+_LANDMARKS = re.compile(r"<(main|header|footer|section|nav|article)([^>]*)>")
+
 _RUN_ID = "audit-20260802-btc"
+
+
+def stylesheets_of(page):
+    return _STYLE.findall(page)
+
+
+def rules_of(sheet):
+    """The sheet with its token block removed: the rules and nothing else."""
+    return _TOKEN_BLOCK.sub("", sheet)
+
+
+def colour_literals(text):
+    return set(_COLOUR.findall(text))
+
+
+def landmarks(page):
+    """The page's section skeleton as ``tag#id.class`` in document order."""
+    found = []
+    for tag, attributes in _LANDMARKS.findall(_STYLE.sub("", page)):
+        identifier = re.search(r'id="([^"]*)"', attributes)
+        classes = re.search(r'class="([^"]*)"', attributes)
+        found.append(
+            "{}{}{}".format(
+                tag,
+                "#" + identifier.group(1) if identifier else "",
+                "." + classes.group(1).replace(" ", ".") if classes else "",
+            )
+        )
+    return found
 
 
 def _evidence(evidence_id, seat_id, **overrides):
@@ -166,14 +223,26 @@ class DebateLabelTest(unittest.TestCase):
             self.assertIn(label, self.html, label)
 
     def test_all_seven_seats_show_consistent_chat_names_and_avatars(self):
-        self.assertEqual(set(SEAT_IDS), set(SEAT_CHAT_NAMES))
+        names = chat_names()
+        self.assertEqual(set(SEAT_IDS), set(names))
         self.assertEqual(set(SEAT_IDS), set(SEAT_AVATARS))
         self.assertEqual(7, len(set(SEAT_AVATARS.values())))
         transcript = self._transcript()
         for seat_id in SEAT_IDS:
-            self.assertIn(SEAT_CHAT_NAMES[seat_id], transcript, seat_id)
+            self.assertIn(names[seat_id], transcript, seat_id)
             self.assertIn(SEAT_AVATARS[seat_id], transcript, seat_id)
             self.assertNotIn(seat_id, transcript, seat_id)
+
+    def test_the_names_follow_the_runs_market_and_never_the_retired_ones(self):
+        """This page shows a seat; the roster decides who that seat is (ADR 0006)."""
+        report, sources, _ = _snapshot()
+        report["asset_class"] = "tw_stock"
+        stock_transcript = render_debate_html(report, sources)
+
+        for seat_id, profile in seat_profiles("tw_stock").items():
+            self.assertIn(profile.display_name, stock_transcript, seat_id)
+        for retired in ("鏈上獵人", "槓桿雷達", "反證稽核員"):
+            self.assertNotIn(retired, stock_transcript, retired)
 
     def test_stances_are_rendered_in_chinese_and_raw_codes_are_absent(self):
         self.assertEqual(
@@ -277,7 +346,7 @@ class DebateTranscriptTest(unittest.TestCase):
 
     def test_each_message_shows_who_when_stance_and_verbatim_reason(self):
         item = self._item(html.escape("公開理由 m-02。"))
-        self.assertIn(SEAT_CHAT_NAMES["counter-evidence"], item)
+        self.assertIn(chat_names()["counter-evidence"], item)
         self.assertIn(SEAT_AVATARS["counter-evidence"], item)
         self.assertIn(STANCE_LABELS["bearish"], item)
         self.assertIn("公開理由 m-02。", item)
@@ -456,8 +525,14 @@ class EvidenceCardTest(unittest.TestCase):
         return self.html[start : self.html.index("</details>", start)]
 
 
-class ThreePageNavigationTest(unittest.TestCase):
-    """Every static page must expose the same live/report/debate navigation."""
+class SharedNavigationTest(unittest.TestCase):
+    """Every static page links to the pages the bundle actually carries.
+
+    導覽曾經列三頁，第一頁 ``live.html`` 卻**從來不是 run 目錄裡的檔案**：舊的
+    直播頁走伺服器 URL，Ticket 10 退役 live_dashboard 之後連那條脈絡都沒有了。
+    封存後的 bundle 也不缺那一頁——「即時辯論」的內容就是辯論逐字稿，本頁已經
+    逐字轉錄了。
+    """
 
     def setUp(self):
         self.fixture = load_fixture("consensus-6-1")
@@ -468,10 +543,15 @@ class ThreePageNavigationTest(unittest.TestCase):
             self.fixture["report"], self.fixture["sources"]
         )
 
-    def test_both_pages_expose_all_three_destinations(self):
+    def test_both_pages_expose_every_page_the_bundle_carries(self):
         for rendered in (self.market_html, self.debate_html):
-            for target in ("live.html", "report.html", "debate.html"):
+            for target in ("report.html", "debate.html"):
                 self.assertIn('href="{}"'.format(target), rendered)
+
+    def test_neither_page_advertises_a_room_the_bundle_cannot_open(self):
+        for rendered in (self.market_html, self.debate_html):
+            self.assertNotIn('href="live.html"', rendered)
+            self.assertNotIn("即時辯論", rendered)
 
     def test_each_static_page_marks_its_current_tab(self):
         self.assertIn('href="report.html" aria-current="page"', self.market_html)
@@ -541,7 +621,7 @@ class EscapingAndUrlSafetyTest(unittest.TestCase):
         self.assertNotIn(url, rendered)
         self.assertIn("&quot;", rendered)
         self.assertEqual(
-            ["live.html", "report.html", "debate.html", "report.html", html.escape(url)],
+            ["report.html", "debate.html", "report.html", html.escape(url)],
             _HREF.findall(rendered),
         )
         self.assertEqual(url, html.unescape(_HREF.findall(rendered)[-1]))
@@ -595,7 +675,7 @@ class EscapingAndUrlSafetyTest(unittest.TestCase):
         rendered = render_debate_html(self.report, sources)
         for target in _HREF.findall(rendered):
             self.assertTrue(
-                target in ("live.html", "report.html", "debate.html")
+                target in ("report.html", "debate.html")
                 or target.startswith("#")
                 or target.startswith("https://")
                 or target.startswith("http://"),
@@ -755,6 +835,122 @@ class MissingDataAndFailClosedTest(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             render_debate_html(self.report, {"evidence": [], "debate": {}})
         self.assertIn("sources.debate", str(caught.exception))
+
+
+class DebatePageStylesAreTheTokenTableTest(unittest.TestCase):
+    """Spec R-004：這一頁的顏色也只有一個來源——``design_tokens``。
+
+    與市場報告同一套判準，不斷言色碼字面值、不斷言類名順序：token 區塊宣告的
+    是那張表當下持有的值、規則區一個顏色字面值都沒有、每個 ``var()`` 都解析得
+    到、重新上色會傳到新產出的頁面，章節骨架不動。
+    """
+
+    def setUp(self):
+        self.report, self.sources, self.messages = _snapshot()
+        self.html = render_debate_html(self.report, self.sources)
+        sheets = stylesheets_of(self.html)
+        self.assertEqual(1, len(sheets))
+        self.sheet = sheets[0]
+        self.rules = rules_of(self.sheet)
+
+    def test_the_page_declares_its_tokens_once_and_inline(self):
+        self.assertEqual(1, self.sheet.count(":root"))
+
+    def test_the_token_block_declares_the_table_the_module_holds(self):
+        block = _TOKEN_BLOCK.search(self.sheet)
+        self.assertIsNotNone(block)
+        for token, value in list(design_tokens.PALETTE.items()) + list(
+            design_tokens.SCALE.items()
+        ):
+            with self.subTest(token=token):
+                self.assertIn(
+                    "--{}:{};".format(token.replace("_", "-"), value), block.group(0)
+                )
+
+    def test_no_rule_names_a_colour_of_its_own(self):
+        """驗收條件：renderer 原始碼不再有寫死的 palette 色值。"""
+        self.assertEqual(set(), colour_literals(self.rules))
+
+    def test_every_var_reference_resolves_to_a_declared_token(self):
+        declared = {
+            "--{}".format(token.replace("_", "-"))
+            for token in list(design_tokens.PALETTE) + list(design_tokens.SCALE)
+        }
+        # 表以外，這份樣式表自己宣告的元件變數（例如每則發言的色條）也算數。
+        declared |= set(re.findall(r"(--[\w-]+):", self.sheet))
+
+        self.assertEqual(
+            set(), set(re.findall(r"var\((--[\w-]+)", self.sheet)) - declared
+        )
+
+    def test_the_page_carries_no_dark_mode_at_all(self):
+        self.assertNotIn("@media (prefers-color-scheme: dark)", self.html)
+        self.assertNotIn("prefers-color-scheme", self.html)
+
+    def test_a_repainted_token_reaches_a_newly_rendered_page(self):
+        original = design_tokens.PALETTE["accent"]
+        design_tokens.PALETTE["accent"] = "#123456"
+        try:
+            repainted = render_debate_html(self.report, self.sources)
+        finally:
+            design_tokens.PALETTE["accent"] = original
+
+        self.assertIn("--accent:#123456;", repainted)
+        self.assertNotIn("--accent:#123456;", render_debate_html(self.report, self.sources))
+
+    def test_every_seat_gets_one_of_the_four_decorative_hues(self):
+        """七席、四個裝飾色：色條照表輪替，而不是七個各自寫死的色碼。
+
+        兩席共用一個色調不會弄丟任何資訊——說話的人本來就是以名字署名的，色條
+        從頭到尾都不是唯一訊號。
+        """
+        painted = re.findall(r"\.tone-(\d+)\{--tone:var\((--[\w-]+)\);\}", self.rules)
+        hues = {
+            "--{}".format(token.replace("_", "-"))
+            for token in design_tokens.DECOR_TOKENS
+        }
+
+        self.assertEqual(
+            [str(number) for number in range(1, len(SEAT_IDS) + 1)],
+            [number for number, _token in painted],
+        )
+        self.assertEqual(hues, {token for _number, token in painted})
+
+    def test_a_decorative_hue_never_becomes_a_word(self):
+        """裝飾色是色條與填色，永遠不是字。
+
+        ``DECOR_INK`` 只保證「印在該色塊上的字」可讀；把品牌黃直接當成白底上的
+        文字顏色是另一回事，那是 1.7:1，AA 不會過。所以整份樣式表沒有一條
+        ``color:var(--google-*)``。
+        """
+        self.assertIsNone(re.search(r"(?<![\w-])color:var\(--google-", self.sheet))
+
+    def test_glass_is_the_browsers_own_and_fetches_nothing(self):
+        self.assertIn("var(--glass-surface)", self.rules)
+        self.assertIn("blur(var(--glass-blur))", self.rules)
+        self.assertNotIn("url(", self.sheet)
+        self.assertNotIn("@import", self.sheet)
+
+    def test_the_page_is_set_in_the_stack_the_table_names(self):
+        self.assertIn("font-family:var(--font-sans)", self.rules)
+        declared = re.search(r"--font-sans:([^;]*);", self.sheet).group(1)
+
+        self.assertEqual(design_tokens.SCALE["font_sans"], declared)
+        self.assertTrue(declared.startswith('"Microsoft JhengHei"'), declared)
+
+    def test_the_section_structure_is_unchanged(self):
+        """驗收條件：離線頁 DOM 章節結構與改版前一致（換裝只動樣式）。"""
+        expected = [
+            "main",
+            "header.page-header",
+            "nav.page-tabs",
+            "section.run-summary",
+            "section.transcript",
+        ]
+        expected += ["article.bubble"] * len(self.messages)
+        expected += ["section#evidence-library", "footer.page-footer"]
+
+        self.assertEqual(expected, landmarks(self.html))
 
 
 if __name__ == "__main__":
