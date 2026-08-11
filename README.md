@@ -1,5 +1,7 @@
 # AI agnets debating chamber
 
+![AI agnets debating chamber](docs/assets/readme-hero.png)
+
 七席多模型加密市場研究流程的 WSL Python 控制程式。
 
 本版本提供兩條明確分離的路徑：`drill --provider-mode fake` 以假時鐘打通七席並行、
