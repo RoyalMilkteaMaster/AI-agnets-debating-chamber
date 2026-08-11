@@ -3033,7 +3033,7 @@ class LiveSinglePageTest(HeaderFixture, unittest.TestCase):
     def test_the_four_countdowns_and_gauges_are_all_on_the_page(self):
         body = self.get("/live").body
 
-        for label in ("十五分鐘剩餘時間", "報告期限剩餘時間", "目前階段", "目前共識門檻"):
+        for label in ("十七分鐘剩餘時間", "報告期限剩餘時間", "目前階段", "目前共識門檻"):
             self.assertIn(label, body, label)
 
     # -- the three collapsible panels --------------------------------------
@@ -3089,7 +3089,7 @@ class LiveComparisonSealTest(PageFixture, unittest.TestCase):
 
     A two-asset comparison seals thirty seconds later than a single-asset run.
     The instant comes from the one authority for it — ``research_deadlines`` —
-    and nowhere here copies 270_000. Both directions are pinned so a fix for the
+    and nowhere here copies the comparison timestamp. Both directions are pinned so a fix for the
     comparison case cannot quietly move the single-asset one.
     """
 
@@ -3098,7 +3098,7 @@ class LiveComparisonSealTest(PageFixture, unittest.TestCase):
         self.assertEqual(1, len(seal), "exactly one seal milestone")
         return seal[0]["at_ms"]
 
-    # -- FN: the comparison run seals at 4:30 -------------------------------
+    # -- FN: the comparison run seals at 6:30 -------------------------------
 
     def test_a_comparison_run_seals_where_research_deadlines_puts_it(self):
         write_live_run(
@@ -3111,44 +3111,44 @@ class LiveComparisonSealTest(PageFixture, unittest.TestCase):
             research_deadlines("two_asset_comparison").seal_ms,
             self.seal_at_ms(snapshot),
         )
-        self.assertEqual(270000, self.seal_at_ms(snapshot))
+        self.assertEqual(390000, self.seal_at_ms(snapshot))
 
-    def test_the_comparison_seal_reads_four_thirty_on_the_rules_panel(self):
+    def test_the_comparison_seal_reads_six_thirty_on_the_rules_panel(self):
         write_live_run(
             self.data_root, question_type="two_asset_comparison", assets=("BTC", "ETH")
         )
 
         body = self.get("/live").body
 
-        self.assertRegex(body, r"<time>T\+04:30</time><span>封存證據並整理開場票")
+        self.assertRegex(body, r"<time>T\+06:30</time><span>封存證據並整理開場票")
 
     # -- FP: the single-asset run is not moved by the fix above -------------
 
-    def test_a_single_asset_run_still_seals_at_four_minutes(self):
+    def test_a_single_asset_run_seals_at_six_minutes(self):
         write_live_run(self.data_root)  # the default type is not a comparison
 
         snapshot = live.live_snapshot(self.data_root)
 
         self.assertEqual(research_deadlines(None).seal_ms, self.seal_at_ms(snapshot))
-        self.assertEqual(240000, self.seal_at_ms(snapshot))
+        self.assertEqual(360000, self.seal_at_ms(snapshot))
 
-    def test_the_single_asset_seal_reads_four_minutes_on_the_rules_panel(self):
+    def test_the_single_asset_seal_reads_six_minutes_on_the_rules_panel(self):
         write_live_run(self.data_root)
 
         body = self.get("/live").body
 
-        self.assertRegex(body, r"<time>T\+04:00</time><span>封存證據並整理開場票")
+        self.assertRegex(body, r"<time>T\+06:00</time><span>封存證據並整理開場票")
 
     # -- the "not yet voting" gate follows the real seal -------------------
 
     def test_before_the_comparison_seal_there_is_still_no_threshold(self):
-        """250s is past the single-asset seal but before the comparison one."""
+        """370s is past the single-asset seal but before the comparison one."""
         self.assertEqual(
-            "尚未進入投票", live.threshold_label(250000, "two_asset_comparison")
+            "尚未進入投票", live.threshold_label(370000, "two_asset_comparison")
         )
 
     def test_at_that_same_moment_a_single_asset_run_is_already_voting(self):
-        self.assertEqual("7 票", live.threshold_label(250000, None))
+        self.assertEqual("7 票", live.threshold_label(370000, None))
 
 
 class LiveVoteRoundTimelineTest(unittest.TestCase):
@@ -3180,10 +3180,10 @@ class LiveVoteRoundTimelineTest(unittest.TestCase):
         final_settle = [entry for entry in timeline if entry["label"] == "硬停結算"]
 
         self.assertEqual(
-            [(300_000, 7), (390_000, 6), (480_000, 5), (570_000, 4)],
+            [(420_000, 7), (510_000, 6), (600_000, 5), (690_000, 4)],
             [(entry["at_ms"], entry["required_votes"]) for entry in vote_rounds],
         )
-        self.assertEqual([(600_000, 4)], [
+        self.assertEqual([(720_000, 4)], [
             (entry["at_ms"], entry["required_votes"]) for entry in final_settle
         ])
 
@@ -6220,8 +6220,8 @@ class SettingsAtomicWriteTest(SettingsFixture, unittest.TestCase):
             self.edited(timeline__final_settle_offset_ms="420000"), replace=replace
         )
 
-        self.assertEqual([600_000], seen)
-        self.assertEqual(660_000, load_debate_rules(self.rules_path).force_stop_ms)
+        self.assertEqual([720_000], seen)
+        self.assertEqual(780_000, load_debate_rules(self.rules_path).force_stop_ms)
 
     def test_a_move_that_fails_leaves_the_original_file_untouched(self):
         before = self.bytes_now()
@@ -6272,7 +6272,7 @@ class SettingsAtomicWriteTest(SettingsFixture, unittest.TestCase):
 
         self.assertEqual(settings.NOT_PUBLISHED, outcome.state)
         self.assertEqual(420_000, self.document()["timeline"]["final_settle_offset_ms"])
-        self.assertEqual(600_000, debate_rules().force_stop_ms)
+        self.assertEqual(720_000, debate_rules().force_stop_ms)
 
 
 class SettingsLockTest(SettingsFixture, unittest.TestCase):
@@ -6393,17 +6393,17 @@ class RulesTakeEffectOnTheNextRunTest(SettingsFixture, unittest.TestCase):
         object's method, because that is the seam a run actually goes through.
         """
         held = debate_rules()
-        self.assertEqual(5, required_votes_at(480_000, rules=held))
+        self.assertEqual(5, required_votes_at(600_000, rules=held))
 
         self.lower_the_ladder()
 
-        self.assertEqual(5, required_votes_at(480_000, rules=held))
+        self.assertEqual(5, required_votes_at(600_000, rules=held))
         self.assertEqual(5, held.vote_rounds[2].threshold)
 
     def test_the_next_run_reads_the_new_numbers(self):
         self.lower_the_ladder()
 
-        self.assertEqual(4, required_votes_at(480_000))
+        self.assertEqual(4, required_votes_at(600_000))
         self.assertEqual(4, debate_rules().vote_rounds[2].threshold)
 
     def test_the_two_answers_come_from_two_different_frozen_objects(self):
@@ -6424,7 +6424,7 @@ class RulesTakeEffectOnTheNextRunTest(SettingsFixture, unittest.TestCase):
         )
 
         self.assertIs(held, debate_rules())
-        self.assertEqual(5, required_votes_at(480_000))
+        self.assertEqual(5, required_votes_at(600_000))
 
 class SettingsPageFixture(PageFixture, SettingsFixture):
     """A handler pointed at this test's own copy of the rule file."""
@@ -7040,7 +7040,7 @@ class SettingsChangeReachesLiveTimelineTest(SettingsPageFixture, unittest.TestCa
         response = self.submit(**{self.PATH: "70000"})
 
         self.assertEqual(200, response.status)
-        self.assertRegex(self.get("/live").body, r"T\+05:10.*第 1 輪開票")
+        self.assertRegex(self.get("/live").body, r"T\+07:10.*第 1 輪開票")
 
     def test_the_edit_really_went_through_the_page_and_reload(self):
         self.submit(**{self.PATH: "70000"})
@@ -7064,7 +7064,7 @@ PLAIN_FIELD_WORDS = {
     "schema_version": ("規則檔版本", "規則檔的格式版本，目前僅支援 2，平常不需改動"),
     "timeline.vote_rounds[].open_offset_ms": (
         "開票時刻（封存後毫秒）",
-        "封存後過這麼多毫秒開這一輪票；單幣題封存在第 4 分鐘",
+        "封存後過這麼多毫秒開這一輪票；一般題目前在第 6 分鐘封存",
     ),
     "timeline.vote_rounds[].threshold": (
         "所需同立場票數",

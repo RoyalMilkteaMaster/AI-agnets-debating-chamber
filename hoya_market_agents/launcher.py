@@ -3,7 +3,7 @@
 ``launch`` is the only command on the cold-start path. It validates the
 question, verifies the pre-game READY certificate, creates the run, writes the
 three Codex inbox prompts, prints the LAUNCHED handshake, dispatches the seats
-and then drives the research deadline state machine until the T+4:00 evidence
+and then drives the research deadline state machine until the evidence
 snapshot is sealed.
 
 It starts no dashboard of its own. Watching a run is
@@ -661,7 +661,7 @@ def _relay(scheduler, message, err):
 
 
 def _shutdown(runner, err):
-    """Release provider workers without waiting; a stuck adapter must not hold T+4."""
+    """Release workers without waiting; a stuck adapter must not hold the evidence seal."""
     try:
         runner.shutdown(wait=False)
     except Exception as exc:

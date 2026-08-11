@@ -21,6 +21,7 @@ from hoya_market_agents.debate_rules import debate_rules
 from hoya_market_agents.debate_state_machine import STANCES_BY_QUESTION_TYPE
 from hoya_market_agents.question import UnsupportedQuestionError
 from hoya_market_agents.question_package import build_question_package
+from hoya_market_agents.report_workflow import HARD_DEADLINE_MS
 from hoya_market_agents.research_scheduler import (
     ACCEPT_RESULTS_UNTIL_MS,
     SEAL_MS,
@@ -52,7 +53,7 @@ class CompetitionDrillTest(unittest.TestCase):
         self.addCleanup(self._temporary.cleanup)
         self.data_root = Path(self._temporary.name)
 
-    def test_seven_seats_finish_before_cutoff_seal_at_t5_and_report_before_t13(self):
+    def test_seven_seats_finish_before_cutoff_and_report_before_t15(self):
         result = run_fake_competition_drill(
             data_root=self.data_root,
             question="分析 BTC 過去 14 日市場狀態",
@@ -69,7 +70,7 @@ class CompetitionDrillTest(unittest.TestCase):
         self.assertEqual(SEAL_MS, timeline["evidence_snapshot_sealed_at_ms"])
         self.assertRegex(timeline["evidence_snapshot_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual("consensus_6_votes", timeline["debate_stop_reason"])
-        self.assertLessEqual(timeline["report_completed_at_ms"], 780_000)
+        self.assertLess(timeline["report_completed_at_ms"], HARD_DEADLINE_MS)
         self.assertLessEqual(
             timeline["report_completed_at_ms"] - timeline["debate_stop_at_ms"],
             180_000,
@@ -283,10 +284,14 @@ class CompetitionDrillTest(unittest.TestCase):
                 manifest_path = result.run_dir / "manifest.json"
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 if failure == "seat":
-                    manifest["competition_timeline"]["seat_completion_ms"]["news"] = 285_001
+                    manifest["competition_timeline"]["seat_completion_ms"]["news"] = (
+                        ACCEPT_RESULTS_UNTIL_MS + 1
+                    )
                     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
                 elif failure == "report":
-                    manifest["competition_timeline"]["report_completed_at_ms"] = 780_001
+                    manifest["competition_timeline"]["report_completed_at_ms"] = (
+                        HARD_DEADLINE_MS + 1
+                    )
                     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
                 else:
                     snapshot = result.run_dir / "snapshots" / "evidence.jsonl"

@@ -1,4 +1,4 @@
-"""Ticket T6: everything after the T+4:00 seal, driven fully offline.
+"""Ticket T6: everything after the scheduled evidence seal, driven offline.
 
 No provider, no subprocess and no wall clock. The debate pool is a scripted
 stand-in that answers on the same queue contract ``RealSeatRunner`` publishes,
@@ -58,7 +58,7 @@ FORCE_STOP_MS = RULES.force_stop_ms
 QUESTION = "分析 BTC 過去 14 日市場狀態"
 COMPARISON_QUESTION = "比較 BTC 與 ETH 過去 14 日的相對強弱"
 SEAL_MS = DEBATE_START_MS
-COMPARISON_SEAL_MS = 270_000
+COMPARISON_SEAL_MS = research_deadlines("two_asset_comparison").seal_ms
 CARD_STAMP = "2026-03-14T01:00:00Z"
 PREFLIGHT_ID = "20260314T005926Z-aaa111"
 CERTIFICATE_STAMP = "2026-03-14T00:59:26Z"
@@ -118,8 +118,8 @@ REAL_FIRST_ROUND_LATENCY_MS = {
     "counter-evidence": 17_000,
 }
 
-# Ticket R8 修訂二把第一輪的牆挪到 T+6:00，收集預算因此停在 T+5:55。開場最慢的
-# 一席在 T+4:59 才交卷，只剩約 55 秒，所以「趕得上」的那一版把慢席壓在 45 秒
+# 第一輪牆是封存後 150 秒，收集預算停在牆前 5 秒。開場最慢的一席若逼近
+# 第一輪收集上限，只剩約 55 秒，所以「趕得上」的那一版把慢席壓在 45 秒
 # （實測 30-60 秒區間的中段）；60 秒那一版留給知情取捨的風險案例。
 FIRST_ROUND_INSIDE_THE_SIX_MINUTE_WALL_MS = {
     seat_id: min(value, 45_000)
@@ -1216,6 +1216,14 @@ class PersuasionPromptTest(DebateDriverTestCase):
         for prompt in runner.prompts["opening"]:
             self.assertNotIn(PERSUASION_GOAL, prompt)
 
+    def test_the_blind_opening_prompt_requires_a_concise_answer(self):
+        runner = self.build_runner(BULLISH_SIX)
+
+        self.drive(runner)
+
+        for prompt in runner.prompts["opening"]:
+            self.assertIn("public_reason 最多 500 字", prompt)
+
     def test_the_goal_names_the_threshold_this_round_s_votes_will_face(self):
         """Each turn names the threshold at its next discrete ballot."""
         room = dict.fromkeys(SEAT_IDS[:3], "bullish")
@@ -1388,17 +1396,15 @@ class RevisedScheduleTimingTest(DebateDriverTestCase):
 
         driver, votes = self.drive(runner)
 
-        self.assertEqual(6, votes["valid_vote_count"])
+        self.assertEqual(7, votes["valid_vote_count"])
         self.assertFalse(votes["challenge_completed"])
-        self.assertEqual("missing", _seat_row(votes, "social-macro")["state"])
+        self.assertEqual("valid", _seat_row(votes, "social-macro")["state"])
         reasons = [
             note["reason"]
             for note in driver.notes
             if note["seat_id"] == "social-macro"
         ]
-        self.assertTrue(
-            any("timeout" in reason or reason == "deadline_missed" for reason in reasons)
-        )
+        self.assertFalse(any("timeout" in reason for reason in reasons))
 
     def test_free_debate_starts_only_after_the_first_ballot_wall(self):
         runner = self.build_latency_runner(
@@ -1450,7 +1456,7 @@ class RevisedScheduleTimingTest(DebateDriverTestCase):
         turns = build_turns(("bullish", "bearish", "neutral"))
 
         self.assertEqual(
-            DEBATE_START_MS + 60_000 - 5_000, turns["opening"].collect_until_ms
+            DEBATE_START_MS + 60_000, turns["opening"].collect_until_ms
         )
         self.assertEqual(DEBATE_START_MS + 150_000 - 5_000, turns["r1"].collect_until_ms)
         self.assertEqual(DEBATE_START_MS + 240_000 - 5_000, turns["r2"].collect_until_ms)
@@ -1468,7 +1474,7 @@ class RevisedScheduleTimingTest(DebateDriverTestCase):
 
         self.assertEqual(COMPARISON_SEAL_MS, turns["opening"].relay_from_ms)
         self.assertEqual(COMPARISON_SEAL_MS + 60_000, turns["r1"].relay_from_ms)
-        self.assertEqual(COMPARISON_SEAL_MS + 55_000, turns["opening"].collect_until_ms)
+        self.assertEqual(COMPARISON_SEAL_MS + 60_000, turns["opening"].collect_until_ms)
         self.assertEqual(
             COMPARISON_SEAL_MS + 145_000,
             turns["r1"].collect_until_ms,
@@ -1507,7 +1513,7 @@ class DriverFreeDebateTurnsTest(DebateDriverTestCase):
 
         self.assertEqual(["opening", "r1", "r2"], list(turns))
         self.assertEqual(
-            (45_000, 40_000),
+            (50_000, 40_000),
             (turns["opening"].collect_until_ms, turns["opening"].relay_from_ms),
         )
         self.assertEqual(
@@ -2872,7 +2878,7 @@ class FullLaunchTest(unittest.TestCase):
             "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
         )
 
-    def test_a_two_asset_comparison_seals_at_four_thirty_and_still_verifies(self):
+    def test_a_two_asset_comparison_uses_its_later_seal_and_still_verifies(self):
         """Comparison ballots and final settle all move with the later seal."""
         code = run_launch(
             COMPARISON_QUESTION,
@@ -2895,7 +2901,10 @@ class FullLaunchTest(unittest.TestCase):
 
         self.assertEqual("two_asset_comparison", manifest["question_type"])
         self.assertEqual(COMPARISON_SEAL_MS, timeline["evidence_snapshot_sealed_at_ms"])
-        self.assertEqual(260_000, timeline["research_accept_until_ms"])
+        self.assertEqual(
+            research_deadlines("two_asset_comparison").accept_until_ms,
+            timeline["research_accept_until_ms"],
+        )
         self.assertEqual("consensus_6_votes", votes["stop_reason"])
         self.assertEqual(7, votes["valid_vote_count"])
         self.assertEqual(6, votes["tally"]["asset_a_stronger"])

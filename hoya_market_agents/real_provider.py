@@ -67,7 +67,7 @@ stays true even for a turn whose deadline passed.
 Deadline termination
 --------------------
 A running ``Future`` cannot be cancelled, so cancelling one would leave the real
-provider process burning a subscription after T+3:50 and holding up the launch.
+provider process burning a subscription after the acceptance wall and holding up the launch.
 Every locally dispatched seat therefore runs through ``TerminatingRunner`` with
 one shared ``ProcessRegistry``, keyed by the attempt (or debate dispatch) the
 worker is running — never by the pooled thread, which other seats reuse.
@@ -88,7 +88,7 @@ of being adopted as evidence.
 
 Search after the seal
 ---------------------
-The mirror image holds once the T+4:00 snapshot is sealed: every debate turn and
+The mirror image holds once the evidence snapshot is sealed: every debate turn and
 Core's report call is dispatched with ``allow_search=False``, which switches the
 capability off for Claude (no tools at all) and Codex
 (``tools.web_search=false``). ``agy`` exposes no flag that removes a tool, so
@@ -101,15 +101,10 @@ never adopted.
 
 Model lanes
 -----------
-``PRIMARY_MODELS`` comes from the frozen roster. ``REPLACEMENT_MODELS`` names a
-different model per seat, because ``SeatRecoveryState.recover`` raises when the
-cross-model replacement equals the primary model. No provider CLI in this
-system can honestly serve a second model — the Claude seam is pinned to
-``claude_adapter.CLAUDE_MODEL_ALIAS``, the Antigravity seam to
-``antigravity_adapter.MODEL`` and the Codex seam to
-``codex_exec_adapter.CODEX_MODEL`` — so ``start`` raises for a replacement attempt.
-The scheduler turns that into ``startup_error`` and then ``recovery_exhausted``,
-which is the honest trace: the seat was lost, not silently re-run as primary.
+``PRIMARY_MODELS`` comes from the frozen roster. No provider CLI in this system
+can honestly serve a second model, so production config leaves every optional
+replacement empty. Recovery is one same-model retry only; it never emits a fake
+Sonnet or other unavailable-model dispatch.
 """
 
 import json
@@ -153,9 +148,8 @@ CODEX_SEAT_IDS = ("spot-technical", "derivatives", "news")
 CLAUDE_SEAT_IDS = ("onchain", "official-events", "social-macro")
 ANTIGRAVITY_SEAT_IDS = ("counter-evidence",)
 
-# 研究收件牆在 T+3:50（230 秒），所以 Claude 的研究呼叫必須在那之前分出勝負，
-# 否則得到的只是一份沒人收得下的答案。實測最慢一席 217 秒交卷，225 秒收得住。
-# 收件牆本身依題型移動（比較題 T+4:20），所以 timeout 一律由 research_deadlines
+# Provider 研究呼叫必須在收件牆之前分出勝負，否則得到的是無法採用的晚到答案。
+# 收件牆依題型移動，所以 timeout 一律由 research_deadlines
 # 推導，這裡只決定要留多少 relay 餘裕。
 CLAUDE_TIMEOUT_MARGIN_MS = 5_000
 CLAUDE_TIMEOUT_SECONDS = (
@@ -179,13 +173,8 @@ DEBATE_FAILURE_MESSAGE = "debate_failure"
 PROVIDER_LINEAGE_MESSAGE = "provider_lineage"
 
 REPLACEMENT_MODELS = {
-    "spot-technical": "replacement-unavailable:codex-second-model",
-    "derivatives": "replacement-unavailable:codex-second-model",
-    "onchain": "sonnet",
-    "official-events": "sonnet",
-    "news": "replacement-unavailable:codex-second-model",
-    "social-macro": "sonnet",
-    "counter-evidence": "replacement-unavailable:antigravity-second-model",
+    seat_id: None
+    for seat_id in (*CODEX_SEAT_IDS, *CLAUDE_SEAT_IDS, *ANTIGRAVITY_SEAT_IDS)
 }
 
 EVIDENCE_CARD_SCHEMA = {
@@ -425,7 +414,7 @@ class RealSeatRunner:
         self.results_queue = results_queue
         self.question_scope_or_package = question_scope_or_package
         self.inbox_requests_dir = Path(inbox_requests_dir)
-        # 三個 provider 共用一個 registry，T+3:50 才停得掉還在跑的真實進程。
+        # 三個 provider 共用一個 registry，收件牆才能停掉還在跑的真實進程。
         self.process_registry = ProcessRegistry()
         self._worker_attempt = threading.local()
         process_runner = TerminatingRunner(
@@ -447,7 +436,10 @@ class RealSeatRunner:
             runner=process_runner.run_process,
             timeout_seconds=self._research_timeout_seconds(),
         )
-        self.codex_adapter = codex_adapter or CodexExecAdapter(runner=process_runner)
+        self.codex_adapter = codex_adapter or CodexExecAdapter(
+            runner=process_runner,
+            timeout_seconds=self._research_timeout_seconds(),
+        )
         self.codex_mode = codex_mode
         self.executor = executor or ThreadPoolExecutor(
             max_workers=LOCAL_WORKER_COUNT, thread_name_prefix="hoya-seat"
@@ -812,7 +804,7 @@ class RealSeatRunner:
             if future is not None:
                 future.cancel()
             self.process_registry.terminate(attempt_id)
-        except Exception:  # cancellation must not break the T+3:50 sweep
+        except Exception:  # cancellation must not break the acceptance sweep
             return None
         return None
 

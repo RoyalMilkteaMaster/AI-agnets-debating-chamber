@@ -579,11 +579,11 @@ class ReportContentIsNotFilteredTests(unittest.TestCase):
 
 
 class WorkflowTimingTests(unittest.TestCase):
-    def test_windows_are_ninety_sixty_thirty_and_thirteen_minutes(self):
+    def test_windows_are_ninety_sixty_thirty_and_fifteen_minutes(self):
         self.assertEqual(CORE_DRAFT_LIMIT_MS, 90_000)
         self.assertEqual(CORRECTION_WINDOW_MS, 60_000)
         self.assertEqual(RENDER_WINDOW_MS, 30_000)
-        self.assertEqual(HARD_DEADLINE_MS, 13 * 60_000)
+        self.assertEqual(HARD_DEADLINE_MS, 15 * 60_000)
 
     def test_first_pass_report_is_accepted(self):
         fixture = load_fixture("consensus-6-1")
@@ -743,17 +743,17 @@ class WorkflowTimingTests(unittest.TestCase):
         self.assertEqual(outcome.status, "red_audit")
         self.assertTrue(any("60" in error for error in outcome.errors))
 
-    def test_work_at_or_after_thirteen_minutes_is_a_late_failure(self):
+    def test_work_at_or_after_fifteen_minutes_is_a_late_failure(self):
         fixture = load_fixture("consensus-6-1")
         clock = FixedClock()
         outcome = run_report_workflow(
             clock,
             fixture["sources"],
-            _scripted_core([fixture["report"]], [13 * 60_000], clock),
+            _scripted_core([fixture["report"]], [15 * 60_000], clock),
         )
         self.assertEqual(outcome.status, "red_audit")
         self.assertTrue(outcome.late)
-        self.assertTrue(any("T+13" in error for error in outcome.errors))
+        self.assertTrue(any("T+15" in error for error in outcome.errors))
 
     def test_red_audit_report_is_itself_contract_valid(self):
         fixture = load_fixture("consensus-6-1")
@@ -843,16 +843,16 @@ class RedPathSnapshotTest(unittest.TestCase):
     """Ticket 11 E2／F2：十條紅字路徑各自要有快照防線，而且要真的走到自己那條。
 
     ``_red_outcome`` 有十個呼叫點，第 4 輪只有「Core 例外」那一條被計數測試蓋
-    到。更糟的是 ``draft-past-t13`` 一次推進 781 秒，先撞上 90 秒那條分支——名字
-    叫 T+13、實際走的是別條，於是真正的 T+13 呼叫點漏傳 ``rules`` 也沒人發現。
+    到。更糟的是 ``draft-past-t15`` 一次推進超過硬期限，先撞上 90 秒那條分支——名字
+    叫 T+15、實際走的是別條，於是真正的 T+15 呼叫點漏傳 ``rules`` 也沒人發現。
 
     所以每一條除了斷言 ``red_audit``，還要斷言**那條分支特有的訊息**。走錯分支
     的測試會在這裡紅。
     """
 
     # 每一條紅字分支各自的招牌訊息。斷言「我的招牌在、別人的招牌都不在」，
-    # 才分得出走到哪一條——只用 assertIn 的話，_red_outcome 追加的 T+13 訊息會
-    # 讓 90 秒那條也「通過」T+13 的斷言，那正是 F2 抓到的假綠。
+    # 才分得出走到哪一條——只用 assertIn 的話，_red_outcome 追加的 T+15 訊息會
+    # 讓 90 秒那條也「通過」T+15 的斷言，那正是 F2 抓到的假綠。
     BRANCH_MARKERS = (
         "Core 初稿失敗：",
         "Core 初稿超過 90 秒",
@@ -860,7 +860,7 @@ class RedPathSnapshotTest(unittest.TestCase):
         "Core correction 超過 60 秒",
         "renderer 失敗：",
         "renderer 超過 30 秒",
-        "T+13 或之後不得宣稱成功",
+        "T+15 或之後不得宣稱成功",
     )
 
     def assertReachedBranch(self, outcome, signature, branch=None):
@@ -870,7 +870,7 @@ class RedPathSnapshotTest(unittest.TestCase):
             "沒有走到 {!r}；實際錯誤 {}".format(signature, errors),
         )
         if branch is not None:
-            # 招牌互斥擋不住三個 T+13 呼叫點互相頂替——它們的訊息一字
+            # 招牌互斥擋不住三個 T+15 呼叫點互相頂替——它們的訊息一字
             # 不差。identity 是唯一分得出「到達的是哪一個呼叫點」的東西。
             self.assertEqual(branch, outcome.red_branch)
         for marker in self.BRANCH_MARKERS:
@@ -925,11 +925,11 @@ class RedPathSnapshotTest(unittest.TestCase):
                 None,
                 "Core 初稿超過 90 秒",
             ),
-            "t13-after-draft": (
+            "t15-after-draft": (
                 HARD_DEADLINE_MS - 1_000,
                 author([2_000], [good]),
                 None,
-                "T+13 或之後不得宣稱成功",
+                "T+15 或之後不得宣稱成功",
             ),
             "correction-exception": (
                 0,
@@ -943,11 +943,11 @@ class RedPathSnapshotTest(unittest.TestCase):
                 None,
                 "Core correction 超過 60 秒",
             ),
-            "t13-after-correction": (
+            "t15-after-correction": (
                 HARD_DEADLINE_MS - 2_000,
                 author([1_000, 1_500], [bad, good]),
                 None,
-                "T+13 或之後不得宣稱成功",
+                "T+15 或之後不得宣稱成功",
             ),
             "second-validation-failure": (
                 0,
@@ -967,11 +967,11 @@ class RedPathSnapshotTest(unittest.TestCase):
                 renderer(RENDER_WINDOW_MS + 1_000),
                 "renderer 超過 30 秒",
             ),
-            "t13-after-render": (
+            "t15-after-render": (
                 HARD_DEADLINE_MS - 1_500,
                 author([500], [good]),
                 renderer(1_000),
-                "T+13 或之後不得宣稱成功",
+                "T+15 或之後不得宣稱成功",
             ),
         }
 

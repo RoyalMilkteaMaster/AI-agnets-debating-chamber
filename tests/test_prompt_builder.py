@@ -109,7 +109,10 @@ class PromptBuilderTest(unittest.TestCase):
 
         for required in (
             "T+1:30",
-            "T+4:00",
+            "T+5:20",
+            "T+5:50",
+            "T+6:00",
+            "即使不足 3 張",
             "3 至 8 張",
             "最多 8 張",
             "source_tier",
@@ -218,6 +221,27 @@ class PromptBuilderTest(unittest.TestCase):
         self.assertEqual(1, len(shared))
         only = shared.pop()
         self.assertIn("news-01", only)
+
+    def test_debate_phase_omits_research_only_instructions(self):
+        prompt = build_seat_prompt(
+            self.scope,
+            self.roster[0],
+            "debate",
+            evidence_snapshot=[{"evidence_id": "news-01", "statement": "示範證據"}],
+        ).shared_section
+
+        self.assertIn("news-01", prompt)
+        self.assertIn("禁止再上網搜尋", prompt)
+        for research_only in (
+            "固定 Research Snapshot",
+            "EvidenceCard 輸出 contract",
+            "T+5:20",
+            "T+5:50",
+            "3 至 8 張",
+            "source_tier",
+        ):
+            with self.subTest(research_only=research_only):
+                self.assertNotIn(research_only, prompt)
 
     def test_per_seat_evidence_views_keep_the_stage_shared_section_identical(self):
         views = {

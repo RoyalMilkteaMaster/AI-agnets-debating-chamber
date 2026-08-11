@@ -7,7 +7,7 @@ stance.
 It also owns the two process seams every provider adapter shares.
 ``SubprocessRunner`` hands the child to ``subprocess.run``, so nothing can reach
 it once it is away; ``TerminatingRunner`` keeps the ``Popen`` in a
-``ProcessRegistry`` instead, which is what lets the T+3:50 sweep stop a provider
+``ProcessRegistry`` instead, which is what lets the acceptance sweep stop a provider
 process that would otherwise keep burning a subscription after the deadline.
 """
 
@@ -109,7 +109,7 @@ class ProcessRegistry:
 
     The worker thread tracks and releases; the deadline sweep runs on another
     thread and only calls :meth:`terminate`. Stopping a process is always best
-    effort: a provider that already died must never break the T+3:50 sweep.
+    effort: a provider that already died must never break the acceptance sweep.
 
     A key is *poisoned* the moment it is terminated, and stays poisoned for the
     rest of the run: a terminate landing in the gap between one process ending
@@ -227,7 +227,7 @@ class ClaudeAttemptRequest:
     timeout_seconds: float = 90
     json_schema: dict = field(default_factory=lambda: dict(SMOKE_SCHEMA))
     validator: object = None
-    # 研究階段要搜尋；T+4:00 封存之後的呼叫必須明確關掉這個能力。
+    # 研究階段要搜尋；證據封存之後的呼叫必須明確關掉這個能力。
     allow_search: bool = True
 
 
@@ -615,7 +615,7 @@ def run_claude_preflight(
 def _tool_flags(allow_search):
     """Hand the seat its tools, or none at all.
 
-    Search is a capability, not a request: after the T+4:00 seal the debate and
+    Search is a capability, not a request: after the evidence seal the debate and
     the report may only read sealed evidence, so the sealed call is given no
     tools instead of being asked nicely in the prompt to stay offline.
     """

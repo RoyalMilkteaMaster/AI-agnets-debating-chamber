@@ -260,7 +260,7 @@ class DebateStateMachine:
         }
         if start_monotonic_ms is None:
             raise DebateLifecycleError(
-                "必須提供整個 Run 的 start_monotonic_ms，不能在 T+4 重設時間。"
+                "必須提供整個 Run 的 start_monotonic_ms，不能在證據封存時重設時間。"
             )
         self.start_monotonic_ms = start_monotonic_ms
         current_elapsed = max(0, clock.monotonic_ms() - self.start_monotonic_ms)
@@ -936,6 +936,17 @@ class DebateStateMachine:
             initial = seat.initial or {}
             final = valid_votes.get(seat_id) or {}
             changed = bool(initial and final and initial.get("stance") != final.get("stance"))
+            change_reason = None
+            if changed:
+                official_message_id = final.get("message_id")
+                for change in reversed(seat.vote_changes):
+                    if change.get("message_id") == official_message_id:
+                        official_message_id = None
+                    if official_message_id is not None:
+                        continue
+                    if change.get("before") != change.get("after"):
+                        change_reason = change.get("reason")
+                        break
             if seat.invalid_reason:
                 state = "invalid"
             elif seat_id in valid_votes:
@@ -959,7 +970,7 @@ class DebateStateMachine:
                     "final_evidence_ids": list(final.get("evidence_ids", [])),
                     "final_neutral_context": _neutral_context(final),
                     "stance_changed": changed,
-                    "stance_change_reason": final.get("stance_change_reason"),
+                    "stance_change_reason": change_reason,
                     "vote_changes": list(seat.vote_changes),
                     "message_ids": [
                         entry["message_id"] for entry in seat.messages

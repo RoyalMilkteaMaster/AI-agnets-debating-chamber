@@ -1,4 +1,4 @@
-"""Observable four-minute research scheduling with no real waiting."""
+"""Observable research scheduling with no real waiting."""
 
 import json
 import tempfile
@@ -14,6 +14,7 @@ from hoya_market_agents.research_scheduler import (
     REPLACEMENT_MS,
     SEAL_MS,
     START_RETRY_MS,
+    WRAP_UP_WINDOW_MS,
     ResearchScheduler,
     research_deadlines,
 )
@@ -172,17 +173,18 @@ class ResearchSchedulerTest(unittest.TestCase):
         self.clock.advance_ms(elapsed_ms - self.scheduler.elapsed_ms)
         self.scheduler.tick()
 
-    def test_the_research_phase_ends_at_four_minutes(self):
-        # 2026-08-02 使用者核准的修訂時間表：研究縮到 4 分鐘，把主秀讓給辯論。
+    def test_the_research_phase_reserves_thirty_seconds_for_delivery(self):
         self.assertEqual(
-            (0, 30_000, 90_000, 120_000, 155_000, 230_000, 240_000), MILESTONES_MS
+            (0, 30_000, 90_000, 120_000, 155_000, 320_000, 350_000, 360_000),
+            MILESTONES_MS,
         )
         self.assertEqual(30_000, START_RETRY_MS)
         self.assertEqual(90_000, PRIMARY_ONLY_END_MS)
         self.assertEqual(120_000, CHECKPOINT_MS)
         self.assertEqual(155_000, REPLACEMENT_MS)
-        self.assertEqual(230_000, ACCEPT_RESULTS_UNTIL_MS)
-        self.assertEqual(240_000, SEAL_MS)
+        self.assertEqual(30_000, WRAP_UP_WINDOW_MS)
+        self.assertEqual(350_000, ACCEPT_RESULTS_UNTIL_MS)
+        self.assertEqual(360_000, SEAL_MS)
 
     def test_all_seven_start_at_zero_and_every_milestone_is_auditable(self):
         self.scheduler.start()
@@ -216,6 +218,20 @@ class ResearchSchedulerTest(unittest.TestCase):
         self.assertEqual("trusted_secondary_allowed", self.scheduler.source_policy)
         self.assertIn(
             "trusted_secondary_sources_enabled",
+            [event["event"] for event in self.scheduler.events],
+        )
+
+    def test_search_stop_starts_wrap_up_without_closing_result_intake(self):
+        self.scheduler.start()
+        attempt = self.scheduler.recovery.seats["news"].attempts[0]
+        self.advance_to(self.scheduler.deadlines.search_stop_ms)
+
+        self.assertEqual("wrap_up_only", self.scheduler.source_policy)
+        self.assertEqual(
+            "adopted", self.scheduler.submit_result(attempt.attempt_id, evidence_raw(attempt))
+        )
+        self.assertIn(
+            "research_wrap_up_started",
             [event["event"] for event in self.scheduler.events],
         )
 
@@ -501,7 +517,7 @@ class ResearchSchedulerTest(unittest.TestCase):
 class ResearchDeadlinesTest(unittest.TestCase):
     """Ticket R7: one authority decides每一種題型的收件牆與封存時刻。"""
 
-    def test_single_asset_event_overall_and_open_keep_the_four_minute_seal(self):
+    def test_single_asset_event_overall_and_open_use_the_six_minute_seal(self):
         for question_type in (
             "single_asset_market_state",
             "overall_market_state",
@@ -514,28 +530,29 @@ class ResearchDeadlinesTest(unittest.TestCase):
             with self.subTest(question_type=question_type):
                 deadlines = research_deadlines(question_type)
 
-                self.assertEqual(230_000, deadlines.accept_until_ms)
-                self.assertEqual(240_000, deadlines.seal_ms)
+                self.assertEqual(320_000, deadlines.search_stop_ms)
+                self.assertEqual(350_000, deadlines.accept_until_ms)
+                self.assertEqual(360_000, deadlines.seal_ms)
 
     def test_two_asset_comparison_gets_thirty_more_seconds(self):
-        # 實測 20260802T040230Z-btc-eth-4448e8：兩幣題研究負擔雙倍，4:00 封存
-        # 只有 3/7 席交卷；使用者核准把比較題的收件牆與封存各後移 30 秒。
+        # 比較題維持比一般題多 30 秒，且同樣保留最後 30 秒交卷。
         for question_type in ("two_asset_comparison", "comparison"):
             with self.subTest(question_type=question_type):
                 deadlines = research_deadlines(question_type)
 
-                self.assertEqual(260_000, deadlines.accept_until_ms)
-                self.assertEqual(270_000, deadlines.seal_ms)
+                self.assertEqual(350_000, deadlines.search_stop_ms)
+                self.assertEqual(380_000, deadlines.accept_until_ms)
+                self.assertEqual(390_000, deadlines.seal_ms)
 
     def test_an_unrecorded_question_type_falls_back_to_the_tightest_schedule(self):
         self.assertEqual(research_deadlines(), research_deadlines(None))
         self.assertEqual(research_deadlines(), research_deadlines("not-a-question-type"))
 
-    def test_only_the_last_two_milestones_move_and_deadlines_are_frozen(self):
+    def test_only_question_specific_walls_move_and_deadlines_are_frozen(self):
         comparison = research_deadlines("two_asset_comparison")
 
         self.assertEqual(
-            (0, 30_000, 90_000, 120_000, 155_000, 260_000, 270_000),
+            (0, 30_000, 90_000, 120_000, 155_000, 350_000, 380_000, 390_000),
             comparison.milestones_ms,
         )
         self.assertEqual(MILESTONES_MS, research_deadlines().milestones_ms)
@@ -581,22 +598,22 @@ class ComparisonSchedulerTest(unittest.TestCase):
             if event["event"] == "milestone"
         ]
         self.assertEqual(list(self.deadlines.milestones_ms), timeline)
-        self.assertEqual(270_000, self.scheduler.seal["elapsed_ms"])
+        self.assertEqual(390_000, self.scheduler.seal["elapsed_ms"])
 
-    def test_a_result_at_four_minutes_is_still_accepted(self):
+    def test_a_result_during_comparison_wrap_up_is_still_accepted(self):
         self.scheduler.start()
         attempt = self.scheduler.recovery.seats["news"].attempts[0]
-        self.advance_to(240_000)
+        self.advance_to(350_000)
 
         self.assertEqual(
             "adopted", self.scheduler.submit_result(attempt.attempt_id, evidence_raw(attempt))
         )
-        self.assertEqual("trusted_secondary_allowed", self.scheduler.source_policy)
+        self.assertEqual("wrap_up_only", self.scheduler.source_policy)
 
     def test_the_receiving_wall_still_closes_ten_seconds_before_the_seal(self):
         self.scheduler.start()
         attempt = self.scheduler.recovery.seats["news"].attempts[0]
-        self.advance_to(260_000)
+        self.advance_to(380_000)
 
         self.assertEqual(
             "late", self.scheduler.submit_result(attempt.attempt_id, evidence_raw(attempt))

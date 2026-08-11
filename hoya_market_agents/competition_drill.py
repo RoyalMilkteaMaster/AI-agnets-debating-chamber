@@ -20,7 +20,7 @@ from .question_package import build_question_package
 from .report_audit_renderer import render_debate_html
 from .report_fixtures import load_fixture
 from .report_renderer import render_market_html, render_market_markdown
-from .report_workflow import run_report_workflow
+from .report_workflow import HARD_DEADLINE_MS, run_report_workflow
 from .research_scheduler import ResearchScheduler, research_deadlines
 from .run_store import RunStore, new_run_id
 from .seats import SEAT_IDS
@@ -113,7 +113,7 @@ def run_fake_competition_drill(*, data_root, question, token):
     run.write_json("question.json", _question_record(run_id, package, clock))
 
     models = {seat["seat_id"]: seat["target_model"] for seat in roster["seats"]}
-    # 演練跑的是這一種題型真正的時刻表：比較題封存在 T+4:30。
+    # 演練跑的是這一種題型真正的時刻表：比較題比一般題晚 30 秒封存。
     deadlines = research_deadlines(package.question_type)
     scheduler = ResearchScheduler(
         run=run,
@@ -233,7 +233,7 @@ def run_fake_competition_drill(*, data_root, question, token):
         "debate_stop_at_ms": votes["stop_elapsed_ms"],
         "debate_stop_reason": votes["stop_reason"],
         "report_completed_at_ms": clock.monotonic_ms(),
-        "report_hard_deadline_ms": 780_000,
+        "report_hard_deadline_ms": HARD_DEADLINE_MS,
     }
     manifest = {
         "schema_version": CONTRACT_VERSION,

@@ -599,7 +599,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.drain(runner, 1)
 
         call = self.claude_runner.calls[0]
-        self.assertEqual(225, CLAUDE_TIMEOUT_SECONDS)
+        self.assertEqual(345, CLAUDE_TIMEOUT_SECONDS)
         self.assertEqual(CLAUDE_TIMEOUT_SECONDS, call["timeout_seconds"])
         self.assertIn(
             json.dumps(RESEARCH_ENVELOPE_SCHEMA, separators=(",", ":")), call["args"]
@@ -611,7 +611,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.assertIn("不得建立任何額外 agent", prompt)
 
     def test_a_comparison_question_moves_the_claude_timeout_with_its_own_wall(self):
-        """Ticket R7: 兩幣題的收件牆在 T+4:20，研究呼叫的 timeout 跟著它走。"""
+        """比較題的收件牆晚 30 秒，研究呼叫的 timeout 跟著它走。"""
         self.scope = build_question_package("比較 BTC 與 ETH 過去 14 日的相對強弱")
         attempt = self.attempt("official-events")
         runner = self.build_runner(
@@ -625,7 +625,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         runner.start(attempt, None)
         self.drain(runner, 1)
 
-        self.assertEqual(255, self.claude_runner.calls[0]["timeout_seconds"])
+        self.assertEqual(375, self.claude_runner.calls[0]["timeout_seconds"])
 
     def test_claude_process_error_is_retried_once_in_the_same_session(self):
         attempt = self.attempt("official-events")
@@ -992,12 +992,12 @@ class RealSeatRunnerTest(unittest.TestCase):
     def test_local_worker_pool_can_hold_all_seven_seats_at_once(self):
         self.assertGreaterEqual(LOCAL_WORKER_COUNT, len(SEAT_IDS))
 
-    def test_every_replacement_model_differs_from_its_primary_model(self):
+    def test_production_has_no_unavailable_replacement_models(self):
         for seat_id in SEAT_IDS:
             with self.subTest(seat_id=seat_id):
-                self.assertNotEqual(PRIMARY_MODELS[seat_id], REPLACEMENT_MODELS[seat_id])
+                self.assertIsNone(REPLACEMENT_MODELS[seat_id])
 
-    def test_cross_model_replacement_is_reachable_for_every_seat(self):
+    def test_production_recovery_stops_after_one_same_model_retry(self):
         for seat_id in SEAT_IDS:
             with self.subTest(seat_id=seat_id):
                 state = SeatRecoveryState(
@@ -1009,23 +1009,12 @@ class RealSeatRunnerTest(unittest.TestCase):
                 retry = state.recover(primary.attempt_id, "process_error")
                 replacement = state.recover(retry.attempt_id, "process_error")
 
-                self.assertEqual("cross_model_replacement", replacement.kind)
-                self.assertEqual(REPLACEMENT_MODELS[seat_id], replacement.model)
+                self.assertEqual("same_model_retry", retry.kind)
+                self.assertEqual(PRIMARY_MODELS[seat_id], retry.model)
+                self.assertIsNone(replacement)
 
-    def test_undispatchable_replacement_attempt_raises_at_start(self):
-        runner = self.build_runner()
-        for seat_id in ("official-events", "spot-technical", "counter-evidence"):
-            with self.subTest(seat_id=seat_id):
-                attempt = self.attempt(
-                    seat_id,
-                    model=REPLACEMENT_MODELS[seat_id],
-                    kind="cross_model_replacement",
-                    attempt_id="{}-a3".format(seat_id),
-                )
-                with self.assertRaises(RealProviderError):
-                    runner.start(attempt, None)
-        self.assertTrue(self.results.empty())
-        self.assertFalse(list(self.inbox_requests.glob("*-a3.json")))
+    def test_sonnet_is_not_present_in_production_recovery_config(self):
+        self.assertNotIn("sonnet", json.dumps(REPLACEMENT_MODELS).lower())
 
     def test_checkpoint_and_correct_report_no_public_channel(self):
         runner = self.build_runner()

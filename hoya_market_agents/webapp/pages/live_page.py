@@ -175,7 +175,7 @@ def _live_metrics(data):
     tick, it moves at a milestone.
     """
     countdowns = [
-        ("十五分鐘剩餘時間", data["total_remaining_ms"], "total-remaining"),
+        ("十七分鐘剩餘時間", data["total_remaining_ms"], "total-remaining"),
         ("報告期限剩餘時間", data["report_remaining_ms"], "report-remaining"),
     ]
     elapsed = data["elapsed_ms"]

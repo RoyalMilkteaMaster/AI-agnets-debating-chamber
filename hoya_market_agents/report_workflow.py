@@ -15,7 +15,7 @@ from .seats import SEAT_IDS
 CORE_DRAFT_LIMIT_MS = 90_000
 CORRECTION_WINDOW_MS = 60_000
 RENDER_WINDOW_MS = 30_000
-HARD_DEADLINE_MS = 13 * 60_000
+HARD_DEADLINE_MS = 15 * 60_000
 
 
 @dataclass(frozen=True)
@@ -118,9 +118,9 @@ def run_report_workflow(
         )
     if clock.monotonic_ms() - run_start >= HARD_DEADLINE_MS:
         return _red_outcome(
-            clock, workflow_start, sources, ["T+13 或之後不得宣稱成功"], 0, phases,
+            clock, workflow_start, sources, ["T+15 或之後不得宣稱成功"], 0, phases,
             late=True, run_start_monotonic_ms=run_start, rules=rules,
-            branch="t13-after-draft",
+            branch="t15-after-draft",
             asset_class=asset_class,
         )
 
@@ -164,13 +164,13 @@ def run_report_workflow(
                 clock,
                 workflow_start,
                 sources,
-                list(first_error.problems) + ["T+13 或之後不得宣稱成功"],
+                list(first_error.problems) + ["T+15 或之後不得宣稱成功"],
                 1,
                 phases,
                 late=True,
                 run_start_monotonic_ms=run_start,
                 rules=rules,
-                branch="t13-after-correction",
+                branch="t15-after-correction",
                 asset_class=asset_class,
             )
         try:
@@ -228,13 +228,13 @@ def run_report_workflow(
             clock,
             workflow_start,
             sources,
-            ["T+13 或之後不得宣稱成功"],
+            ["T+15 或之後不得宣稱成功"],
             corrections,
             phases,
             late=True,
             run_start_monotonic_ms=run_start,
             rules=rules,
-            branch="t13-after-render",
+            branch="t15-after-render",
             asset_class=asset_class,
         )
     return ReportWorkflowOutcome(
@@ -349,7 +349,7 @@ def _red_outcome(
 ):
     """``branch`` names which of the ten red call sites produced this outcome.
 
-    三個 T+13 呼叫點的錯誤訊息一字不差，所以光看 ``errors`` 分不出流程走到哪一
+    三個 T+15 呼叫點的錯誤訊息一字不差，所以光看 ``errors`` 分不出流程走到哪一
     個——停掉其中一個，流程會掉到下一個，訊息相同，測試照樣綠。identity 讓「這
     個情境到達的是這一個呼叫點」變成可斷言的事實。
     """
@@ -357,8 +357,8 @@ def _red_outcome(
     run_start = workflow_start if run_start_monotonic_ms is None else run_start_monotonic_ms
     run_elapsed_ms = now_ms - run_start
     errors = list(errors)
-    if run_elapsed_ms >= HARD_DEADLINE_MS and not any("T+13" in error for error in errors):
-        errors.append("T+13 或之後不得宣稱成功")
+    if run_elapsed_ms >= HARD_DEADLINE_MS and not any("T+15" in error for error in errors):
+        errors.append("T+15 或之後不得宣稱成功")
     generated = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=now_ms)
     report = build_red_audit_report(
         sources,

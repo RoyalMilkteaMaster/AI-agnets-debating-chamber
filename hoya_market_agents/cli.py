@@ -112,7 +112,7 @@ def build_parser():
         choices=list(PHASES),
         help=(
             "full 一條命令跑完研究、辯論、投票與報告（預設）；"
-            "research 只跑到 T+4:00 證據快照 SEALED，辯論改由人工主持。"
+            "research 只跑到該題型的證據快照 SEALED，辯論改由人工主持。"
         ),
     )
     launch.add_argument(
@@ -157,7 +157,7 @@ def build_parser():
         help="preflight session、schema、log 與 raw envelope 的 Data Root",
     )
     drill = subcommands.add_parser(
-        "drill", help="執行不連網的七席 T+0 至 T+13 competition regression"
+        "drill", help="執行不連網的七席 T+0 至 T+15 competition regression"
     )
     drill.add_argument("--provider-mode", required=True, choices=("fake",))
     drill.add_argument("--question", required=True)

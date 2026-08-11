@@ -116,7 +116,7 @@ FIELD_LABELS = {
     "schema_version": ("規則檔版本", "規則檔的格式版本，目前僅支援 2，平常不需改動"),
     "timeline.vote_rounds[].open_offset_ms": (
         "開票時刻（封存後毫秒）",
-        "封存後過這麼多毫秒開這一輪票；單幣題封存在第 4 分鐘",
+        "封存後過這麼多毫秒開這一輪票；一般題目前在第 6 分鐘封存",
     ),
     "timeline.vote_rounds[].threshold": (
         "所需同立場票數",

@@ -398,7 +398,7 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual("single_asset_market_state", self.handshake()["question_type"])
 
     def test_a_two_asset_comparison_seals_thirty_seconds_later(self):
-        """Ticket R7: 比較題的研究窗到 T+4:30，其他題型維持 T+4:00。"""
+        """比較題在 T+6:30 封存，比一般題 T+6:00 晚三十秒。"""
         self.write_certificate()
 
         code = self.launch(question="比較 BTC 與 ETH 過去 14 日的相對強弱")
@@ -410,8 +410,8 @@ class LauncherTest(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(270_000, research_deadlines("two_asset_comparison").seal_ms)
-        self.assertEqual(seal["elapsed_ms"], 270_000)
+        self.assertEqual(390_000, research_deadlines("two_asset_comparison").seal_ms)
+        self.assertEqual(seal["elapsed_ms"], 390_000)
         self.assertEqual(seal["record_count"], len(LOCAL_SEAT_IDS))
 
     # ---------- open market intake ----------

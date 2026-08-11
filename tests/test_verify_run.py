@@ -14,6 +14,7 @@ from hoya_market_agents.competition_drill import run_fake_competition_drill
 from hoya_market_agents.debate_rules import debate_rules
 from hoya_market_agents.debate_state_machine import UNANIMOUS_BLIND_PASS, content_sha256
 from hoya_market_agents.fake_provider import FakeProvider
+from hoya_market_agents.report_workflow import HARD_DEADLINE_MS
 from hoya_market_agents.research_scheduler import research_deadlines
 from hoya_market_agents.run_controller import RunController
 from hoya_market_agents.run_store import RunStore
@@ -1907,12 +1908,12 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
         document = {
             "schema_version": 1,
             "timeline_ms": {
-                "debate_start": 240_000,
+                "debate_start": 360_000,
                 "round_one_window": 150_000,
-                "reduced_threshold_from": 480_000,
-                "final_round_start": 525_000,
-                "final_round_end": 585_000,
-                "force_stop": 600_000,
+                "reduced_threshold_from": 600_000,
+                "final_round_start": 645_000,
+                "final_round_end": 705_000,
+                "force_stop": 720_000,
             },
             "vote_thresholds": {
                 "unanimous_blind_pass": 7,
@@ -1955,7 +1956,7 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
                 **fields,
             )
             entry.update(
-                elapsed_ms=260_000 if kind == "challenge" else 280_000,
+                elapsed_ms=380_000 if kind == "challenge" else 400_000,
                 deadline_phase="first_round",
                 kind=kind,
                 message_id=content["message_id"],
@@ -2308,7 +2309,7 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
                 debate_stop_at_ms=timeline["debate_stop_at_ms"] + 1
             ),
             "report deadline": lambda timeline: timeline.update(
-                report_completed_at_ms=780_000
+                report_completed_at_ms=HARD_DEADLINE_MS
             ),
         }
         for label, mutate in cases.items():
@@ -2819,17 +2820,17 @@ class V2FinalVoteTimingTest(unittest.TestCase):
         return verify_run(self.fixture.data_root, self.finalized["run_id"])
 
     def test_a_final_vote_before_its_round_wall_is_refused(self):
-        # Reviewer reproduction: opening T+270000, round-one wall T+300000.
-        self._publish(vote_elapsed=269_999)
+        # Reviewer reproduction: opening T+390000, round-one wall T+420000.
+        self._publish(vote_elapsed=419_999)
 
         with self.assertRaisesRegex(RunVerificationError, "final_vote.*時間"):
             self._verify()
 
     def test_round_window_boundaries_are_lower_inclusive_upper_exclusive(self):
         for elapsed_ms, accepted in (
-            (300_000, True),
-            (389_999, True),
-            (390_000, False),
+            (420_000, True),
+            (509_999, True),
+            (510_000, False),
         ):
             with self.subTest(elapsed_ms=elapsed_ms):
                 self._publish(vote_elapsed=elapsed_ms)
@@ -2842,7 +2843,7 @@ class V2FinalVoteTimingTest(unittest.TestCase):
                         self._verify()
 
     def test_a_final_vote_may_not_predate_the_same_seat_opening(self):
-        self._publish(opening_elapsed=350_001)
+        self._publish(opening_elapsed=470_001)
 
         with self.assertRaisesRegex(RunVerificationError, "final_vote.*opening"):
             self._verify()

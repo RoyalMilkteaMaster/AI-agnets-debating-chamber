@@ -11,7 +11,7 @@ transcript there and writes the final message to the file named by
 Live web search is a capability of the invocation, switched on the command line
 rather than left to ``~/.codex/config.toml``: a research seat must not silently
 degrade to training-data recall because a local config changed, and a call after
-the T+4:00 seal must not be able to search at all no matter what its prompt
+the evidence seal must not be able to search at all no matter what its prompt
 says. ``invoke(..., allow_search=False)`` sends ``-c tools.web_search=false``.
 Asking is not proof either way, so the stderr transcript is counted too: every
 live search prints one ``web search: <query>`` line, and that count is reported
@@ -37,7 +37,9 @@ from .claude_adapter import SubprocessRunner
 CODEX_CLI_PATH = "/home/leslie/.local/bin/codex"
 CODEX_MODEL = "gpt-5.6-sol"
 CODEX_SANDBOX_MODE = "read-only"
-CODEX_TIMEOUT_SECONDS = 270
+# Standalone default. Formal research runs inject the question-specific timeout
+# derived from research_deadlines so this adapter cannot end before the shared wall.
+CODEX_TIMEOUT_SECONDS = 345
 CODEX_SCHEMA_NAME = "codex-output-schema.json"
 CODEX_LAST_MESSAGE_NAME = "codex-last-message.txt"
 STDERR_SUMMARY_CHARS = 200

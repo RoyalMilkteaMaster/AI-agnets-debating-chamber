@@ -28,17 +28,17 @@ FINAL_SETTLE_MS = SINGLE_SEAL_MS + RULES.final_settle_offset_ms
 
 class DebateScheduleTest(unittest.TestCase):
     def test_single_asset_uses_the_four_approved_vote_walls(self):
-        self.assertEqual((300_000, 390_000, 480_000, 570_000), SINGLE_WALLS)
+        self.assertEqual((420_000, 510_000, 600_000, 690_000), SINGLE_WALLS)
         self.assertEqual((7, 6, 5, 4), tuple(r.threshold for r in RULES.vote_rounds))
-        self.assertEqual(600_000, FINAL_SETTLE_MS)
+        self.assertEqual(720_000, FINAL_SETTLE_MS)
 
     def test_comparison_moves_the_whole_schedule_thirty_seconds(self):
         comparison_walls = tuple(
             COMPARISON_SEAL_MS + vote_round.open_offset_ms
             for vote_round in RULES.vote_rounds
         )
-        self.assertEqual((330_000, 420_000, 510_000, 600_000), comparison_walls)
-        self.assertEqual(630_000, COMPARISON_SEAL_MS + RULES.final_settle_offset_ms)
+        self.assertEqual((450_000, 540_000, 630_000, 720_000), comparison_walls)
+        self.assertEqual(750_000, COMPARISON_SEAL_MS + RULES.final_settle_offset_ms)
 
     def test_phase_and_threshold_helpers_accept_the_run_seal(self):
         self.assertEqual(

@@ -18,8 +18,9 @@ cd "$CODE_ROOT"
 比賽日（秒級冷啟動）：§5 開 fresh Codex Task → 貼觸發句
   → Core 只跑 launch 一條命令：查憑證 → 建 run → 並行派滿七席
      （3 Codex 經 codex exec、3 Claude、1 Antigravity）→ 背景起直播頁
-     → T+4:00 封存證據 → 七席辯論與投票 → Core 報告 → 寫 manifest
-  → stdout 三行：LAUNCHED（T+0）、SEALED（T+4:00）、FINALIZED（≤T+13:00）
+     → T+5:20 停止新增搜尋 → T+5:50 停止收件 → T+6:00 封存證據
+     → 七席辯論與投票 → Core 報告 → 寫 manifest
+  → stdout 三行：LAUNCHED（T+0）、SEALED（T+6:00）、FINALIZED（<T+15:00）
 ```
 
 比賽日**不再**執行 prepare-launch、verify-preflight、provider preflight 或 drill；
@@ -125,7 +126,7 @@ pgrep -af 'hoya_market_agents live'
 ```
 
 Core 會依 `hoya-market-research` skill 快速路徑自動執行，不需要其他輸入。
-支援資產僅 BTC、ETH、SOL、BNB、XRP。缺 READY 憑證時 launch 會 exit 2 並停下
+支援台股、美股、加密資產與開放命題；前端須明確選資產類別並填標的。缺 READY 憑證時 launch 會 exit 2 並停下
 回報——此時回到 §4，不得繞過。
 
 手動除錯時，launch 可直接呼叫：
@@ -144,16 +145,16 @@ tail -f /tmp/hoya-launch.log   # 依序印出 LAUNCHED → SEALED → FINALIZED
 
 預設 `--phase full`：同一條命令接著跑辯論、投票、Core 報告與 finalize，
 最後一行 `FINALIZED` 帶 `consensus_status`、`adopted_stance`、`tally`、
-`stop_reason`、`report_status` 與 `report_html` 路徑。辯論時間關卡（2026-08-02
-使用者核准修訂）固定為 T+4:00（封存並開場，逐席即時發布；某席開場已發且全場
-已有兩種以上立場即立刻派發該席第一輪）、T+7:30（第一輪與 6 票）、T+8:00
-（門檻降 5）、T+8:45 與 T+9:45（改票輪）、T+10:00（強制停止，4 票採用否則
-未達共識）。
+`stop_reason`、`report_status` 與 `report_html` 路徑。現行時間關卡（2026-08-11
+使用者核准修訂）固定為：T+5:20 停止發起新搜尋，所有席位立即整理已取得資料；
+T+5:50 停止接收研究結果，即使不足三張證據卡也必須交回；T+6:00 封存並開場。
+四輪開票依序在 T+7:00（7 票）、T+8:30（6 票）、T+10:00（5 票）、
+T+11:30（4 票），T+12:00 硬停結算；最晚必須在 T+15:00 前完成報告。
 
-**兩幣比較題 +30 秒**（Ticket R7，2026-08-02 使用者核准）：`two_asset_comparison`
-的收件牆是 T+4:20、封存是 T+4:30（其餘題型維持 T+3:50／T+4:00），Claude 研究
-呼叫的 timeout 也跟著變成 255 秒。T+7:30 之後的每一道辯論牆與 T+13:00 報告期限
-四型共用，不隨題型移動。直播頁的規則時間線會依該 run 的題型顯示 4:00 或 4:30。
+**兩標的比較題 +30 秒**：`two_asset_comparison` 的搜尋停止、收件與封存分別為
+T+5:50、T+6:20、T+6:30；四輪開票與硬停也全部後移 30 秒，依序為
+T+7:30／9:00／10:30／12:00／12:30。各 provider 研究 timeout 由該題型收件牆減
+5 秒動態推導（一般題 345 秒、比較題 375 秒）；報告硬截止仍是全題型 T+15:00。
 
 `report_status: "red_audit"` 是誠實結果不是崩潰：Core 報告兩次都沒通過客觀驗證，
 系統改出紅燈「報告驗證失敗」版本並列出精確原因，不得手動改寫成看起來完整的報告。
@@ -238,11 +239,11 @@ manifest 的 `provider_lineage_fast` 欄位保存憑證引用與各席 actual mo
 
 verify-run 對 timeline 的要求很硬，下列情況會**如實**驗證失敗，不要試圖修 manifest：
 
-- 任一席沒有在 T+3:50（比較題 T+4:20）前交出有效研究結果（`seat_completion_ms` 缺該席）。
+- 任一席沒有在 T+5:50（比較題 T+6:20）前交出有效研究結果（`seat_completion_ms` 缺該席）。
 - `evidence_snapshot_sealed_at_ms` 與該 run 題型的封存時刻不符（例如比較題卻寫
-  240000），或 manifest 與 `question.json` 的 `question_type` 互相矛盾。
+  360000），或 manifest 與 `question.json` 的 `question_type` 互相矛盾。
 - 任一席沒有出現在 evidence／debate／votes 三份紀錄裡。
-- 報告晚於 T+13:00，或距離辯論停止超過 3 分鐘。
+- 報告在 T+15:00 或之後完成。
 
 `--phase research` 產生的 run 沒有 manifest，本來就不該送 verify-run。
 

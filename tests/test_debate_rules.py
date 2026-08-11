@@ -384,15 +384,15 @@ class RulesDriveBehaviourTest(RulesVariantTestCase):
     def test_moving_the_threshold_drop_moves_the_vote_requirement(self):
         rules = self.moved_rules()
 
-        self.assertEqual(7, rules.required_votes_at(449_999))
-        self.assertEqual(6, rules.required_votes_at(450_000))
-        self.assertEqual(4, rules.required_votes_at(600_000))
+        self.assertEqual(7, rules.required_votes_at(569_999))
+        self.assertEqual(6, rules.required_votes_at(570_000))
+        self.assertEqual(4, rules.required_votes_at(720_000))
 
     def test_moving_the_threshold_drop_moves_the_named_phase(self):
         rules = self.moved_rules()
 
-        self.assertEqual("vote_round_1", rules.phase_at(449_999))
-        self.assertEqual("vote_round_2", rules.phase_at(450_000))
+        self.assertEqual("vote_round_1", rules.phase_at(569_999))
+        self.assertEqual("vote_round_2", rules.phase_at(570_000))
 
     def test_the_round_schedule_follows_the_run_s_own_seal(self):
         rules = self.load(valid_document())
@@ -405,9 +405,9 @@ class RulesDriveBehaviourTest(RulesVariantTestCase):
 
         rules = self.moved_rules()
 
-        self.assertEqual(7, required_votes_at(449_999, rules=rules))
-        self.assertEqual(6, required_votes_at(450_000, rules=rules))
-        self.assertEqual("vote_round_2", phase_at(450_000, rules=rules))
+        self.assertEqual(7, required_votes_at(569_999, rules=rules))
+        self.assertEqual(6, required_votes_at(570_000, rules=rules))
+        self.assertEqual("vote_round_2", phase_at(570_000, rules=rules))
 
 
 class ConfidencePlaceholderTest(RulesVariantTestCase):
@@ -743,8 +743,8 @@ class LegalBoundaryTest(RulesVariantTestCase):
 
         rules = self.load(document)
         self.assertEqual((7, 4, 1), tuple(r.threshold for r in rules.vote_rounds))
-        self.assertEqual(7, rules.required_votes_at(240_000))
-        self.assertEqual(1, rules.required_votes_at(240_003))
+        self.assertEqual(7, rules.required_votes_at(rules.debate_start_ms))
+        self.assertEqual(1, rules.required_votes_at(rules.debate_start_ms + 3))
 
     def test_both_ends_of_the_round_threshold_range_are_accepted(self):
         for value in (1, len(SEAT_IDS)):
@@ -3361,7 +3361,7 @@ class ReloadPublishesTest(ReloadTestCase):
         rules = debate_rules()
         self.assertEqual((6, 5, 4, 3), tuple(r.threshold for r in rules.vote_rounds))
         self.assertEqual(420_000, rules.final_settle_offset_ms)
-        self.assertEqual(660_000, rules.force_stop_ms)
+        self.assertEqual(780_000, rules.force_stop_ms)
 
     def test_the_reload_returns_exactly_the_object_it_published(self):
         published = self.publish(self.lower_ladder())
@@ -3482,7 +3482,7 @@ class ReloadIsFailClosedTest(ReloadTestCase):
         document = valid_document()
         document["timeline"]["final_settle_offset_ms"] = 420_000
 
-        self.assertEqual(660_000, self.publish(document).force_stop_ms)
+        self.assertEqual(780_000, self.publish(document).force_stop_ms)
 
 
 class ReloadIsTheOnlyWriterTest(unittest.TestCase):

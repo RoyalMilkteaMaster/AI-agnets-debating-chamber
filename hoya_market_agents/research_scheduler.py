@@ -1,4 +1,4 @@
-"""Four-minute research deadline state machine.
+"""Research deadline state machine.
 
 The class is deliberately not a general task scheduler. Provider adapters call
 ``submit_result`` or ``report_failure`` as their processes change, while
@@ -19,12 +19,13 @@ from .seats import SEAT_IDS
 
 PRIMARY_ONLY_END_MS = 90_000
 START_RETRY_MS = 30_000
-# 2026-08-02 使用者核准的修訂時間表：研究從 5 分鐘縮到 4 分鐘，讓出來的一分鐘
-# 全部給辯論。實測七席最慢 217 秒交卷，230_000 的收件牆仍留得下它。
 CHECKPOINT_MS = 120_000
 REPLACEMENT_MS = 155_000
-ACCEPT_RESULTS_UNTIL_MS = 230_000
-SEAL_MS = 240_000
+# 2026-08-11 使用者核准：一般題可搜尋到 T+5:20，之後不得再發起新搜尋，
+# 必須用已取得資料交卷；T+5:50 停止收件，T+6:00 封存。
+WRAP_UP_WINDOW_MS = 30_000
+ACCEPT_RESULTS_UNTIL_MS = 350_000
+SEAL_MS = 360_000
 
 # 前五個里程碑四種題型共用；只有收件牆與封存隨題型移動。
 FIXED_MILESTONES_MS = (
@@ -38,7 +39,7 @@ FIXED_MILESTONES_MS = (
 
 @dataclass(frozen=True)
 class ResearchDeadlines:
-    """The two instants one run's research phase is measured against.
+    """The instants one run's research phase is measured against.
 
     這是全系統唯一的時刻權威：scheduler、provider timeout、辯論起點、
     verifier 與看板一律查 :func:`research_deadlines`，不得自己抄字面值。
@@ -48,17 +49,24 @@ class ResearchDeadlines:
     seal_ms: int
 
     @property
+    def search_stop_ms(self):
+        """Soft wall for starting searches; the remaining time is for delivery."""
+        return self.accept_until_ms - WRAP_UP_WINDOW_MS
+
+    @property
     def milestones_ms(self):
-        return FIXED_MILESTONES_MS + (self.accept_until_ms, self.seal_ms)
+        return FIXED_MILESTONES_MS + (
+            self.search_stop_ms,
+            self.accept_until_ms,
+            self.seal_ms,
+        )
 
 
 DEFAULT_DEADLINES = ResearchDeadlines(
     accept_until_ms=ACCEPT_RESULTS_UNTIL_MS, seal_ms=SEAL_MS
 )
-# 2026-08-02 使用者核准：兩幣比較題的研究負擔是單幣題的兩倍。實測 run
-# 20260802T040230Z-btc-eth-4448e8 在 4:00 封存下只有 3/7 席交卷，收件牆與
-# 封存各後移 30 秒；辯論的絕對牆一律不動（比較題第一輪仍有 180 秒）。
-COMPARISON_DEADLINES = ResearchDeadlines(accept_until_ms=260_000, seal_ms=270_000)
+# 兩幣比較題保留既有的額外 30 秒研究與收件時間；辯論 offset 仍錨定封存。
+COMPARISON_DEADLINES = ResearchDeadlines(accept_until_ms=380_000, seal_ms=390_000)
 COMPARISON_QUESTION_TYPES = frozenset({"two_asset_comparison", "comparison"})
 
 MILESTONES_MS = DEFAULT_DEADLINES.milestones_ms
@@ -82,7 +90,7 @@ class ResearchSchedulerError(RuntimeError):
 
 
 class ResearchScheduler:
-    """Coordinate seven logical seats until the immutable T+4 snapshot."""
+    """Coordinate seven logical seats until the immutable evidence snapshot."""
 
     def __init__(
         self,
@@ -122,6 +130,8 @@ class ResearchScheduler:
         elapsed = self.elapsed_ms
         if elapsed >= self.deadlines.seal_ms:
             return "search_closed"
+        if elapsed >= self.deadlines.search_stop_ms:
+            return "wrap_up_only"
         if elapsed >= PRIMARY_ONLY_END_MS:
             return "trusted_secondary_allowed"
         return "primary_only"
@@ -229,6 +239,8 @@ class ResearchScheduler:
             self._checkpoint_all(elapsed)
         elif elapsed == REPLACEMENT_MS:
             self._replace_missing(elapsed)
+        elif elapsed == self.deadlines.search_stop_ms:
+            self._event("research_wrap_up_started", elapsed)
         elif elapsed == self.deadlines.accept_until_ms:
             self.accepting_results = False
             self._event("research_result_window_closed", elapsed)
@@ -317,7 +329,7 @@ class ResearchScheduler:
             else:
                 self._event(
                     "recovery_exhausted", elapsed, previous,
-                    error="same-model retry and cross-model replacement already used",
+                    error="same-model retry and any configured replacement already used",
                 )
 
     def _launch(self, attempt, at_ms):

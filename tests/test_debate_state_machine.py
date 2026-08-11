@@ -617,6 +617,107 @@ class DebateStateMachineTest(unittest.TestCase):
         self.assertFalse(unchanged["stance_changed"])
         self.assertEqual("public reason from derivatives", unchanged["final_public_reason"])
 
+    def test_later_unchanged_vote_keeps_the_reason_for_an_earlier_change(self):
+        harness = DebateHarness(self)
+        initial = ["bullish", "bullish", "bullish", "bearish", "bearish", "neutral", "neutral"]
+        changed = list(initial)
+        changed[0] = "bearish"
+        reason = "counter evidence changed my vote"
+
+        harness.complete_round(
+            initial,
+            changed,
+            changed_reasons={SEAT_IDS[0]: reason},
+        )
+        harness.advance_to(FIRST_ROUND_OPEN_MS)
+        harness.machine.tick()
+        harness.advance_to(SECOND_ROUND_OPEN_MS - 1)
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[0],
+                "final_vote",
+                "maintained-after-change",
+                stance="bearish",
+                round=1,
+            )
+        )
+        harness.advance_to(SECOND_ROUND_OPEN_MS)
+        harness.machine.tick()
+
+        row = {item["seat_id"]: item for item in harness.machine.vote_table()}[SEAT_IDS[0]]
+        self.assertTrue(row["stance_changed"])
+        self.assertEqual(reason, row["stance_change_reason"])
+        self.assertEqual(reason, row["vote_changes"][0]["reason"])
+        self.assertIsNone(row["vote_changes"][-1]["reason"])
+
+    def test_change_after_the_official_ballot_does_not_replace_its_reason(self):
+        harness = DebateHarness(self)
+        initial = ["bullish", "bullish", "bullish", "bearish", "bearish", "neutral", "neutral"]
+        first_votes = list(initial)
+        first_votes[0] = "bearish"
+        official_reason = "first ballot evidence changed my vote"
+
+        harness.complete_round(
+            initial,
+            first_votes,
+            changed_reasons={SEAT_IDS[0]: official_reason},
+        )
+        harness.advance_to(FIRST_ROUND_OPEN_MS)
+        harness.machine.tick()
+        harness.advance_to(SECOND_ROUND_OPEN_MS - 1)
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[0],
+                "final_vote",
+                "changed-after-official-ballot",
+                stance="bullish",
+                round=1,
+                stance_change_reason="later evidence changed it back",
+            )
+        )
+
+        row = {item["seat_id"]: item for item in harness.machine.vote_table()}[SEAT_IDS[0]]
+        self.assertEqual("bearish", row["final_stance"])
+        self.assertTrue(row["stance_changed"])
+        self.assertEqual(official_reason, row["stance_change_reason"])
+
+    def test_return_to_the_initial_stance_keeps_history_but_has_no_top_level_reason(self):
+        harness = DebateHarness(self)
+        initial = ["bullish", "bullish", "bullish", "bearish", "bearish", "neutral", "neutral"]
+        first_votes = list(initial)
+        first_votes[0] = "bearish"
+
+        harness.complete_round(
+            initial,
+            first_votes,
+            changed_reasons={SEAT_IDS[0]: "first ballot evidence changed my vote"},
+        )
+        harness.advance_to(FIRST_ROUND_OPEN_MS)
+        harness.machine.tick()
+        harness.advance_to(SECOND_ROUND_OPEN_MS - 1)
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[0],
+                "final_vote",
+                "returned-to-initial",
+                stance="bullish",
+                round=1,
+                stance_change_reason="later evidence changed it back",
+            )
+        )
+        harness.advance_to(SECOND_ROUND_OPEN_MS)
+        harness.machine.tick()
+
+        row = {item["seat_id"]: item for item in harness.machine.vote_table()}[SEAT_IDS[0]]
+        self.assertEqual("bullish", row["final_stance"])
+        self.assertFalse(row["stance_changed"])
+        self.assertIsNone(row["stance_change_reason"])
+        self.assertEqual(2, len(row["vote_changes"]))
+        self.assertEqual(
+            ["first ballot evidence changed my vote", "later evidence changed it back"],
+            [change["reason"] for change in row["vote_changes"]],
+        )
+
     def test_relay_keeps_verbatim_content_and_hash_even_if_caller_mutates_input(self):
         harness = DebateHarness(self)
         content = harness.message(
@@ -814,7 +915,7 @@ class DebateStateMachineTest(unittest.TestCase):
 
     def test_a_matching_debate_start_override_opens_the_room_at_that_instant(self):
         harness = DebateHarness(self, run_id="{}-matching-seal".format(RUN_ID))
-        harness.advance_to(270_000)
+        harness.advance_to(DEBATE_START_MS)
 
         machine = DebateStateMachine(
             run=harness.run,

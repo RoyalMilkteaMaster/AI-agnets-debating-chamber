@@ -18,6 +18,7 @@ from .report_contract import (
 )
 from .report_audit_renderer import render_debate_html
 from .report_renderer import render_market_html, render_market_markdown
+from .report_workflow import HARD_DEADLINE_MS
 from .research_scheduler import research_deadlines
 from .run_store import resolve_run_dir
 from .seats import SEAT_IDS
@@ -563,7 +564,7 @@ def _verify_competition_timeline(run_dir, manifest, debate, votes, timeline, rul
     _require_regular_file(snapshot, run_dir)
     snapshot_sha = hashlib.sha256(snapshot.read_bytes()).hexdigest()
     if timeline.get("evidence_snapshot_sha256") != snapshot_sha:
-        raise RunVerificationError("T+4 snapshot hash 不一致。")
+        raise RunVerificationError("封存證據 snapshot hash 不一致。")
     if snapshot.read_bytes() != (run_dir / "evidence.jsonl").read_bytes():
         raise RunVerificationError("正式 evidence.jsonl 與 sealed snapshot 不一致。")
 
@@ -602,12 +603,12 @@ def _verify_competition_timeline(run_dir, manifest, debate, votes, timeline, rul
         _verify_stop_semantics(votes, stop_reason, stop_ms, deadlines, rules)
 
     report_ms = timeline.get("report_completed_at_ms")
-    if type(report_ms) is not int or report_ms >= 780_000:
-        raise RunVerificationError("報告未在 T+13 前完成。")
+    if type(report_ms) is not int or report_ms >= HARD_DEADLINE_MS:
+        raise RunVerificationError("報告未在 T+15 前完成。")
     if report_ms - stop_ms > 180_000:
         raise RunVerificationError("Core 報告超過共識後三分鐘。")
-    if timeline.get("report_hard_deadline_ms") != 780_000:
-        raise RunVerificationError("report hard deadline 不是 T+13。")
+    if timeline.get("report_hard_deadline_ms") != HARD_DEADLINE_MS:
+        raise RunVerificationError("report hard deadline 不是 T+15。")
     if manifest.get("elapsed_ms") != report_ms:
         raise RunVerificationError("manifest elapsed_ms 與 report timeline 不一致。")
 

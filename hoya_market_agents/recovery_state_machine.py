@@ -19,7 +19,7 @@ class ResearchAttempt:
 class SeatRecoveryState:
     seat_id: str
     primary_model: str
-    replacement_model: str
+    replacement_model: str | None
     attempts: list = field(default_factory=list)
     started_attempt_ids: set = field(default_factory=set)
     adopted_attempt_id: str | None = None
@@ -46,6 +46,8 @@ class SeatRecoveryState:
                 self.primary_model, "same_model_retry", failed_attempt_id, reason
             )
         if not self.cross_model_replacement_used:
+            if not self.replacement_model:
+                return None
             if self.replacement_model == self.primary_model:
                 raise ValueError("cross-model replacement 必須使用不同模型")
             return self._new(
@@ -94,7 +96,7 @@ class SeatRecoveryState:
 
 
 class RecoveryStateMachine:
-    """Creates one primary, one same-model retry and one cross-model replacement."""
+    """Creates a primary, one same-model retry and an optional replacement."""
 
     def __init__(self, seat_ids, primary_models, replacement_models):
         self.seats = {}

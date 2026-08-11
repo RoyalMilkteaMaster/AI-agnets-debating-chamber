@@ -36,20 +36,20 @@ from ..debate_rules import debate_rules
 from ..debate_state_machine import DebateError, stances_for
 from ..question_package import MARKET_STANCES
 from ..report_renderer import resolve_stance_labels
+from ..report_workflow import HARD_DEADLINE_MS
 from ..research_scheduler import PRIMARY_ONLY_END_MS, research_deadlines
 from ..run_index import RunIndexError, query_runs
 from ..run_store import RUN_DIR_DATE_FORMAT, resolve_run_dir
 from ..seats import SEAT_IDS, seat_identities, seat_profiles
 from . import views
 
-# The competition is fifteen minutes and the report is due at thirteen. These
+# The complete window is seventeen minutes and the report is due at fifteen. These
 # two are the product's fixed frame, not debate rules: they are absent from
 # config/debate_rules.json and the settings page does not touch them, so they
 # are constants here rather than reads of the rule authority. ``run_verifier``
-# holds the same 780_000 as ``report_hard_deadline_ms``; the total window is the
-# fifteen minutes the whole run is bounded by.
-TOTAL_WINDOW_MS = 900_000
-REPORT_DEADLINE_MS = 780_000
+# report workflow is the single authority for the report hard deadline.
+TOTAL_WINDOW_MS = 17 * 60_000
+REPORT_DEADLINE_MS = HARD_DEADLINE_MS
 
 # The most recent history runs the room's picker offers. The picker is a way
 # back to a finished run, not a report of every run ever, so it is capped.
@@ -594,10 +594,21 @@ def rule_timeline(question_type=None):
     :data:`TOTAL_WINDOW_MS`.
     """
     rules = debate_rules()
-    seal_ms = research_deadlines(question_type).seal_ms
+    deadlines = research_deadlines(question_type)
+    seal_ms = deadlines.seal_ms
     milestones = [
         {"at_ms": 0, "label": "開始多方蒐證", "required_votes": None},
         {"at_ms": PRIMARY_ONLY_END_MS, "label": "允許可信二手來源", "required_votes": None},
+        {
+            "at_ms": deadlines.search_stop_ms,
+            "label": "停止新增搜尋並整理已找到資料",
+            "required_votes": None,
+        },
+        {
+            "at_ms": deadlines.accept_until_ms,
+            "label": "研究結果停止收件",
+            "required_votes": None,
+        },
         {
             "at_ms": seal_ms,
             "label": "封存證據並整理開場票",
@@ -633,7 +644,7 @@ def threshold_label(elapsed_ms, question_type=None):
     has not been asked to vote cannot be short of votes. "Before the debate
     opens" is this run's actual seal, from
     :func:`~hoya_market_agents.research_scheduler.research_deadlines`, so a
-    comparison run that seals at 4:30 does not read as voting at 4:05 while its
+    comparison run that seals thirty seconds later does not read as voting before its
     timeline still says the evidence is not sealed.
     """
     seal_ms = research_deadlines(question_type).seal_ms

@@ -2,10 +2,11 @@
 
 ![AI agnets debating chamber](docs/assets/readme-hero.png)
 
-七席多模型加密市場研究流程的 WSL Python 控制程式。
+七席多模型市場研究流程的 WSL Python 控制程式，支援台股、美股、加密資產與開放命題。
 
 本版本提供兩條明確分離的路徑：`drill --provider-mode fake` 以假時鐘打通七席並行、
-T+4:00 evidence seal、6/5/4 辯論與 T+13 報告；`preflight --provider system --mode real`
+T+5:20 搜尋停止、T+5:50 收件、T+6:00 evidence seal、7/6/5/4 四輪投票與 T+15 報告，
+並保留到 T+17 的兩分鐘人工閱讀窗；`preflight --provider system --mode real`
 則只接受真實訂閱與 fresh Codex Task 的可觀察證據。fake 演練永遠標記
 `competition_ready=false`，不得作為市場資料或真實 READY 證據。
 
@@ -70,7 +71,7 @@ python3 -m hoya_market_agents drill --provider-mode fake \
   --question "分析 BTC 過去 14 日市場狀態"
 ```
 
-輸出包含 `run_id`、七席 completion timeline、T+4:00 snapshot hash、辯論停止原因、
+輸出包含 `run_id`、七席 completion timeline、T+6:00 snapshot hash、辯論停止原因、
 報告完成時間與 `verify-run` 結果。
 
 ## 整體 system preflight
@@ -120,8 +121,8 @@ python3 -m hoya_market_agents preflight --provider system --seats 7 \
   --competition-challenge <COMPETITION_CHALLENGE>
 ```
 
-缺少任何登入、actual model、七席搜尋 receipt、權限、T+3:50 contract、T+4:00 seal 或
-T+13 report 證據時都輸出機器可讀 `NOT_READY` manifest。
+缺少任何登入、actual model、七席搜尋 receipt、權限、T+5:50 contract、T+6:00 seal 或
+T+15 report 證據時都輸出機器可讀 `NOT_READY` manifest。
 目前 Codex、Claude、Antigravity 的訂閱 CLI 都不提供可由第三方獨立驗證的
 provider/runtime attestation。manifest 會把 `provider_runtime_attestation` 列為
 `advisories`，但它不再阻止 operational READY 或 competition authorization。
@@ -293,7 +294,7 @@ cat latest.json
 以下項目沒有可重現 live 證據，因此 system preflight 不會宣稱 READY：
 
 - 三個 GPT-5.6 Sol persistent threads 的 live `web_search`、actual model 與 runtime receipt。
-- 七個真實訂閱席在同一 run 於 T+3:50 前交付、T+4:00 seal，並於 T+13 前完成報告。
+- 七個真實訂閱席在同一 run 於 T+5:50 前交付、T+6:00 seal，並於 T+15 前完成報告。
 - 在上述 blocker 關閉前，正式 `$ai-agnets-debating-chamber` 必須停止並交付 NOT READY。
 - 向量資料庫、RAG、FinGPT、crawler 與 web service（依 ADR 0002 不在 MVP 範圍）。
 

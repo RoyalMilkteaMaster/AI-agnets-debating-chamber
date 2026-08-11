@@ -51,12 +51,13 @@ CORE_REPORT_TIMEOUT_SECONDS = 85
 DEBATE_DIAGNOSTICS_NAME = "diagnostics/debate-driver.json"
 REPORT_ATTEMPTS_NAME = "diagnostics/report-attempts.json"
 
-# 回合視窗由 DebateStateMachine 唯一強制；driver 不再複述一份。下列只是收集
-# 預算：每一個都停在自己那道牆前 5 秒，剩下的 5 秒留給 relay 七席與計票。
+# 回合視窗由 DebateStateMachine 唯一強制；driver 不再複述一份。自由辯論回合
+# 停在下一道牆前 5 秒，剩下時間留給 relay 與計票。Opening 必須使用完整第一輪
+# 視窗；實測 59.080 秒的合法回覆不可被提早 5 秒取消。
 RELAY_MARGIN_MS = 5_000
 
-# 主迴圈最多晚一個 poll 才看到 T+10；停在 600_137ms 會讓這次強制停止對不上它自己
-# 執行的規則，也過不了 run_verifier 的 stop 語意檢查。
+# 主迴圈最多晚一個 poll 才看到硬停牆；紀錄成牆後零碎毫秒會讓這次強制停止
+# 對不上它自己執行的規則，也過不了 run_verifier 的 stop 語意檢查。
 FORCE_STOP_SNAP_MS = 2_000
 
 FAST_PATH_LIMITATION = (
@@ -217,7 +218,7 @@ def build_turns(stances, debate_start_ms=None, rules=None):
             label="初始立場",
             schema=opening_schema(stances),
             validator=validate_opening_shape,
-            collect_until_ms=first_wall_ms - RELAY_MARGIN_MS,
+            collect_until_ms=first_wall_ms,
             relay_from_ms=debate_start_ms,
         )
     }
@@ -240,12 +241,11 @@ def build_turns(stances, debate_start_ms=None, rules=None):
 
 
 class DeadlineAlignedClock:
-    """Report the scheduled T+10:00 instant, not the moment Python noticed it.
+    """Report the scheduled forced-stop instant, not when Python noticed it.
 
     The research scheduler already stamps its milestones with the milestone
     time rather than the clock reading, and the forced stop needs the same
-    treatment: a debate stopped by the T+10:00 rule must be recorded at
-    T+10:00. Only that one boundary is aligned, and only within one poll's
+    treatment. Only that one boundary is aligned, and only within one poll's
     worth of lateness — a driver that really was late stays visibly late.
     """
 
@@ -473,7 +473,7 @@ class DebateDriver:
             self.lineage[message[1]] = message[2]
             return
         if kind not in (DEBATE_RESULT_MESSAGE, DEBATE_FAILURE_MESSAGE):
-            return  # 研究階段殘留的訊息；T+4 之後不再採用
+            return  # 研究階段殘留的訊息；證據封存後不再採用
         dispatch = self.pending.pop(message[1], None)
         if dispatch is None:
             return
@@ -639,6 +639,8 @@ class DebateDriver:
             "- 讀完上方僅屬於本席的 sealed 證據視圖後，公開你這一席的初始立場。",
             "- 輸出欄位：seat_id、stance、public_reason、evidence_ids、"
             "conflicting_evidence_ids、uncertainty_reason、change_trigger。",
+            "- 本回合要快速完成投票：public_reason 最多 500 字；"
+            "conflicting_evidence_ids 只列必要項目，其餘文字欄位各用一個完整句子。",
             "- 第一輪開票會採用開票當下這一席最新公開立場；本回合後不必另交票才有效。",
             self.CONCLUSION_FIRST_RULE,
         ]
@@ -941,7 +943,7 @@ class CodexCoreAuthor:
         self.rules = rules
 
     def __call__(self, attempt, errors):
-        # 報告寫在 T+4 封存之後：只能依正式 artifacts，搜尋能力必須是關的。
+        # 報告寫在證據封存之後：只能依正式 artifacts，搜尋能力必須是關的。
         result = self.adapter.invoke(
             self._prompt(errors),
             CORE_REPORT_SCHEMA,

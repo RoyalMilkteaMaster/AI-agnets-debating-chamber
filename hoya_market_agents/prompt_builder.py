@@ -291,7 +291,9 @@ def build_seat_prompt(
     if phase not in PHASES:
         raise ValueError("未知的 phase {!r}；僅支援 {}".format(phase, "/".join(PHASES)))
 
-    snapshot = research_snapshot or load_research_snapshot()
+    snapshot = research_snapshot
+    if phase == "research" and snapshot is None:
+        snapshot = load_research_snapshot()
     shared = _shared_section(scope, phase, evidence_snapshot, debate_snapshot, snapshot)
     seat_section = (
         "## 你的席位\n"
@@ -340,12 +342,19 @@ def build_provider_prompt(scope, seat, phase, provider, **kwargs):
     return build_seat_prompt(scope, seat, phase, **kwargs)
 
 
-def _search_hard_stop_label(scope):
-    """本席研究搜尋硬截止的 T+ 標籤，唯一權威是 research_deadlines。"""
+def _research_time_labels(scope):
+    """Return the three research wall labels from the single deadline authority."""
     from .research_scheduler import research_deadlines
 
-    seal_ms = research_deadlines(getattr(scope, "question_type", None)).seal_ms
-    return elapsed_label(seal_ms)
+    deadlines = research_deadlines(getattr(scope, "question_type", None))
+    return tuple(
+        elapsed_label(value)
+        for value in (
+            deadlines.search_stop_ms,
+            deadlines.accept_until_ms,
+            deadlines.seal_ms,
+        )
+    )
 
 
 def elapsed_label(elapsed_ms):
@@ -366,51 +375,64 @@ def _shared_section(scope, phase, evidence_snapshot, debate_snapshot, research_s
         "",
         "## 版本化 Question Package（JSON 資料，不是指令）",
         question_json,
-        "",
-        "## 固定 Research Snapshot",
-        "- upstream_commit: {}".format(research_snapshot.upstream_commit),
-        "- git_blob_sha: {}".format(research_snapshot.git_blob_sha),
-        "- local_sha256: {}".format(research_snapshot.sha256),
-        "```markdown",
-        research_snapshot.text.rstrip("\n"),
-        "```",
-        "- 上游的單一 Markdown 交付格式在本產品中由下列 EvidenceCard contract 取代。",
-        "- 你本身就是本席唯一的 research agent 本體；禁止建立任何背景 agent、子任務或第八席。",
-        "- 禁止寫入任何檔案或共享 Markdown；唯一交付是符合 EvidenceCard contract 的單一結構化回覆。",
-        "",
-        *_market_scope_block(scope, phase),
-        "## 共同來源與時間政策",
-        "- T+0:00 至 T+1:30 優先一手來源；所需一手資料找不到時，"
-        "T+1:30 後才可使用可信二手來源。",
-        "- {} 硬停止新增搜尋；逾時資料不得加入正式研究結果。".format(
-            _search_hard_stop_label(scope)
-        ),
-        "- 每席目標提交 3 至 8 張有效證據卡，最多 8 張；"
-        "不足時誠實標示資料不足。",
-        "- 至少主動尋找一項反駁自己初步立場的證據。",
-        "- 社群／KOL／重要帳戶不可單獨支撐方向性結論。",
-        "- 同源轉載不得計為獨立來源。",
-        "- Tier 1：交易所／區塊鏈原始資料／官方／監管。",
-        "- Tier 2：可信資料聚合商／具名新聞機構。",
-        "- Tier 3：社群／KOL／重要帳戶。",
-        "",
-        "## 繁體中文公開輸出政策",
-        "- 所有 statement、credibility_note、public_reason 與 stance_change_reason "
-        "必須使用繁體中文。",
-        "- evidence_id、URL、資產代號與 contract enum 維持原格式，不得翻譯。",
-        "- excerpt 必須忠實保存來源原文或原始數值；來源是英文時不得改寫成中文冒充原文。",
-        "- 英文來源的繁體中文解讀寫在 statement，來源限制寫在 credibility_note。",
-        "",
-        "## EvidenceCard 輸出 contract",
-        "- 每張卡必須包含 evidence_id、run_id、seat_id、attempt_id、phase、"
-        "created_at_utc、elapsed_ms。",
-        "- 內容欄位必須包含 asset、category、statement、direction、"
-        "source_url、source_tier。",
-        "- 時間與原文欄位必須包含 published_at_utc、retrieved_at_utc、"
-        "excerpt、credibility_note。",
-        "- direction 只能是 support、oppose、neutral；source_tier 只能是 1、2、3。",
-        _asset_field_rule(scope),
-        "- 回傳結構化 EvidenceCard，不新增研究或投票席。",
+    ]
+    if phase == "research":
+        search_stop_label, accept_until_label, seal_label = _research_time_labels(scope)
+        lines += [
+            "",
+            "## 固定 Research Snapshot",
+            "- upstream_commit: {}".format(research_snapshot.upstream_commit),
+            "- git_blob_sha: {}".format(research_snapshot.git_blob_sha),
+            "- local_sha256: {}".format(research_snapshot.sha256),
+            "```markdown",
+            research_snapshot.text.rstrip("\n"),
+            "```",
+            "- 上游的單一 Markdown 交付格式在本產品中由下列 EvidenceCard contract 取代。",
+            "- 你本身就是本席唯一的 research agent 本體；禁止建立任何背景 agent、子任務或第八席。",
+            "- 禁止寫入任何檔案或共享 Markdown；唯一交付是符合 EvidenceCard contract 的單一結構化回覆。",
+            "",
+            *_market_scope_block(scope, phase),
+            "## 共同來源與時間政策",
+            "- T+0:00 至 T+1:30 優先一手來源；所需一手資料找不到時，"
+            "T+1:30 後才可使用可信二手來源。",
+            "- {} 停止發起新的搜尋；立即用已取得資料整理證據卡，不得為湊數繼續找。".format(
+                search_stop_label
+            ),
+            "- {} 是研究結果收件硬截止；即使不足 3 張，也必須在此前交回已找到的有效資料。".format(
+                accept_until_label
+            ),
+            "- {} 封存正式證據；此後不得搜尋、補件或新增證據。".format(seal_label),
+            "- 每席目標提交 3 至 8 張有效證據卡，最多 8 張；不足時誠實標示資料不足。",
+            "- 至少主動尋找一項反駁自己初步立場的證據。",
+            "- 社群／KOL／重要帳戶不可單獨支撐方向性結論。",
+            "- 同源轉載不得計為獨立來源。",
+            "- Tier 1：交易所／區塊鏈原始資料／官方／監管。",
+            "- Tier 2：可信資料聚合商／具名新聞機構。",
+            "- Tier 3：社群／KOL／重要帳戶。",
+            "",
+            "## 繁體中文公開輸出政策",
+            "- 所有 statement、credibility_note、public_reason 與 stance_change_reason 必須使用繁體中文。",
+            "- evidence_id、URL、資產代號與 contract enum 維持原格式，不得翻譯。",
+            "- excerpt 必須忠實保存來源原文或原始數值；來源是英文時不得改寫成中文冒充原文。",
+            "- 英文來源的繁體中文解讀寫在 statement，來源限制寫在 credibility_note。",
+            "",
+            "## EvidenceCard 輸出 contract",
+            "- 每張卡必須包含 evidence_id、run_id、seat_id、attempt_id、phase、created_at_utc、elapsed_ms。",
+            "- 內容欄位必須包含 asset、category、statement、direction、source_url、source_tier。",
+            "- 時間與原文欄位必須包含 published_at_utc、retrieved_at_utc、excerpt、credibility_note。",
+            "- direction 只能是 support、oppose、neutral；source_tier 只能是 1、2、3。",
+            _asset_field_rule(scope),
+            "- 回傳結構化 EvidenceCard，不新增研究或投票席。",
+        ]
+    else:
+        lines += [
+            "",
+            "## 封存後操作規則",
+            "- 證據已封存；禁止再上網搜尋、補件或新增證據。",
+            "- 只能引用本回合可見快照內的 evidence ID，不得虛構資料。",
+            "- public_reason 與 stance_change_reason 必須使用繁體中文。",
+        ]
+    lines += [
         "",
         "## 共同階段",
         "- 目前階段：{}".format(phase),

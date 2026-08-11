@@ -48,7 +48,7 @@ cd '/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber' &
 
 ## 時間軸與判讀
 
-- `LAUNCHED` 秒回 → `SEALED` T+4:00（兩幣比較題 T+4:30）→ 辯論最晚 T+10 → `FINALIZED`＋報告 ≤T+13
+- `LAUNCHED` 秒回 → T+5:20 停止新搜尋 → T+5:50 停止收件 → `SEALED` T+6:00（兩標的比較題全部 +30 秒）→ 辯論最晚 T+12:00（比較題 T+12:30）→ `FINALIZED`＋報告 <T+15
 - 三種示範題型任抽任貼；對不上的題目自動走開放命題（Core 當場定義正反方）
 - 報告：`FINALIZED` JSON 裡的 `report_html` 路徑，`explorer.exe "$(wslpath -w <路徑>)"` 開啟
 
@@ -57,4 +57,3 @@ cd '/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber' &
 - exit 2（缺 READY 憑證）→ 不要繞過；憑證在 Data Root `preflight/latest-ready.json`
 - 個別席位缺席／無共識 → 系統誠實處理照常出報告，這不是故障
 - 賽後稽核：`python3 -m hoya_market_agents verify-run --run-id <RUN_ID> --data-root "$DATA_ROOT"`
-  （注意：兩幣比較題 4:30 封存的 verify-run 認可尚待收尾票 R7，賽後補）
