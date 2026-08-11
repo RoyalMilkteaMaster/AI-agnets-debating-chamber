@@ -129,7 +129,7 @@ class AntigravityAdapter:
     ):
         self.cli_path = Path(cli_path)
         self.code_root = Path(code_root or Path(__file__).resolve().parent.parent)
-        self.data_root = Path(data_root or self.code_root.parent / "hoya-bit-market-agents_data")
+        self.data_root = Path(data_root or self.code_root.parent / "AI-agnets-debating-chamber_data")
         self.runner = runner or _run_process
         self.model = model
         self.effort = effort

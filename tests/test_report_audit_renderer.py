@@ -202,7 +202,7 @@ class DebateLabelTest(unittest.TestCase):
     def test_page_chrome_is_traditional_chinese(self):
         for label in (
             "完整辯論室",
-            "Hoya Bit 可稽核市場研究",
+            "AI agnets debating chamber 可稽核市場研究",
             "本場辯論摘要",
             "七席公開辯論聊天室",
             "完整證據卡",

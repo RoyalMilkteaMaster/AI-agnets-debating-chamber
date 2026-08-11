@@ -129,12 +129,20 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 HTML_CONTENT_TYPE = "text/html; charset=utf-8"
+CSS_CONTENT_TYPE = "text/css; charset=utf-8"
 SCRIPT_CONTENT_TYPE = "text/javascript; charset=utf-8"
 EVENT_STREAM_CONTENT_TYPE = "text/event-stream; charset=utf-8"
 
-# The pages that bring everything with them: no script anywhere, styles inline,
-# and the only frame they load is the run's own report from this server.
+# Server-rendered webapp pages load the one same-origin stylesheet.
 CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; script-src 'none'; style-src 'self'; "
+    "img-src 'self' data:; frame-src 'self'; frame-ancestors 'self'; "
+    "form-action 'self'; base-uri 'none'"
+)
+
+# Offline report artifacts remain self-contained files with inline CSS. They are
+# passed through unchanged apart from the already-approved response-only nav.
+ARTIFACT_CONTENT_SECURITY_POLICY = (
     "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; "
     "img-src 'self' data:; frame-src 'self'; frame-ancestors 'self'; "
     "form-action 'self'; base-uri 'none'"
@@ -148,7 +156,7 @@ CONTENT_SECURITY_POLICY = (
 # ``test_the_room_loosens_exactly_two_directives_and_no_others`` pins the two
 # that loosen; this comment is what says the third exists and which way it goes.
 LIVE_CONTENT_SECURITY_POLICY = (
-    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; "
+    "default-src 'none'; script-src 'self'; style-src 'self'; "
     "img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; "
     "form-action 'self'; base-uri 'none'"
 )
@@ -173,6 +181,9 @@ LIVE_SCRIPT_PATH = pages.LIVE_SCRIPT_PATH
 LIVE_EVENTS_PATH = "/live/events"
 LAUNCH_PATH = "/launch"
 SETTINGS_PATH = "/settings"
+STATIC_SITE_CSS_PATH = "/static/site.css"
+STATIC_LIVE_JS_PATH = "/static/live.js"
+STATIC_PATH_PREFIX = "/static/"
 
 # The last segment of the one URL under ``/run/<id>/`` that is not a file of that
 # run. It is read from :mod:`~hoya_market_agents.webapp.pages`, which renders the
@@ -425,6 +436,12 @@ def webapp_handler_class(
 
         def _route(self, path, raw_query):
             query = parse_qs(raw_query, keep_blank_values=True)
+            if path in (STATIC_SITE_CSS_PATH, STATIC_LIVE_JS_PATH):
+                self._static(path)
+                return
+            if path.startswith(STATIC_PATH_PREFIX):
+                self._not_found(path, "這個靜態資產不在本站白名單。")
+                return
             if path in (ROOT_PATH, LIVE_PATH):
                 self._live(query)
                 return
@@ -539,7 +556,12 @@ def webapp_handler_class(
             if body is None:
                 self._not_found(path, "這個 run 沒有可以開啟的 {}。".format(name))
                 return
-            self._send(200, HTML_CONTENT_TYPE, self._with_site_nav(run_id, name, body))
+            self._send(
+                200,
+                HTML_CONTENT_TYPE,
+                self._with_site_nav(run_id, name, body),
+                policy=ARTIFACT_CONTENT_SECURITY_POLICY,
+            )
 
         def _with_site_nav(self, run_id, name, artifact):
             """One offline page's bytes, as the request that asked for them reads.
@@ -602,7 +624,23 @@ def webapp_handler_class(
             self._send(
                 200,
                 SCRIPT_CONTENT_TYPE,
-                pages.LIVE_SCRIPT.encode("utf-8"),
+                pages.live_script().encode("utf-8"),
+                policy=LIVE_CONTENT_SECURITY_POLICY,
+            )
+
+        def _static(self, path):
+            """Serve only the two approved frontend assets, never an arbitrary path."""
+            if path == STATIC_SITE_CSS_PATH:
+                self._send(
+                    200,
+                    CSS_CONTENT_TYPE,
+                    pages.stylesheet().encode("utf-8"),
+                )
+                return
+            self._send(
+                200,
+                SCRIPT_CONTENT_TYPE,
+                pages.live_script().encode("utf-8"),
                 policy=LIVE_CONTENT_SECURITY_POLICY,
             )
 
@@ -1351,7 +1389,7 @@ def serve_webapp(data_root, port=DEFAULT_PORT, host=DEFAULT_HOST, clock=None, ou
     url = "http://{}:{}/".format(host, server.server_address[1])
     log.info("server_listening", SOURCE_SERVER, url)
     if out is not None:
-        print("Hoya Bit 即時 Agent 辯論室（首頁）：{}".format(url), file=out)
+        print("AI agnets debating chamber（首頁）：{}".format(url), file=out)
         print("歷史與命中率：{}history".format(url), file=out)
         print("按 Ctrl+C 停止。", file=out)
     try:

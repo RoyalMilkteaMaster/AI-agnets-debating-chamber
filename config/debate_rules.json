@@ -1,21 +1,15 @@
 {
-  "schema_version": 1,
-  "_about": "辯論時間門檻、票數階梯與燈號規則的唯一來源。改門檻只動這個檔，程式不得複製字面值。時間單位為毫秒，起點是該 run 的 T+0。",
-  "timeline_ms": {
-    "_about": "debate_start 是單幣題的預設封存時刻；實際起跑點以該 run 的封存時刻為準（research_scheduler.research_deadlines 是封存時刻的唯一權威）。round_one_window 是相對窗，第一輪牆＝該 run 封存時刻＋這個窗。其餘四個是絕對牆。",
-    "debate_start": 240000,
-    "round_one_window": 180000,
-    "reduced_threshold_from": 480000,
-    "final_round_start": 525000,
-    "final_round_end": 585000,
-    "force_stop": 600000
-  },
-  "vote_thresholds": {
-    "_about": "採納立場所需的絕對票數。unanimous_blind_pass 是開場盲投直過的門檻：七席開場全部發布、還沒有任何辯論訊息，而且同一立場的開場票數達到它時，直接停止產報告。initial／reduced／forced_stop 是辯論後的有效票階梯，三者必須嚴格遞減；initial 從辯論開始生效，reduced 從 timeline_ms.reduced_threshold_from 生效，forced_stop 在 timeline_ms.force_stop 強制結算時生效。",
-    "unanimous_blind_pass": 7,
-    "initial": 6,
-    "reduced": 5,
-    "forced_stop": 4
+  "schema_version": 2,
+  "_about": "辯論投票輪、結算時刻與燈號規則的唯一來源。所有時間皆為證據封存後的毫秒 offset。",
+  "timeline": {
+    "_about": "vote_rounds 每列是一輪開票 offset 與所需同立場票數；final_settle_offset_ms 是硬停結算 offset。",
+    "vote_rounds": [
+      { "open_offset_ms": 60000, "threshold": 7 },
+      { "open_offset_ms": 150000, "threshold": 6 },
+      { "open_offset_ms": 240000, "threshold": 5 },
+      { "open_offset_ms": 330000, "threshold": 4 }
+    ],
+    "final_settle_offset_ms": 360000
   },
   "confidence": {
     "_about": "ADR 0003 的純票數燈號制，report_contract.confidence_cap 的唯一來源。min_votes 比對的是最終採納立場的有效票數，不是全場有效票數。light_scale 由好到壞排序，最後一級的 min_votes 必須是 0；降級＝沿著這個順序往後移 levels 格，末端夾住。級別字串本身（有哪些燈、誰比誰好、配哪個圖示）由 report_contract.CONFIDENCE_LEVELS 擁有，本檔只決定「幾票對哪一級」，兩者必須逐字一致且同序，否則載入時就會被拒絕。",

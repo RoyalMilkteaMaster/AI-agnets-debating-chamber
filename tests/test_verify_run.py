@@ -5,12 +5,14 @@ import json
 import re
 import tempfile
 import unittest
+from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from hoya_market_agents.competition_drill import run_fake_competition_drill
 from hoya_market_agents.debate_rules import debate_rules
-from hoya_market_agents.debate_state_machine import UNANIMOUS_BLIND_PASS
+from hoya_market_agents.debate_state_machine import UNANIMOUS_BLIND_PASS, content_sha256
 from hoya_market_agents.fake_provider import FakeProvider
 from hoya_market_agents.research_scheduler import research_deadlines
 from hoya_market_agents.run_controller import RunController
@@ -30,6 +32,7 @@ from hoya_market_agents.run_verifier import (
     _verify_real_run_receipts,
     _verify_stop_semantics,
     _verify_tally_enum,
+    _verify_v2_final_vote_timing,
     verify_run,
 )
 from hoya_market_agents.seats import SEAT_IDS
@@ -79,9 +82,9 @@ class VerifyRunTest(unittest.TestCase):
 class BlindPassStopSemanticsTest(unittest.TestCase):
     """Ticket 03：verify-run 認可盲投直過，也擋得住冒充它的 bundle。
 
-    門檻與時點都由 ``config/debate_rules.json`` 推導：票數是
-    ``vote_thresholds.unanimous_blind_pass``，時點是該 run 自己的第一輪牆
-    （封存時刻 ＋ ``round_one_window``），和狀態機讀同一份規則。
+    門檻與時點都由 ``config/debate_rules.json`` 推導：票數是第一
+    輪的 ``threshold``，時點是該 run 自己的第一輪開票牆（封存時刻＋
+    ``vote_rounds[0].open_offset_ms``），和狀態機讀同一份規則。
     """
 
     QUESTION_TYPE = "single_asset_market_state"
@@ -89,14 +92,16 @@ class BlindPassStopSemanticsTest(unittest.TestCase):
     def setUp(self):
         self.rules = debate_rules()
         self.deadlines = research_deadlines(self.QUESTION_TYPE)
-        self.wall_ms = self.rules.challenge_deadline_ms(self.deadlines.seal_ms)
+        self.wall_ms = (
+            self.deadlines.seal_ms + self.rules.vote_rounds[0].open_offset_ms
+        )
         self.stop_ms = self.deadlines.seal_ms + 30_000
 
     def votes(self, **overrides):
         value = {
             "tally": {"bullish": len(SEAT_IDS), "bearish": 0, "neutral": 0},
             "adopted_stance": "bullish",
-            "threshold_required": self.rules.unanimous_blind_pass_votes,
+            "threshold_required": self.rules.vote_rounds[0].threshold,
             "consensus_status": "consensus",
             "valid_vote_count": len(SEAT_IDS),
             "challenge_completed": False,
@@ -132,7 +137,7 @@ class BlindPassStopSemanticsTest(unittest.TestCase):
     def test_the_window_follows_the_run_s_own_seal_not_a_fixed_instant(self):
         # 比較題晚 30 秒封存，牆跟著平移；同一個 stop_ms 在兩種題型下結論相反。
         comparison = research_deadlines("two_asset_comparison")
-        comparison_wall = self.rules.challenge_deadline_ms(comparison.seal_ms)
+        comparison_wall = comparison.seal_ms + self.rules.vote_rounds[0].open_offset_ms
         self.assertGreater(comparison_wall, self.wall_ms)
 
         self.assertIsNone(
@@ -143,7 +148,9 @@ class BlindPassStopSemanticsTest(unittest.TestCase):
 
     def test_a_bundle_that_does_not_match_the_blind_pass_is_refused(self):
         cases = {
-            "門檻被改小": {"threshold_required": self.rules.initial_votes},
+            "門檻被改小": {
+                "threshold_required": self.rules.vote_rounds[1].threshold
+            },
             "沒有採納立場": {"adopted_stance": None},
             "票數不足門檻": {
                 "tally": {"bullish": len(SEAT_IDS) - 1, "bearish": 1, "neutral": 0}
@@ -172,14 +179,19 @@ class OrdinaryConsensusStopSemanticsTest(unittest.TestCase):
     def setUp(self):
         self.rules = debate_rules()
         self.deadlines = research_deadlines(self.QUESTION_TYPE)
-        self.stop_reason = "consensus_{}_votes".format(self.rules.initial_votes)
-        self.stop_ms = self.rules.reduced_threshold_from_ms - 1
+        self.vote_round = self.rules.vote_rounds[1]
+        self.stop_reason = "consensus_{}_votes".format(self.vote_round.threshold)
+        self.stop_ms = self.deadlines.seal_ms + self.vote_round.open_offset_ms
 
     def votes(self, **overrides):
         value = {
-            "tally": {"bullish": self.rules.initial_votes, "bearish": 1, "neutral": 0},
+            "tally": {
+                "bullish": self.vote_round.threshold,
+                "bearish": len(SEAT_IDS) - self.vote_round.threshold,
+                "neutral": 0,
+            },
             "adopted_stance": "bullish",
-            "threshold_required": self.rules.initial_votes,
+            "threshold_required": self.vote_round.threshold,
             "consensus_status": "consensus",
             "valid_vote_count": len(SEAT_IDS),
             "challenge_completed": True,
@@ -205,7 +217,199 @@ class OrdinaryConsensusStopSemanticsTest(unittest.TestCase):
     def test_a_debated_run_may_not_claim_the_blind_pass_threshold(self):
         # 兩種停止原因的門檻欄位不得互串：辯論後的共識要的是階梯上的那個數字。
         with self.assertRaisesRegex(RunVerificationError, "辯論門檻"):
-            self.verify(threshold_required=self.rules.unanimous_blind_pass_votes)
+            self.verify(threshold_required=self.rules.vote_rounds[0].threshold)
+
+    def test_a_consensus_stop_is_valid_only_on_its_round_wall(self):
+        for stop_ms in (self.stop_ms - 1, self.stop_ms + 1):
+            with self.subTest(stop_ms=stop_ms):
+                with self.assertRaisesRegex(RunVerificationError, "辯論門檻"):
+                    _verify_stop_semantics(
+                        self.votes(),
+                        self.stop_reason,
+                        stop_ms,
+                        self.deadlines,
+                        self.rules,
+                    )
+
+
+class DynamicVoteRoundStopSemanticsTest(unittest.TestCase):
+    """v2 每輪與最終結算都由 run 快照的輪陣列推導。"""
+
+    def setUp(self):
+        self.rules = debate_rules()
+        self.deadlines = research_deadlines("single_asset_market_state")
+
+    @staticmethod
+    def consensus_votes(threshold):
+        return {
+            "tally": {
+                "bullish": threshold,
+                "bearish": len(SEAT_IDS) - threshold,
+                "neutral": 0,
+            },
+            "adopted_stance": "bullish",
+            "threshold_required": threshold,
+            "consensus_status": "consensus",
+            "valid_vote_count": len(SEAT_IDS),
+            "challenge_completed": True,
+        }
+
+    def test_every_recorded_round_reason_is_valid_on_its_own_wall(self):
+        for vote_round in self.rules.vote_rounds:
+            with self.subTest(vote_round=vote_round):
+                self.assertIsNone(
+                    _verify_stop_semantics(
+                        self.consensus_votes(vote_round.threshold),
+                        "consensus_{}_votes".format(vote_round.threshold),
+                        self.deadlines.seal_ms + vote_round.open_offset_ms,
+                        self.deadlines,
+                        self.rules,
+                    )
+                )
+
+    def test_round_count_and_thresholds_are_not_assumed(self):
+        from dataclasses import replace
+
+        from hoya_market_agents.debate_rules import VoteRound
+
+        rules = replace(
+            self.rules,
+            vote_rounds=(VoteRound(30_000, 5), VoteRound(90_000, 3)),
+            final_settle_offset_ms=120_000,
+        )
+        for vote_round in rules.vote_rounds:
+            with self.subTest(vote_round=vote_round):
+                self.assertIsNone(
+                    _verify_stop_semantics(
+                        self.consensus_votes(vote_round.threshold),
+                        "consensus_{}_votes".format(vote_round.threshold),
+                        self.deadlines.seal_ms + vote_round.open_offset_ms,
+                        self.deadlines,
+                        rules,
+                    )
+                )
+
+    def test_final_settle_follows_the_run_seal_and_recorded_offset(self):
+        comparison = research_deadlines("two_asset_comparison")
+        threshold = self.rules.vote_rounds[-1].threshold
+        self.assertIsNone(
+            _verify_stop_semantics(
+                self.consensus_votes(threshold),
+                "forced_stop_{}_votes".format(threshold),
+                comparison.seal_ms + self.rules.final_settle_offset_ms,
+                comparison,
+                self.rules,
+            )
+        )
+
+    def test_final_settle_accepts_both_recorded_failure_outcomes(self):
+        threshold = self.rules.vote_rounds[-1].threshold
+        settle_ms = self.deadlines.seal_ms + self.rules.final_settle_offset_ms
+        cases = (
+            (
+                "forced_stop_no_consensus",
+                {
+                    "tally": {"bullish": 3, "bearish": 2, "neutral": 2},
+                    "adopted_stance": None,
+                    "threshold_required": threshold,
+                    "consensus_status": "no_consensus",
+                    "valid_vote_count": len(SEAT_IDS),
+                },
+            ),
+            (
+                "forced_stop_insufficient_valid_votes",
+                {
+                    "tally": {"bullish": 2, "bearish": 1, "neutral": 0},
+                    "adopted_stance": None,
+                    "threshold_required": threshold,
+                    "consensus_status": "failed_insufficient_valid_votes",
+                    "valid_vote_count": 3,
+                },
+            ),
+        )
+        for stop_reason, votes in cases:
+            with self.subTest(stop_reason=stop_reason):
+                self.assertIsNone(
+                    _verify_stop_semantics(
+                        votes,
+                        stop_reason,
+                        settle_ms,
+                        self.deadlines,
+                        self.rules,
+                    )
+                )
+
+    def test_a_reason_not_expressible_by_the_round_array_is_refused(self):
+        with self.assertRaisesRegex(RunVerificationError, "未知辯論停止原因"):
+            _verify_stop_semantics(
+                self.consensus_votes(2),
+                "consensus_2_votes",
+                self.deadlines.seal_ms + 1,
+                self.deadlines,
+                self.rules,
+            )
+
+    def test_blind_pass_stays_seven_of_seven_with_a_lower_first_round_threshold(self):
+        from dataclasses import replace
+
+        from hoya_market_agents.debate_rules import VoteRound
+
+        rules = replace(
+            self.rules,
+            vote_rounds=(VoteRound(60_000, 5),),
+            final_settle_offset_ms=120_000,
+        )
+        six_one = {
+            "tally": {"bullish": 6, "bearish": 1, "neutral": 0},
+            "adopted_stance": "bullish",
+            "threshold_required": 5,
+            "consensus_status": "consensus",
+            "valid_vote_count": len(SEAT_IDS),
+        }
+        with self.assertRaisesRegex(RunVerificationError, "盲投直過"):
+            _verify_stop_semantics(
+                six_one,
+                UNANIMOUS_BLIND_PASS,
+                self.deadlines.seal_ms + 30_000,
+                self.deadlines,
+                rules,
+            )
+
+        seven_zero = dict(six_one)
+        seven_zero.update(
+            tally={"bullish": len(SEAT_IDS), "bearish": 0, "neutral": 0},
+            threshold_required=len(SEAT_IDS),
+        )
+        self.assertIsNone(
+            _verify_stop_semantics(
+                seven_zero,
+                UNANIMOUS_BLIND_PASS,
+                self.deadlines.seal_ms + 30_000,
+                self.deadlines,
+                rules,
+            )
+        )
+
+    def test_boolean_threshold_is_not_the_integer_one(self):
+        from dataclasses import replace
+
+        from hoya_market_agents.debate_rules import VoteRound
+
+        rules = replace(
+            self.rules,
+            vote_rounds=(VoteRound(60_000, 1),),
+            final_settle_offset_ms=120_000,
+        )
+        votes = self.consensus_votes(len(SEAT_IDS))
+        votes["threshold_required"] = True
+        with self.assertRaisesRegex(RunVerificationError, "整數"):
+            _verify_stop_semantics(
+                votes,
+                "consensus_1_votes",
+                self.deadlines.seal_ms + 60_000,
+                self.deadlines,
+                rules,
+            )
 
 
 class FirstRoundLineageTest(unittest.TestCase):
@@ -1487,16 +1691,20 @@ class VerifierRulesSnapshotTest(unittest.TestCase):
 
         self.assertIsInstance(timeline, dict)
         self.assertEqual(
-            "consensus_{}_votes".format(self.shipped.initial_votes),
+            "consensus_{}_votes".format(self.shipped.vote_rounds[1].threshold),
             timeline["debate_stop_reason"],
         )
 
     def lowered(self):
-        """A legal 5/4/3 ladder as a plain object — nothing is published."""
+        """A legal v2 ladder with every threshold lowered; nothing is published."""
         from dataclasses import replace
 
         return replace(
-            self.shipped, initial_votes=5, reduced_votes=4, forced_stop_votes=3
+            self.shipped,
+            vote_rounds=tuple(
+                replace(vote_round, threshold=vote_round.threshold - 1)
+                for vote_round in self.shipped.vote_rounds
+            ),
         )
 
     def answering(self, *rulesets):
@@ -1548,7 +1756,7 @@ class VerifierRulesSnapshotTest(unittest.TestCase):
     def test_a_run_that_breaks_its_own_recorded_rules_is_still_rejected(self):
         """FP 方向：改讀 manifest ≠ 不驗證。
 
-        把 manifest 記下的規則換成合法的 5/4/3（摘要一併重算，所以不是格式錯
+        把 manifest 記下的規則換成合法的降階 v2 輪陣列（摘要一併重算，所以不是格式錯
         誤），這份 ``consensus_6_votes`` 的 run 就必須被拒——證明上面那些
         VERIFIED 是因為規則對得上，不是因為檢查被拿掉了。
         """
@@ -1593,7 +1801,7 @@ class VerifierRulesSnapshotTest(unittest.TestCase):
 
         B1b 當時要求「下一趟驗證要看到新規則」，因為那時規則只有一個來源。B2 之
         後該 run 自己就記著它遵守過的規則，拿新規則去判舊資料正是票面要修的誤
-        判——同一份 5/4/3 在改動前後都必須得到 VERIFIED。
+        判——同一份新規則在改動前後都必須得到 VERIFIED。
         """
         self.assertEqual(
             "VERIFIED", verify_run(self.data_root, self.result.run_id)["status"]
@@ -1612,9 +1820,8 @@ class VerifierRulesSnapshotTest(unittest.TestCase):
         from hoya_market_agents.debate_rules import RULES_PATH, reload_debate_rules
 
         document = json_module.loads(RULES_PATH.read_text(encoding="utf-8"))
-        document["vote_thresholds"]["initial"] = 5
-        document["vote_thresholds"]["reduced"] = 4
-        document["vote_thresholds"]["forced_stop"] = 3
+        for vote_round in document["timeline"]["vote_rounds"]:
+            vote_round["threshold"] -= 1
         path = self.data_root / "debate_rules.json"
         path.write_text(
             json_module.dumps(document, ensure_ascii=False), encoding="utf-8"
@@ -1675,9 +1882,8 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
 
     @staticmethod
     def lower_the_vote_ladder(document):
-        document["vote_thresholds"]["initial"] = 5
-        document["vote_thresholds"]["reduced"] = 4
-        document["vote_thresholds"]["forced_stop"] = 3
+        for vote_round in document["timeline"]["vote_rounds"]:
+            vote_round["threshold"] -= 1
 
     @staticmethod
     def tighten_the_domain_downgrade(document):
@@ -1688,8 +1894,226 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
 
     def strip_the_recorded_rules(self):
         """Turn the fixture into a run from before this field existed."""
+        self.add_legacy_challenge_messages()
         manifest = self.manifest()
         manifest.pop("debate_rules")
+        self.rewrite_manifest(manifest)
+
+    def record_v1_rules(self):
+        from hoya_market_agents.contract_validator import _rules_document_digest
+
+        self.add_legacy_challenge_messages()
+        manifest = self.manifest()
+        document = {
+            "schema_version": 1,
+            "timeline_ms": {
+                "debate_start": 240_000,
+                "round_one_window": 150_000,
+                "reduced_threshold_from": 480_000,
+                "final_round_start": 525_000,
+                "final_round_end": 585_000,
+                "force_stop": 600_000,
+            },
+            "vote_thresholds": {
+                "unanimous_blind_pass": 7,
+                "initial": 6,
+                "reduced": 5,
+                "forced_stop": 4,
+            },
+            "confidence": manifest["debate_rules"]["document"]["confidence"],
+        }
+        manifest["debate_rules"] = {
+            "sha256": _rules_document_digest(document),
+            "document": document,
+        }
+        self.rewrite_manifest(manifest)
+
+    def add_legacy_challenge_messages(self):
+        """Give a generated v2 run the lifecycle carried by historical fixtures."""
+        debate_path = self.result.run_dir / "debate.jsonl"
+        debate = [
+            json.loads(line)
+            for line in debate_path.read_text(encoding="utf-8").splitlines()
+        ]
+        if any(entry.get("kind") == "challenge" for entry in debate):
+            return
+
+        openings = {
+            entry["seat_id"]: entry
+            for entry in debate
+            if entry.get("event") == "seat_message"
+            and entry.get("kind") == "position"
+        }
+
+        def message(seat_id, kind, suffix, **fields):
+            entry = deepcopy(openings[seat_id])
+            content = deepcopy(entry["content"])
+            content.update(
+                message_id="{}-legacy-{}".format(seat_id, suffix),
+                kind=kind,
+                round=1,
+                **fields,
+            )
+            entry.update(
+                elapsed_ms=260_000 if kind == "challenge" else 280_000,
+                deadline_phase="first_round",
+                kind=kind,
+                message_id=content["message_id"],
+                claim_id=content["message_id"],
+                round=1,
+                content=content,
+                content_sha256=content_sha256(content),
+                target_seat_id=content.get("target_seat_id"),
+                responds_to=content.get("responds_to", []),
+            )
+            return entry
+
+        stances = {seat_id: opening["stance"] for seat_id, opening in openings.items()}
+        incoming = {seat_id: [] for seat_id in SEAT_IDS}
+        challenges = []
+        for seat_id in SEAT_IDS:
+            target = next(
+                other for other in SEAT_IDS if stances[other] != stances[seat_id]
+            )
+            challenge = message(
+                seat_id,
+                "challenge",
+                "challenge-to-{}".format(target),
+                target_seat_id=target,
+                target_claim="{}-position".format(target),
+            )
+            challenges.append(challenge)
+            incoming[target].append(challenge)
+        for target in SEAT_IDS:
+            if incoming[target]:
+                continue
+            author = next(
+                other for other in SEAT_IDS if stances[other] != stances[target]
+            )
+            challenge = message(
+                author,
+                "challenge",
+                "extra-challenge-to-{}".format(target),
+                target_seat_id=target,
+                target_claim="{}-position".format(target),
+            )
+            challenges.append(challenge)
+            incoming[target].append(challenge)
+        responses = []
+        for seat_id in SEAT_IDS:
+            challenge = incoming[seat_id][0]
+            responses.append(
+                message(
+                    seat_id,
+                    "response",
+                    "response",
+                    responds_to=[challenge["message_id"]],
+                    target_seat_id=challenge["seat_id"],
+                )
+            )
+
+        first_vote = next(
+            index for index, entry in enumerate(debate) if entry.get("kind") == "final_vote"
+        )
+        debate[first_vote:first_vote] = challenges + responses
+        votes = json.loads(
+            (self.result.run_dir / "votes.json").read_text(encoding="utf-8")
+        )
+        votes["challenge_completed"] = True
+        for row in votes["votes"]:
+            messages = [
+                entry
+                for entry in debate
+                if entry.get("event") == "seat_message"
+                and entry.get("seat_id") == row["seat_id"]
+            ]
+            row["message_ids"] = [entry["message_id"] for entry in messages]
+            row["content_sha256"] = [entry["content_sha256"] for entry in messages]
+        self.rewrite_debate_bundle(debate, votes)
+
+    def remove_challenge_messages(self):
+        """Rewrite the fixture as a v2 free-debate bundle and refresh its hashes."""
+        debate_path = self.result.run_dir / "debate.jsonl"
+        debate = [
+            json.loads(line)
+            for line in debate_path.read_text(encoding="utf-8").splitlines()
+        ]
+        debate = [
+            entry
+            for entry in debate
+            if entry.get("kind") not in {"challenge", "response"}
+        ]
+        debate_path.write_text(
+            "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in debate),
+            encoding="utf-8",
+        )
+
+        votes_path = self.result.run_dir / "votes.json"
+        votes = json.loads(votes_path.read_text(encoding="utf-8"))
+        votes["challenge_completed"] = False
+        for row in votes["votes"]:
+            kept = [
+                (message_id, digest)
+                for message_id, digest in zip(
+                    row["message_ids"], row["content_sha256"]
+                )
+                if "challenge" not in message_id and "response" not in message_id
+            ]
+            row["message_ids"] = [message_id for message_id, _ in kept]
+            row["content_sha256"] = [digest for _, digest in kept]
+        self.rewrite_debate_bundle(debate, votes)
+
+    def rewrite_debate_bundle(self, debate, votes):
+        from hoya_market_agents.report_audit_renderer import render_debate_html
+        from hoya_market_agents.report_renderer import render_market_html
+
+        history = hashlib.sha256(b"").hexdigest()
+        for entry in debate:
+            payload = {
+                key: value
+                for key, value in entry.items()
+                if key not in ("entry_sha256", "public_history_sha256")
+            }
+            entry["entry_sha256"] = content_sha256(payload)
+            history = hashlib.sha256(
+                (history + entry["entry_sha256"]).encode("utf-8")
+            ).hexdigest()
+            entry["public_history_sha256"] = history
+
+        (self.result.run_dir / "debate.jsonl").write_text(
+            "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in debate),
+            encoding="utf-8",
+        )
+        (self.result.run_dir / "votes.json").write_text(
+            json.dumps(votes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+
+        evidence = [
+            json.loads(line)
+            for line in (self.result.run_dir / "evidence.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        report = json.loads(
+            (self.result.run_dir / "report.json").read_text(encoding="utf-8")
+        )
+        sources = {
+            "evidence": evidence,
+            "debate": [entry for entry in debate if entry.get("seat_id")],
+            "votes": votes,
+        }
+        (self.result.run_dir / "report.html").write_text(
+            render_market_html(report, sources), encoding="utf-8"
+        )
+        (self.result.run_dir / "debate.html").write_text(
+            render_debate_html(report, sources), encoding="utf-8"
+        )
+
+        manifest = self.manifest()
+        for name in ("debate.jsonl", "votes.json", "report.html", "debate.html"):
+            manifest["artifacts"][name]["sha256"] = hashlib.sha256(
+                (self.result.run_dir / name).read_bytes()
+            ).hexdigest()
         self.rewrite_manifest(manifest)
 
     # -- the run records what it ran under ----------------------------------
@@ -1718,12 +2142,8 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
         published = self.publish(self.lower_the_vote_ladder)
 
         self.assertEqual(
-            (5, 4, 3),
-            (
-                published.initial_votes,
-                published.reduced_votes,
-                published.forced_stop_votes,
-            ),
+            (6, 5, 4, 3),
+            tuple(vote_round.threshold for vote_round in published.vote_rounds),
         )
         self.assertEqual(
             "consensus_6_votes",
@@ -1755,14 +2175,29 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
         """FP 方向：快照是拿來判的，不是拿來裝飾的。
 
         沒有這一條的話，「改設定仍 PASS」也可能是因為那幾項檢查根本被拿掉了。
-        把記錄的規則換成合法的 5/4/3，這份 ``consensus_6_votes`` 的 run 就必須
+        把記錄的規則換成合法的降階 v2 輪陣列，這份 ``consensus_6_votes`` 的 run 就必須
         被拒——證明門檻階梯真的還在判。
         """
         from dataclasses import replace
 
-        self.restamp(
-            replace(self.shipped, initial_votes=5, reduced_votes=4, forced_stop_votes=3)
+        lowered_rounds = tuple(
+            replace(vote_round, threshold=vote_round.threshold - 1)
+            for vote_round in self.shipped.vote_rounds
         )
+        self.restamp(
+            replace(self.shipped, vote_rounds=lowered_rounds)
+        )
+
+        with self.assertRaises(RunVerificationError):
+            verify_run(self.data_root, self.result.run_id)
+
+    def test_a_v2_run_must_stop_on_the_wall_recorded_for_that_threshold(self):
+        """Stop reason 和票數對得上，但不能停在該輪牆之外。"""
+        from dataclasses import replace
+
+        rounds = list(self.shipped.vote_rounds)
+        rounds[1] = replace(rounds[1], open_offset_ms=200_000)
+        self.restamp(replace(self.shipped, vote_rounds=tuple(rounds)))
 
         with self.assertRaises(RunVerificationError):
             verify_run(self.data_root, self.result.run_id)
@@ -1794,7 +2229,9 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
 
     def test_a_snapshot_edited_without_its_digest_is_refused(self):
         manifest = self.manifest()
-        manifest["debate_rules"]["document"]["vote_thresholds"]["initial"] = 5
+        manifest["debate_rules"]["document"]["timeline"]["vote_rounds"][0][
+            "threshold"
+        ] = 6
         self.rewrite_manifest(manifest)
 
         with self.assertRaises(RunVerificationError) as caught:
@@ -1807,11 +2244,34 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
 
         manifest = self.manifest()
         document = manifest["debate_rules"]["document"]
-        document["timeline_ms"]["force_stop"] = 0
+        document["timeline"]["final_settle_offset_ms"] = 0
         manifest["debate_rules"]["sha256"] = _rules_document_digest(document)
         self.rewrite_manifest(manifest)
 
         with self.assertRaises(RunVerificationError):
+            verify_run(self.data_root, self.result.run_id)
+
+    def test_a_v1_rules_snapshot_keeps_its_original_stop_semantics(self):
+        """v1 快照仍以當時的三段階梯判讀，不改套 v2 輪牆。"""
+        self.record_v1_rules()
+
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, self.result.run_id)["status"]
+        )
+
+    def test_a_v2_run_does_not_require_retired_challenge_messages(self):
+        """v2 有開場與公開最終票即可，不再要求 challenge/response。"""
+        self.remove_challenge_messages()
+
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, self.result.run_id)["status"]
+        )
+
+    def test_v1_snapshot_keeps_the_challenge_lineage_check(self):
+        self.record_v1_rules()
+        self.remove_challenge_messages()
+
+        with self.assertRaisesRegex(RunVerificationError, "第一輪生命週期"):
             verify_run(self.data_root, self.result.run_id)
 
     # -- runs from before the field existed ---------------------------------
@@ -1829,6 +2289,13 @@ class RunRulesSnapshotVerificationTest(unittest.TestCase):
         self.assertEqual(
             list(RULE_DEPENDENT_CHECKS), summary["rule_checks_without_run_rules"]
         )
+
+    def test_a_run_without_rules_keeps_the_legacy_challenge_lineage_check(self):
+        self.strip_the_recorded_rules()
+        self.remove_challenge_messages()
+
+        with self.assertRaisesRegex(RunVerificationError, "第一輪生命週期"):
+            verify_run(self.data_root, self.result.run_id)
 
     def test_a_run_without_recorded_rules_still_fails_the_rule_free_checks(self):
         """FN 方向：跳過的只有規則相關那幾項，不是整段時間線都不驗了。"""
@@ -2251,6 +2718,141 @@ class BundleLinkScopeTest(unittest.TestCase):
 
                 self.assertIsNone(self.unreachable(target))
                 self.assertTrue(path.is_file())
+
+
+class V2FinalVoteWindowUnitTest(unittest.TestCase):
+    def setUp(self):
+        self.rules = debate_rules()
+        self.deadlines = research_deadlines("single_asset_market_state")
+
+    def _debate(self, round_number, elapsed_ms):
+        return [
+            {
+                "event": "seat_message",
+                "kind": "position",
+                "seat_id": "spot-technical",
+                "elapsed_ms": self.deadlines.seal_ms,
+            },
+            {
+                "event": "seat_message",
+                "kind": "final_vote",
+                "seat_id": "spot-technical",
+                "round": round_number,
+                "elapsed_ms": elapsed_ms,
+            },
+        ]
+
+    def _verify(self, round_number, elapsed_ms, rules=None):
+        return _verify_v2_final_vote_timing(
+            self._debate(round_number, elapsed_ms),
+            self.deadlines,
+            rules or self.rules,
+        )
+
+    def test_each_round_window_is_lower_inclusive_and_upper_exclusive(self):
+        starts = [item.open_offset_ms for item in self.rules.vote_rounds[:-1]]
+        ends = starts[1:] + [self.rules.final_settle_offset_ms]
+        for round_number, (start, end) in enumerate(zip(starts, ends), start=1):
+            lower = self.deadlines.seal_ms + start
+            upper = self.deadlines.seal_ms + end
+            for elapsed_ms in (lower, upper - 1):
+                with self.subTest(round_number=round_number, elapsed_ms=elapsed_ms):
+                    self.assertIsNone(self._verify(round_number, elapsed_ms))
+            for elapsed_ms in (lower - 1, upper):
+                with self.subTest(round_number=round_number, elapsed_ms=elapsed_ms):
+                    with self.assertRaisesRegex(RunVerificationError, "final_vote.*時間"):
+                        self._verify(round_number, elapsed_ms)
+
+    def test_legal_round_range_follows_the_snapshot_array_length(self):
+        shorter = replace(self.rules, vote_rounds=self.rules.vote_rounds[:3])
+        last_elapsed = (
+            self.deadlines.seal_ms + shorter.final_settle_offset_ms - 1
+        )
+
+        self.assertIsNone(self._verify(2, last_elapsed, shorter))
+        with self.assertRaisesRegex(RunVerificationError, "final_vote.*round"):
+            self._verify(3, last_elapsed, shorter)
+
+
+class V2FinalVoteTimingTest(unittest.TestCase):
+    """A v2 run's recorded final votes must match its own round schedule."""
+
+    def setUp(self):
+        from tests.test_debate_driver import BULLISH_SIX, FullLaunchTest
+
+        self.fixture = FullLaunchTest(
+            methodName="test_full_phase_produces_a_run_that_verify_run_accepts"
+        )
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.finalized = self.fixture._launch(BULLISH_SIX)
+        self.run_dir = Path(self.finalized["run_dir"])
+        self.original_entries = self.fixture._debate_entries(self.run_dir)
+        self.assertEqual(
+            "VERIFIED",
+            verify_run(self.fixture.data_root, self.finalized["run_id"])["status"],
+        )
+
+    def _entry(self, entries, kind):
+        return next(
+            entry
+            for entry in entries
+            if entry.get("seat_id") == "spot-technical"
+            and entry.get("kind") == kind
+        )
+
+    def _publish(self, *, vote_elapsed=None, opening_elapsed=None, round_number=None):
+        entries = deepcopy(self.original_entries)
+        opening = self._entry(entries, "position")
+        vote = self._entry(entries, "final_vote")
+        if opening_elapsed is not None:
+            opening["elapsed_ms"] = opening_elapsed
+        if vote_elapsed is not None:
+            vote["elapsed_ms"] = vote_elapsed
+        if round_number is not None:
+            vote["round"] = round_number
+            vote["content"]["round"] = round_number
+            vote["content_sha256"] = content_sha256(vote["content"])
+        self.fixture._reforge_debate(self.run_dir, entries)
+
+    def _verify(self):
+        return verify_run(self.fixture.data_root, self.finalized["run_id"])
+
+    def test_a_final_vote_before_its_round_wall_is_refused(self):
+        # Reviewer reproduction: opening T+270000, round-one wall T+300000.
+        self._publish(vote_elapsed=269_999)
+
+        with self.assertRaisesRegex(RunVerificationError, "final_vote.*時間"):
+            self._verify()
+
+    def test_round_window_boundaries_are_lower_inclusive_upper_exclusive(self):
+        for elapsed_ms, accepted in (
+            (300_000, True),
+            (389_999, True),
+            (390_000, False),
+        ):
+            with self.subTest(elapsed_ms=elapsed_ms):
+                self._publish(vote_elapsed=elapsed_ms)
+                if accepted:
+                    self.assertEqual("VERIFIED", self._verify()["status"])
+                else:
+                    with self.assertRaisesRegex(
+                        RunVerificationError, "final_vote.*時間"
+                    ):
+                        self._verify()
+
+    def test_a_final_vote_may_not_predate_the_same_seat_opening(self):
+        self._publish(opening_elapsed=350_001)
+
+        with self.assertRaisesRegex(RunVerificationError, "final_vote.*opening"):
+            self._verify()
+
+    def test_round_must_be_an_exact_integer_in_the_data_driven_range(self):
+        for round_number in (True, 0, 4):
+            with self.subTest(round_number=round_number):
+                self._publish(round_number=round_number)
+                with self.assertRaisesRegex(RunVerificationError, "final_vote.*round"):
+                    self._verify()
 
 
 if __name__ == "__main__":

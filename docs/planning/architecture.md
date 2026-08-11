@@ -1,4 +1,4 @@
-# Hoya Bit Market Agents 架構紀錄
+# AI agnets debating chamber 架構紀錄
 
 - 狀態：已核准
 - 核准日期：2026-08-01
@@ -11,14 +11,14 @@
 黑客松產品與通用開發流程插件分離：
 
 ```text
-D:\workstationD\hoya bit\
+D:\workstationD\AI agnets debating chamber\
 ├─ milktea-agents-skills-for-codex\   # 通用 Codex 開發流程插件，不放黑客松產品程式
-├─ hoya-bit-market-agents-final\ # Code Root
-└─ hoya-bit-market-agents_data\ # Data Root
+├─ AI-agnets-debating-chamber\ # Code Root
+└─ AI-agnets-debating-chamber_data\ # Data Root
 ```
 
-- Code Root：`D:\workstationD\hoya bit\hoya-bit-market-agents-final`（2026-08-05 更正：活動 repo 為 `-final`；無 `-final` 的 sibling 為已凍結舊版，處置見 §11.1）
-- Data Root：`D:\workstationD\hoya bit\hoya-bit-market-agents_data`
+- Code Root：`D:\workstationD\AI agnets debating chamber\AI-agnets-debating-chamber`
+- Data Root：`D:\workstationD\AI agnets debating chamber\AI-agnets-debating-chamber_data`
 - Runtime Root：第一版不建立。
 - Claude、Codex 與 Antigravity CLI 使用系統或 WSL 已安裝位置，由賽前預檢驗證，不複製到專案內。
 - 程式碼、設定範例、Skills、測試與長期文件放入 Code Root。
@@ -68,7 +68,7 @@ Gemini provider 修正：
 專用市場研究流程採 repo-local Skill，不封裝為全域 Codex Plugin。Codex 必須從 Code Root 開啟新的 Task，才能載入專案 Skill。
 
 ```text
-hoya-bit-market-agents-final\
+AI-agnets-debating-chamber\
 ├─ AGENTS.md
 ├─ CONTEXT.md
 ├─ .agents\
@@ -494,7 +494,7 @@ Python Schema 驗證失敗
 - `docs/feasibility/`：可行性評估。
 - GitHub Issues：Spec 與 Tickets 的唯一正式來源；不建立本機重複副本。
 - Ticket 標籤使用 `ready-for-agent`；Spec 標籤使用 `spec`。
-- GitHub repository：`RoyalMilkteaMaster/hoya-bit-market-agents`。
+- GitHub repository：`RoyalMilkteaMaster/AI-agnets-debating-chamber`。
 - Repository 可見性：private。
 - 建立 repository、Issue、標籤、留言及更新狀態的實際權限仍須在發布前預檢。
 
@@ -535,8 +535,8 @@ Antigravity 取代 Gemini CLI 是外部產品變更，保留在架構與可行�
 - 比賽已結束，系統轉為日常續用工具；比賽專屬的 GitHub Issues 流程（§8.6）停用，Spec 與 Tickets 改用本機 `docs/work/`（單一真相）。
 - 刪除（使用者已核准，Data Root 非 git、不可逆）：`_data/runs/` 全部 36 個 run（含比賽三場）、`presentation-v2`~`v7`、`coordination/`、`adjustment-audit/`、`inbox/` 歷史、`logs/live-server.log`、`preflight/` 內測試殘留（`ticket11-*`、`final-real-not-ready`）。
 - 保留：`preflight/latest-ready.json` 與其對應時戳憑證目錄（launch 唯一前置）。
-- Sibling 處置：先程式化驗證 `-final` 已包含舊 repo `hoya-bit-market-agents` 全部需要的 commit，通過後連同 `_worktrees`（git 連動，必須同組）與 `hoya-bit-site` 一併刪除。
-- 刪除前先 zip 整包備份到 `D:\workstationD\hoya bit\backups\`（工作區層級，不進三個 Root）。
+- Sibling 處置：先程式化驗證現行 Code Root 已包含舊 repo 全部需要的 commit，通過後連同 `_worktrees`（git 連動，必須同組）與舊網站目錄一併刪除。
+- 刪除前先 zip 整包備份到 `D:\workstationD\AI agnets debating chamber\backups\`（工作區層級，不進三個 Root）。
 - §8.4「MVP 不做自動清理」維持；本次刪除屬使用者明確指定的一次性受控清理。
 
 ### 11.2 規則設定檔化（Phase 1）
@@ -724,3 +724,94 @@ R1 opening 盲投（互不可見）收齊
 ### 13.9 ADR（本次新增）
 
 - `docs/adr/0007-offline-report-nav-injection.md`：離線報告五導覽採伺服器回應注入，不寫進檔案。
+
+---
+
+## 14. 2026-08-10 四輪投票制與前端分層核准架構
+
+- 狀態：已核准（2026-08-10，grill-me 架構階段）
+- 需求依據：`docs/planning/requirements.md`〈四輪投票制、概述摺疊與前端分層（2026-08-10 核准）〉
+- 本章與先前章節衝突時以本章為準（§5.3 辯論回合、§5.4 有效票生命週期、§11.3 投票流程的階梯制敘述由本章取代；燈號規則不變）。未提及的規則全部沿用（含 §11.8 Log——本次沿用，不新建；本次無新常駐元件）。
+
+### 14.1 規則檔 schema v2（輪陣列＋封存錨定）
+
+- `config/debate_rules.json` 升版 `schema_version: 2`：
+
+```json
+{
+  "schema_version": 2,
+  "timeline": {
+    "vote_rounds": [
+      { "open_offset_ms": 60000,  "threshold": 7 },
+      { "open_offset_ms": 150000, "threshold": 6 },
+      { "open_offset_ms": 240000, "threshold": 5 },
+      { "open_offset_ms": 330000, "threshold": 4 }
+    ],
+    "final_settle_offset_ms": 360000
+  },
+  "confidence": { ...原樣保留（燈號映射與兩條降級不動）... }
+}
+```
+
+- 所有 offset 錨定該 run 的證據封存時刻（`research_deadlines(question_type).seal_ms` 仍是封存唯一權威；單幣 4:00、比較題 4:30）。單幣題即字面 5:00／6:30／8:00／9:30／10:00；比較題整體後移 30 秒。
+- 載入 fail-closed 驗證：offset 嚴格遞增、threshold 嚴格遞減、`final_settle_offset_ms` 大於末輪 offset；輪數由陣列長度決定，程式不得寫死。
+- `initial`／`reduced`／`forced_stop`／`unanimous_blind_pass` 具名欄位與五個絕對牆時刻全部退役；盲投直過語意併入第一輪（見 14.2）。
+- `debate_rules.py`：`DebateRules` 改輪陣列結構；`required_votes_at`／`phase_at` 由輪陣列推導（迴圈，不寫 if/elif 階梯）。
+- `contract_validator.py`：`_rules_document` 序列化 v2；**保留 v1 讀取分支**——舊 run manifest 內的 v1 規則快照照舊可讀可驗，`run_verifier` 對該 run 用它當時的規則（`test_verify_run.py` 相容測試必須維持全綠）。
+- `run_verifier.py`：合法 stop_reason 不再寫死枚舉，改由該 run 規則快照的輪陣列推導。
+- `webapp/settings.py`：新鍵中文標籤＋白話說明入 `FIELD_LABELS`／`SECTION_LABELS`（逐鍵文案於 Spec 過目）；`webapp/pages` 設定頁時間軸視覺化改輪陣列版；`webapp/live.py` `rule_timeline`／門檻標籤同步。
+
+### 14.2 四輪投票狀態機
+
+- 封存後資料流：
+
+```text
+封存（快照照舊產生）
+→ 整理段：每席提示詞只含自席證據卡（見 14.3）；各席交開場票
+→ R1 開票（threshold=rounds[0]=7）：七席開場票全到即提前開票（盲投直過語意保留，不必等牆）
+→ 未過 → 解鎖完整證據快照（＝JSON 資料交換；不新增 artifact）→ 自由辯論 turn
+→ R2 開票（6）→ 辯論 → R3 開票（5）→ 辯論 → R4 開票（4）
+→ 硬停結算（final_settle）：當下最新有效立場任一 ≥ 末輪 threshold（4）採納，否則未達共識（紅燈）
+```
+
+- `debate_state_machine.py`：回合驗證與停止判定迴圈化（`_accept` 不再寫死 `round in (1,2,3)`）；`_blind_pass` 併入「R1 全到提前開票」；`_force_stop` 改為最終結算。
+- `debate_driver.py`：`build_turns` 由規則輪陣列推導；`assign_challenges`／`rotation_pairs` 挑戰配對機制移除；輪間 turn 的提示詞改「用證據說服對方、不盲從也不死守」語意；每輪收集預算仍停在該牆前 5 秒（沿用現行 relay 節奏）。
+- 有效票＝開票當下該席最新公開立場；`SeatRecord` 的 provisional／valid 不再以挑戰完成與否定義。
+- 改票必附理由、`vote_changes` 全程記錄、Core 不改寫原文——全部沿用。
+
+### 14.3 證據可見性閘門（提示詞層）
+
+- 封存與快照檔案完全不動（`evidence.jsonl` 仍是單一合併快照、write-once）。
+- 閘門在 `debate_driver` 組提示詞處：R1 開票前的提示詞只塞入該席 `seat_id` 的證據卡（卡上既有欄位過濾）；R1 未過後恢復完整快照注入。
+- `prompt_builder.py` 模組契約由「七席共用區塊逐位元相同」改為「**同階段內**七席共用區塊逐位元相同」，新增 per-seat 證據視圖參數。
+- run 檔案契約、稽核紀錄、`run_verifier` 零改動。
+
+### 14.4 webapp 分層（伺服器渲染＋模板＋靜態資產）
+
+```text
+hoya_market_agents/webapp/
+├─ templates/            # 頁面骨架 HTML 檔（document 殼、各頁佈局）
+├─ static/
+│  ├─ site.css           # 全站唯一樣式表（var() 引 token）
+│  └─ live.js            # 原 pages.LIVE_SCRIPT
+├─ pages/                # 原 pages.py 拆成頁面組裝模組
+│  ├─ live_page.py …     # 各頁一模組：讀模板、填已跳脫資料、組動態區塊
+│  └─ components.py      # 訊息卡、席位卡等重複元件（Python 產生）
+└─ server.py             # 新增 /static/* 路由（只服務 webapp/static 白名單）
+```
+
+- 頁面仍由伺服器組好 HTML 送出（不做 SPA）；SSE `/live/events` 與其 payload 不變；不新增 JSON API。
+- `design_tokens.py` 仍是唯一色彩權威：token 產生的 `:root` 區塊由樣式路由與 `site.css` 組合供應；`pages._tokens` 與 `report_renderer._custom_properties` 兩份重複實作合併為單一實作。
+- **CSP 收緊**：webapp 頁面 `style-src` 由 `'unsafe-inline'` 改 `'self'`（CSS 外部化的紅利）；`script-src` 維持現制（live 頁 `'self'`，其餘 `'none'`）。
+- 概述摺疊基線（工作區既有實作）隨拆解搬家，行為與測試不變；Gemini 建議之視覺升級落在 `site.css` 與元件結構，於既有設計系統與保護區約束內。
+- 離線 `report.html`／`debate.html` 維持自足單檔（CSS 內嵌），不納入分層；renderer 與 `run_verifier` 不動。
+
+### 14.5 測試接縫與驗證邊界
+
+- 沿用：`FixedClock` 注入時鐘、fake provider、unittest、暫存目錄、渲染後繁中 grep、對比度實測。
+- 新增：v2 載入器 fail-closed 案例（含 v1 檔被拒）、v1 manifest 快照相容案例、per-seat 提示詞過濾斷言、四輪牆時刻／提前開票／結算斷言、`/static/*` 路由（白名單外 404）與收緊後 CSP 斷言；`LiveScriptTest` 改讀 `static/live.js`；樣式測試改讀樣式路由輸出。
+- 驗證邊界分四批，各批 `python3 -m unittest discover -s tests`（WSL）全綠才進下一批：①規則 v2＋狀態機四輪 ②隔離閘門＋辯論 turn ③前端分層搬家（行為不變） ④視覺升級。
+
+### 14.6 ADR（本次新增）
+
+- `docs/adr/0008-discrete-vote-rounds.md`：離散四輪投票＋提示詞層證據閘門＋挑戰機制退役。

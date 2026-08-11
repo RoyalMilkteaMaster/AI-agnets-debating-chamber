@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>四輪投票與前端分層完成報告</title>
+  <style>
+    :root{color-scheme:light;--ink:#202124;--muted:#5f6368;--line:#dadce0;--page:#f8fafd;--card:#fff;--blue:#0b57d0;--green:#137333;--amber:#8a4f00}
+    *{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:16px/1.65 system-ui,"Noto Sans TC",sans-serif}
+    main{max-width:1100px;margin:auto;padding:40px 24px 64px}h1{font-size:2rem;margin:0 0 8px}h2{margin:32px 0 12px;font-size:1.3rem}p{margin:8px 0}
+    .meta,.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin:16px 0}.status{color:var(--amber);font-weight:700}.ok{color:var(--green);font-weight:700}
+    table{width:100%;border-collapse:collapse;background:var(--card);font-size:.92rem}th,td{border:1px solid var(--line);padding:10px;text-align:left;vertical-align:top}th{background:#eef3fb}
+    code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;overflow-wrap:anywhere}ul,ol{padding-left:1.4rem}.small{color:var(--muted);font-size:.9rem}
+    a{color:var(--blue)}@media(max-width:720px){main{padding:24px 14px}.table-scroll{overflow:auto}table{min-width:760px}}
+  </style>
+</head>
+<body>
+<main>
+  <h1>四輪投票與前端分層完成報告</h1>
+  <p class="status">實作與自動驗收完成；待使用者最終視覺確認。</p>
+  <div class="meta">
+    <p><strong>專案：</strong><code>D:\workstationD\AI agnets debating chamber\AI-agnets-debating-chamber</code></p>
+    <p><strong>基準：</strong><code>main / e7a2ec9c8652a3eb47a176569c4d8c09a6734516</code></p>
+    <p><strong>核准來源：</strong><code>docs/work/vote-rounds-and-frontend-layering/spec.md</code> 與 Tickets 01–09</p>
+    <p><strong>執行環境：</strong>Windows PowerShell、WSL Python 3、localhost 瀏覽器驗收；network/local socket 可用。</p>
+    <p><strong>Git 狀態：</strong>未 commit、push、merge、rebase；未 checkout/reset，並保留開工前既有未提交修改。</p>
+  </div>
+
+  <h2>總體結果</h2>
+  <div class="card">
+    <p class="ok">Ticket 01–09 均完成 Developer、Reviewer A、Reviewer B 的固定 Snapshot 審查；所有 blocker／important Findings 已關閉。</p>
+    <p><strong>完整測試：</strong><code>python3 -m unittest discover -s tests -q</code>，2816 tests，OK，1 skipped，exit 0；Python 測試 560.478 秒，整體 WSL 命令 600.980 秒。</p>
+    <p><strong>最終 diff 檢查：</strong><code>git diff --check</code> exit 0；只有 Git 的 LF→CRLF 提示，沒有 whitespace error。</p>
+    <p><strong>UI 實測：</strong>隔離 fake drill Data Root、真實 webapp、HTTP 200；桌面與 600px 窄版無頁面橫向溢出，設定頁、run 詳情、時間線展開／收合皆完成操作驗證。</p>
+  </div>
+
+  <h2>原始需求狀態</h2>
+  <div class="table-scroll"><table>
+    <thead><tr><th>需求</th><th>狀態</th><th>可感受結果</th></tr></thead>
+    <tbody>
+      <tr><td>R-001 四輪投票時間表</td><td class="ok">完成</td><td>單幣 5:00／6:30／8:00／9:30，門檻 7／6／5／4，10:00 結算；比較題整體 +30 秒。</td></tr>
+      <tr><td>R-002 盲投直過</td><td class="ok">完成</td><td>僅七席同立場可提前結案；6/1 必須等待牆上開票。</td></tr>
+      <tr><td>R-003 證據可見性閘門</td><td class="ok">完成</td><td>R1 前每席只見自席證據；R1 未過後才交換完整證據與公開逐字稿。</td></tr>
+      <tr><td>R-004 自由辯論、挑戰退役</td><td class="ok">完成</td><td>Driver 與 fake drill 不再建立 challenge／response 配對；改票理由與 vote_changes 保留。</td></tr>
+      <tr><td>R-005 硬停結算</td><td class="ok">完成</td><td>最終領先至少 4 票採納，否則紅燈未達共識。</td></tr>
+      <tr><td>R-006 燈號不變</td><td class="ok">完成</td><td>7藍／6綠／5黃／4橘／低於4紅，以及既有來源降級規則保持。</td></tr>
+      <tr><td>R-007 schema v2 與設定頁</td><td class="ok">完成</td><td>規則改用動態 vote_rounds；設定頁逐輪顯示、巢狀存檔、reload、原子換檔與白話中文。</td></tr>
+      <tr><td>R-008 概述摺疊</td><td class="ok">完成</td><td>SSR／SSE 訊息預設顯示首句，可「顯示全文／收合」，展開後精確還原原文。</td></tr>
+      <tr><td>R-009 webapp 分層</td><td class="ok">完成</td><td>實際使用 pages package、templates 與 static assets；原巨型 pages.py 已刪除。</td></tr>
+      <tr><td>R-010 CSP 收緊</td><td class="ok">完成</td><td>webapp 使用外部 CSS/JS，style-src self、無 unsafe-inline；static 僅兩個白名單資產。</td></tr>
+      <tr><td>R-011 視覺升級</td><td class="ok">完成</td><td>白色 Google 風、卡片／導覽／表格／聊天與席位卡優化；WCAG AA 與毛玻璃合成色通過。</td></tr>
+      <tr><td>R-012 保護區與離線報告</td><td class="ok">完成</td><td>聊天室、燈位、三方票數內容／位置／語意色不變；report.html／debate.html 維持自足單檔。</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Ticket 與三方審查</h2>
+  <p class="small">Agent 平台未提供可驗證的精確模型 deployment 與 reasoning effort，因此下表如實記為「未暴露」，不推測。</p>
+  <div class="table-scroll"><table>
+    <thead><tr><th>Ticket</th><th>Developer</th><th>Reviewer A</th><th>Reviewer B</th><th>結果</th></tr></thead>
+    <tbody>
+      <tr><td>01 v2 loader</td><td><code>/root/ticket01_developer</code></td><td><code>/root/ticket01_reviewer_a</code></td><td><code>/root/ticket01_reviewer_b</code></td><td>既有 loader 測試遷移後通過</td></tr>
+      <tr><td>02 四輪狀態機</td><td><code>/root/ticket02_developer</code></td><td><code>/root/ticket02_reviewer_a</code></td><td><code>/root/ticket02_reviewer_b</code></td><td>unanimity、牆間快照、單輪邊界修正後通過</td></tr>
+      <tr><td>03 Driver</td><td><code>/root/ticket03_developer</code></td><td><code>/root/ticket03_reviewer_a</code></td><td><code>/root/ticket03_reviewer_b</code></td><td>competition drill 挑戰殘留與時序補正後通過</td></tr>
+      <tr><td>04 證據閘門</td><td><code>/root/ticket04_developer</code></td><td><code>/root/ticket04_reviewer_a</code></td><td><code>/root/ticket04_reviewer_b</code></td><td>零 Findings</td></tr>
+      <tr><td>05 verifier</td><td><code>/root/ticket05_developer</code></td><td><code>/root/ticket05_reviewer_a</code></td><td><code>/root/ticket05_reviewer_b</code></td><td>unanimity、exact-int、final_vote 時窗修正後通過</td></tr>
+      <tr><td>06 概述基線</td><td><code>/root/ticket06_developer</code></td><td><code>/root/ticket06_reviewer_a</code></td><td><code>/root/ticket06_reviewer_b</code></td><td>空白句尾與省略號精確全文修正後通過</td></tr>
+      <tr><td>07 規則顯示</td><td><code>/root/ticket07_developer</code></td><td><code>/root/ticket07_reviewer_a</code></td><td><code>/root/ticket07_reviewer_b</code></td><td>零 Findings</td></tr>
+      <tr><td>08 webapp 分層</td><td><code>/root/ticket08_developer</code></td><td><code>/root/ticket08_reviewer_a</code></td><td><code>/root/ticket08_reviewer_b</code></td><td>settings.html 接線修正後通過</td></tr>
+      <tr><td>09 視覺刷新</td><td><code>/root/ticket09_developer_r2</code></td><td><code>/root/ticket09_reviewer_a</code></td><td><code>/root/ticket09_reviewer_b</code></td><td>run detail 英文 enum 顯示修正後通過</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small">共同 CLI／工具：Codex 協作 Agent、PowerShell、WSL Python unittest；Reviewer 的 OCR preview 若超出固定 Snapshot 即停止，改用原生唯讀審查。模型／推理強度：平台未暴露。Ticket 09 第一位替補前 Agent 在未改 production 前遇到用量限制，最後由 <code>ticket09_developer_r2</code> 完成。</p>
+
+  <h2>主要修改</h2>
+  <ul>
+    <li><code>config/debate_rules.json</code>、<code>debate_rules.py</code>、<code>contract_validator.py</code>：v2 動態輪陣列、manifest 相容與 fail-closed。</li>
+    <li><code>debate_state_machine.py</code>、<code>debate_driver.py</code>、<code>prompt_builder.py</code>、<code>competition_drill.py</code>：離散開票、自由辯論、證據隔離與合法時序。</li>
+    <li><code>run_verifier.py</code>：依 run 規則快照驗證任意輪次、停止原因、時間窗；v1／legacy 保持。</li>
+    <li><code>webapp/pages/</code>、<code>templates/</code>、<code>static/</code>、<code>server.py</code>：真正分層、白名單靜態路由與 CSP。</li>
+    <li><code>webapp/live.py</code>、<code>settings.py</code>、<code>views.py</code>：四輪顯示、巢狀設定、繁中顯示 label 與概述摺疊。</li>
+  </ul>
+
+  <h2>驗收證據</h2>
+  <ul>
+    <li>完整 WSL：2816 tests，exit 0，1 skipped。</li>
+    <li>Ticket 09：一般文字最低 4.77:1、毛玻璃文字最低 5.28:1、邊界最低 3.62:1。</li>
+    <li>真 HTTP：<code>/live</code>、<code>/settings</code>、run detail、<code>/static/site.css</code>、<code>/live.js</code>、SSE 均回正確狀態與 Content-Type。</li>
+    <li>static 路徑跳脫與非白名單資產皆 404；webapp 無 inline script，CSS 使用同源靜態檔。</li>
+    <li>Browser 操作：時間線原生 details 可展開再收合；run detail 題型與停止原因為繁中；600px viewport 無導航或控制項越界。</li>
+  </ul>
+
+  <h2>未完成、風險與回復</h2>
+  <ul>
+    <li><strong>待完成：</strong>使用者最終視覺確認。自動化與 Agent 視覺 QA 已完成，但不能代替使用者核准。</li>
+    <li><strong>隔離展示：</strong>目前 URL 使用 fake competition drill，只供 UI 驗收，不代表真實市場分析；未碰正式 Data Root。</li>
+    <li><strong>瀏覽器外掛：</strong>目前 Chrome 的「沉浸式翻譯」擴充套件會改寫 localhost DOM，可能把原本繁中燈號插入英文；伺服器原始 HTML 已驗證為繁中。視覺確認時建議暫停該擴充套件對 localhost 的翻譯。</li>
+    <li><strong>回復方式：</strong>目前工作樹含開工前使用者修改與本工作包修改，禁止使用整體 <code>git reset</code>／<code>checkout --</code>。如需回復，依 Ticket 固定 Snapshot 與 <code>git diff</code> 逐檔處理。</li>
+    <li><strong>已知測試狀態：</strong>完整套件只有 1 項既有 skipped；沒有 failure/error。</li>
+  </ul>
+
+  <h2>使用者最終視覺確認</h2>
+  <p><strong>網址：</strong><a href="http://127.0.0.1:8877/live">http://127.0.0.1:8877/live</a></p>
+  <ol>
+    <li>確認桌面與窄視窗的白色 Google 風版面、導航、卡片與文字沒有重疊或截斷。</li>
+    <li>在直播頁確認「即時票數」與七席 Agent 的位置、顏色、內容符合預期。</li>
+    <li>展開再收合「規則與時間線」，確認四輪 7／6／5／4 與 10:00 硬停。</li>
+    <li>進入「設定」，確認四輪欄位與白話說明；不要按存檔也能完成視覺確認。</li>
+    <li>開啟 run 詳情，確認題型「單一資產市場狀態」與停止原因「達成共識（6 票）」為繁中。</li>
+  </ol>
+  <p class="small">報告產生日期：2026-08-11（Asia/Taipei）。</p>
+</main>
+</body>
+</html>

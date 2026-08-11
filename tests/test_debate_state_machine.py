@@ -6,7 +6,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from hoya_market_agents.debate_rules import debate_rules
+from hoya_market_agents.debate_rules import VoteRound, debate_rules
 from hoya_market_agents.debate_state_machine import (
     CoreOverrideError,
     DebateError,
@@ -23,15 +23,22 @@ from hoya_market_agents.debate_state_machine import (
     content_sha256,
 )
 from hoya_market_agents.run_store import RunStore
+from hoya_market_agents.research_scheduler import research_deadlines
 from hoya_market_agents.seats import SEAT_IDS
 from tests.fakes import FixedClock
 
 # 取值來源改成 config/debate_rules.json 的載入器；斷言值刻意不動。
 RULES = debate_rules()
-DEBATE_START_MS = RULES.debate_start_ms
-CHALLENGE_DEADLINE_MS = RULES.challenge_deadline_ms()
-FINAL_ROUND_END_MS = RULES.final_round_end_ms
-FORCE_STOP_MS = RULES.force_stop_ms
+DEBATE_START_MS = research_deadlines().seal_ms
+VOTE_ROUND_OPEN_MS = tuple(
+    DEBATE_START_MS + vote_round.open_offset_ms
+    for vote_round in RULES.vote_rounds
+)
+FIRST_ROUND_OPEN_MS = VOTE_ROUND_OPEN_MS[0]
+SECOND_ROUND_OPEN_MS = VOTE_ROUND_OPEN_MS[1]
+FINAL_SETTLE_MS = DEBATE_START_MS + RULES.final_settle_offset_ms
+FINAL_ROUND_END_MS = FINAL_SETTLE_MS - 1
+FORCE_STOP_MS = FINAL_SETTLE_MS
 BLIND_PASS_VOTES = RULES.unanimous_blind_pass_votes
 
 
@@ -51,8 +58,10 @@ class DebateHarness:
         self.test_case = test_case
         self.temp = tempfile.TemporaryDirectory()
         test_case.addCleanup(self.temp.cleanup)
+        self.rules = rules or RULES
+        self.debate_start_ms = research_deadlines(question_type).seal_ms
         self.clock = FixedClock()
-        self.clock.advance_ms(DEBATE_START_MS)
+        self.clock.advance_ms(self.debate_start_ms)
         self.run = RunStore(Path(self.temp.name)).create_run(run_id, SEAT_IDS)
         self.evidence = [
             {
@@ -63,7 +72,7 @@ class DebateHarness:
             for seat_id in SEAT_IDS
         ]
         seal = self.run.seal_evidence_snapshot(
-            self.evidence, "2026-08-01T07:34:00Z", DEBATE_START_MS
+            self.evidence, "2026-08-01T07:34:00Z", self.debate_start_ms
         )
         self.snapshot_sha = seal["sha256"]
         self.machine = DebateStateMachine(
@@ -74,7 +83,8 @@ class DebateHarness:
             evidence_records=self.evidence,
             evidence_snapshot_sha256=self.snapshot_sha,
             start_monotonic_ms=0,
-            rules=rules,
+            debate_start_ms=self.debate_start_ms,
+            rules=self.rules,
         )
 
     def advance_to(self, elapsed_ms):
@@ -378,6 +388,8 @@ class UnanimousBlindPassTest(unittest.TestCase):
 
         harness.challenges_and_responses(stances)
         harness.finals(stances, count=6)
+        harness.advance_to(SECOND_ROUND_OPEN_MS)
+        harness.machine.tick()
 
         self.assertEqual("consensus_6_votes", harness.machine.stop_reason)
         self.assertEqual(6, harness.machine.summary()["threshold_required"])
@@ -394,18 +406,21 @@ class UnanimousBlindPassTest(unittest.TestCase):
     def test_the_first_round_wall_is_the_last_instant_a_blind_pass_may_fire(self):
         # 時點來自設定檔的第一輪牆。牆上仍算開場階段，牆後就是辯論場了。
         on_time = DebateHarness(self, run_id="{}-on-the-wall".format(RUN_ID))
-        on_time.advance_to(CHALLENGE_DEADLINE_MS)
+        on_time.advance_to(FIRST_ROUND_OPEN_MS)
         on_time.positions(["bullish"] * 7)
 
         self.assertEqual("unanimous_blind_pass", on_time.machine.stop_reason)
-        self.assertEqual(CHALLENGE_DEADLINE_MS, on_time.machine.stop_elapsed_ms)
+        self.assertEqual(FIRST_ROUND_OPEN_MS, on_time.machine.stop_elapsed_ms)
 
         late = DebateHarness(self, run_id="{}-past-the-wall".format(RUN_ID))
-        late.advance_to(CHALLENGE_DEADLINE_MS + 1)
-        late.positions(["bullish"] * 7)
+        late.advance_to(FIRST_ROUND_OPEN_MS + 1)
 
-        self.assertFalse(late.machine.stopped)
-        self.assertIsNone(late.machine.stop_reason)
+        with self.assertRaises(DebateLifecycleError):
+            late.machine.relay(
+                late.message(
+                    SEAT_IDS[0], "position", "late-position", stance="bullish", round=0
+                )
+            )
 
     def test_a_room_that_already_debated_can_no_longer_pass_blind(self):
         """盲的定義：只要有人講過開場以外的話，這一場就不再是盲投。"""
@@ -436,15 +451,28 @@ class UnanimousBlindPassTest(unittest.TestCase):
         )
         self.assertFalse(harness.machine.stopped)
 
-    def test_the_threshold_comes_from_the_configuration_not_the_seat_count(self):
-        # 門檻是設定值：填 6 就代表 6/1 的開場也直過，程式不得寫死 len(SEAT_IDS)。
-        rules = replace(debate_rules(), unanimous_blind_pass_votes=6)
+    def test_a_lower_first_wall_threshold_does_not_turn_six_one_into_a_blind_pass(self):
+        # 盲投直過固定要求七席同立場；較低門檻只在牆上開票時生效。
+        current = debate_rules()
+        rules = replace(
+            current,
+            vote_rounds=tuple(
+                VoteRound(vote_round.open_offset_ms, 6 - index)
+                for index, vote_round in enumerate(current.vote_rounds)
+            ),
+        )
         harness = DebateHarness(self, rules=rules)
 
         harness.positions(["bullish"] * 6 + ["bearish"])
 
+        self.assertFalse(harness.machine.stopped)
+        harness.advance_to(
+            harness.debate_start_ms + rules.vote_rounds[0].open_offset_ms
+        )
+        harness.machine.tick()
+
         summary = harness.machine.summary()
-        self.assertEqual("unanimous_blind_pass", harness.machine.stop_reason)
+        self.assertEqual("consensus_6_votes", harness.machine.stop_reason)
         self.assertEqual("bullish", summary["adopted_stance"])
         self.assertEqual(6, summary["threshold_required"])
         self.assertEqual({"bullish": 6, "bearish": 1, "neutral": 0}, summary["tally"])
@@ -458,6 +486,24 @@ class UnanimousBlindPassTest(unittest.TestCase):
 
 
 class DebateStateMachineTest(unittest.TestCase):
+    def test_pre_wall_vote_table_does_not_leak_a_provisional_final_vote(self):
+        harness = DebateHarness(self)
+        harness.positions(["bullish"] * 4 + ["bearish"] * 3)
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[4],
+                "final_vote",
+                "provisional-change",
+                stance="bullish",
+                stance_change_reason="尚未開票的改票",
+            )
+        )
+
+        row = harness.machine.vote_table()[4]
+        self.assertEqual("provisional", row["state"])
+        self.assertIsNone(row["final_stance"])
+        self.assertEqual(0, harness.machine.summary()["valid_vote_count"])
+
     def test_public_debate_messages_are_appended_to_live_event_stream(self):
         harness = DebateHarness(self)
         message = harness.message(
@@ -480,18 +526,28 @@ class DebateStateMachineTest(unittest.TestCase):
 
     def test_scripted_gateway_runs_without_sleep_and_persists_consensus(self):
         harness = DebateHarness(self)
-        stances = ["bullish"] * 6 + ["bearish"]
+        stances = ["bullish"] * 7
         harness.machine.gateway = ScriptedDebateGateway(
-            harness.script(stances, final_count=6), harness.clock
+            [
+                harness.message(
+                    seat_id,
+                    "position",
+                    "position",
+                    stance=stance,
+                    round=0,
+                )
+                for seat_id, stance in zip(SEAT_IDS, stances)
+            ],
+            harness.clock,
         )
 
         summary = harness.machine.run_debate()
 
-        self.assertEqual("consensus_6_votes", summary["stop_reason"])
+        self.assertEqual("unanimous_blind_pass", summary["stop_reason"])
         self.assertTrue((harness.run.path / "debate.jsonl").is_file())
         self.assertTrue((harness.run.path / "votes.json").is_file())
 
-    def test_initial_six_votes_remain_provisional_until_challenge_and_response(self):
+    def test_opening_votes_remain_provisional_until_the_first_round_wall(self):
         harness = DebateHarness(self)
         stances = ["bullish"] * 6 + ["bearish"]
 
@@ -499,12 +555,16 @@ class DebateStateMachineTest(unittest.TestCase):
 
         self.assertFalse(harness.machine.stopped)
         self.assertEqual(0, len(harness.machine.valid_votes()))
-        with self.assertRaises(DebateLifecycleError):
-            harness.machine.relay(
-                harness.message(
-                    SEAT_IDS[0], "final_vote", "too-early", stance="bullish"
-                )
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[0], "final_vote", "latest-public-stance", stance="bullish"
             )
+        )
+        self.assertEqual(0, len(harness.machine.valid_votes()))
+
+        harness.advance_to(FIRST_ROUND_OPEN_MS)
+        harness.machine.tick()
+        self.assertEqual(7, len(harness.machine.valid_votes()))
 
     def test_response_cannot_claim_a_challenge_addressed_to_another_seat(self):
         harness = DebateHarness(self)
@@ -543,6 +603,10 @@ class DebateStateMachineTest(unittest.TestCase):
             final,
             changed_reasons={SEAT_IDS[0]: "counter evidence changed my vote"},
         )
+        harness.advance_to(
+            harness.debate_start_ms + harness.rules.vote_rounds[0].open_offset_ms
+        )
+        harness.machine.tick()
         table = {row["seat_id"]: row for row in harness.machine.vote_table()}
 
         changed = table[SEAT_IDS[0]]["vote_changes"][-1]
@@ -780,6 +844,10 @@ class DebateStateMachineTest(unittest.TestCase):
                 }
             },
         )
+        harness.advance_to(
+            harness.debate_start_ms + harness.rules.vote_rounds[0].open_offset_ms
+        )
+        harness.machine.tick()
 
         row = harness.machine.vote_table()[0]
         self.assertEqual(["spot-technical-a1", "spot-technical-a2"], row["attempt_ids"])
@@ -862,6 +930,10 @@ class DebateStateMachineTest(unittest.TestCase):
         harness = DebateHarness(self, "two_asset_comparison")
 
         harness.complete_round(["asset_a_stronger"] * 6, count=6)
+        harness.advance_to(
+            harness.debate_start_ms + harness.rules.vote_rounds[1].open_offset_ms
+        )
+        harness.machine.tick()
 
         self.assertEqual("consensus_6_votes", harness.machine.stop_reason)
         self.assertEqual(6, len(harness.machine.valid_votes()))
@@ -871,6 +943,8 @@ class DebateStateMachineTest(unittest.TestCase):
         harness = DebateHarness(self)
         stances = ["bullish"] * 6 + ["bearish"]
         harness.complete_round(stances, count=6)
+        harness.advance_to(SECOND_ROUND_OPEN_MS)
+        harness.machine.tick()
         self.assertTrue(harness.machine.stopped)
 
         with self.assertRaises(LateMessageError):

@@ -234,7 +234,13 @@ class RunRulesRecordTest(unittest.TestCase):
 
         first = self.record()
         second = self.record()
-        other = replace(self.rules, initial_votes=5, reduced_votes=4, forced_stop_votes=3)
+        other = replace(
+            self.rules,
+            vote_rounds=tuple(
+                replace(vote_round, threshold=vote_round.threshold - 1)
+                for vote_round in self.rules.vote_rounds
+            ),
+        )
 
         self.assertEqual(first, second)
         self.assertRegex(first["sha256"], r"^[0-9a-f]{64}$")
@@ -266,7 +272,7 @@ class RunRulesRecordTest(unittest.TestCase):
 
         document = json.loads(RULES_PATH.read_text(encoding="utf-8"))
         document["_about"] = "改過的說明文字，規則一個字都沒動。"
-        document["timeline_ms"]["_about"] = "也改這一段。"
+        document["timeline"]["_about"] = "也改這一段。"
         handle = tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", encoding="utf-8", delete=False
         )
@@ -292,7 +298,7 @@ class RunRulesRecordTest(unittest.TestCase):
         from hoya_market_agents.debate_rules import DebateRulesError
 
         record = self.record()
-        record["document"]["schema_version"] = 2
+        record["document"]["schema_version"] = 3
         record["sha256"] = _rules_document_digest(record["document"])
 
         with self.assertRaises(DebateRulesError) as caught:
@@ -303,7 +309,7 @@ class RunRulesRecordTest(unittest.TestCase):
         from hoya_market_agents.contract_validator import load_run_rules
 
         record = self.record()
-        record["document"]["vote_thresholds"]["initial"] = 5
+        record["document"]["timeline"]["vote_rounds"][0]["threshold"] = 6
 
         with self.assertRaises(ContractViolationError) as caught:
             load_run_rules({"debate_rules": record})
@@ -325,7 +331,7 @@ class RunRulesRecordTest(unittest.TestCase):
         from hoya_market_agents.debate_rules import DebateRulesError
 
         record = run_rules_record(self.rules)
-        record["document"]["vote_thresholds"]["reduced"] = 6
+        record["document"]["timeline"]["vote_rounds"][1]["threshold"] = 7
         record["sha256"] = self.digest(record["document"])
 
         with self.assertRaises(DebateRulesError):

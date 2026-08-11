@@ -41,9 +41,7 @@ from hoya_market_agents.debate_rules import (
     load_debate_rules,
     reload_debate_rules,
 )
-from hoya_market_agents.competition_drill import run_fake_competition_drill
 from hoya_market_agents.debate_state_machine import (
-    LateMessageError,
     required_votes_at,
 )
 from hoya_market_agents import prompt_builder
@@ -81,6 +79,7 @@ from hoya_market_agents.seats import (
 from hoya_market_agents.system_preflight import write_ready_certificate
 from hoya_market_agents.webapp import launch as launch_module
 from hoya_market_agents.webapp import live, outcome as outcome_module, pages, settings, views
+from hoya_market_agents.webapp import server as server_module
 from hoya_market_agents.webapp import log as log_module
 from hoya_market_agents.webapp.log import (
     ACTIVE_LOG_NAME,
@@ -1144,6 +1143,14 @@ class RunDetailTest(PageFixture, unittest.TestCase):
         self.assertIn("加密資產", body)
         self.assertNotIn("<dd>crypto</dd>", body)
 
+    def test_the_stored_question_type_and_stop_reason_are_visible_only_as_chinese(self):
+        body = self.detail().body
+
+        self.assertIn("<dt>題型</dt><dd>開放命題</dd>", body)
+        self.assertIn("<dt>停止原因</dt><dd>達到票數門檻</dd>", body)
+        self.assertNotIn("<dd>open_proposition</dd>", body)
+        self.assertNotIn("<dd>threshold_met</dd>", body)
+
     def test_the_report_is_shown_from_the_runs_own_report_html(self):
         body = self.detail().body
 
@@ -1668,7 +1675,7 @@ class KeyboardAndSemanticsTest(PageFixture, unittest.TestCase):
             self.assertEqual([], [value for value in forced if int(value) > 0], name)
 
     def test_the_focus_ring_is_drawn_where_the_browser_would_hide_it(self):
-        self.assertIn(":focus-visible", self.history)
+        self.assertIn(":focus-visible", self.get("/static/site.css").body)
 
     def test_the_framed_report_is_named_for_a_screen_reader(self):
         frame = re.search(r"<iframe[^>]*>", self.detail).group(0)
@@ -1786,6 +1793,79 @@ class AssetClassLabelTest(unittest.TestCase):
             self.assertEqual(
                 "美國股市（改）", pages.asset_class_label(ASSET_CLASS_US_STOCK)
             )
+
+
+class RunDetailValueLabelTest(unittest.TestCase):
+    """Stored question and stop values reach the page as honest Chinese labels."""
+
+    QUESTION_TYPES = {
+        "single_asset_market_state": "單一資產市場狀態",
+        "two_asset_comparison": "兩資產比較",
+        "overall_market_state": "整體市場狀態",
+        "event_impact": "事件影響",
+        "open_proposition": "開放命題",
+    }
+
+    def test_every_current_question_type_has_its_own_label(self):
+        self.assertEqual(
+            self.QUESTION_TYPES,
+            {
+                value: views.question_type_label(value)
+                for value in self.QUESTION_TYPES
+            },
+        )
+
+    def test_the_stored_compatibility_question_types_are_labelled_too(self):
+        expected = {
+            "single_asset": "單一資產",
+            "comparison": "兩資產比較",
+            "market": "整體市場",
+            "event": "事件影響",
+            "market_direction": "市場方向",
+        }
+
+        self.assertEqual(
+            expected,
+            {value: views.question_type_label(value) for value in expected},
+        )
+
+    def test_every_dynamic_consensus_reason_names_its_vote_count(self):
+        for votes in range(1, 8):
+            self.assertEqual(
+                "達成共識（{} 票）".format(votes),
+                views.stop_reason_label("consensus_{}_votes".format(votes)),
+            )
+
+    def test_every_dynamic_final_settle_adoption_names_its_vote_count(self):
+        for votes in range(1, 8):
+            self.assertEqual(
+                "硬停結算（{} 票採納）".format(votes),
+                views.stop_reason_label("forced_stop_{}_votes".format(votes)),
+            )
+
+    def test_the_named_stop_reasons_have_distinct_labels(self):
+        expected = {
+            "threshold_met": "達到票數門檻",
+            "unanimous_blind_pass": "七席一致，提前結案",
+            "forced_stop_no_consensus": "硬停結算（未達共識）",
+            "forced_stop_insufficient_valid_votes": "硬停結算（有效票不足）",
+        }
+
+        self.assertEqual(
+            expected,
+            {value: views.stop_reason_label(value) for value in expected},
+        )
+
+    def test_an_unknown_value_is_marked_instead_of_given_an_invented_translation(self):
+        self.assertEqual("coin_flip（尚未翻譯）", views.question_type_label("coin_flip"))
+        self.assertEqual(
+            "mystery_stop（尚未翻譯）",
+            views.stop_reason_label("mystery_stop"),
+        )
+
+    def test_an_absent_value_stays_absent_for_the_pages_empty_marker(self):
+        self.assertIsNone(views.question_type_label(None))
+        self.assertIsNone(views.stop_reason_label(None))
 
 
 # -- the live room ------------------------------------------------------------
@@ -1985,6 +2065,53 @@ class CursorTest(unittest.TestCase):
         self.assertIsNone(live.resume_offset(42, "run-1", 100))
 
 
+class FirstSentenceTest(unittest.TestCase):
+    """A message opens with its own first sentence and hides the rest.
+
+    ``debate_driver`` requires every ``public_reason`` to open with a 30-60 字
+    核心結論, so the first sentence is that conclusion and the fold is a
+    sentence split rather than a character count. An ASCII full stop ends a
+    sentence only when a space, a newline or the end of the text follows it:
+    ``3.5%`` is one number, and a brief cut in half there would say something
+    the reason does not.
+    """
+
+    def test_a_full_width_stop_ends_the_first_sentence(self):
+        for reason, brief in (
+            ("本席看多。理由在後面。", "本席看多。"),
+            ("真的嗎？後面還有話。", "真的嗎？"),
+            ("完全不同意！後面還有話。", "完全不同意！"),
+        ):
+            self.assertEqual(brief, live.first_sentence(reason), reason)
+
+    def test_an_ascii_stop_ends_it_only_when_a_break_follows(self):
+        self.assertEqual("Up first.", live.first_sentence("Up first. Then more."))
+        self.assertEqual("Up first.", live.first_sentence("Up first.\nThen more."))
+        self.assertEqual("Up first.", live.first_sentence("Up first.\r\nThen more."))
+        self.assertEqual("Up first.", live.first_sentence("Up first.\tThen more."))
+
+    def test_a_stop_inside_a_number_is_not_the_end_of_a_sentence(self):
+        reason = "漲幅 3.5% 已被市場反映，本席看空。後面還有理由。"
+
+        self.assertEqual("漲幅 3.5% 已被市場反映，本席看空。", live.first_sentence(reason))
+
+    def test_a_stop_at_the_very_end_is_the_end_of_a_sentence(self):
+        """Long enough that the character cap would answer differently, so what
+        is pinned is the stop and not the length."""
+        reason = "看空" * 35 + "3.5%."
+
+        self.assertEqual(reason, live.first_sentence(reason))
+
+    def test_a_reason_with_no_sentence_end_is_cut_at_the_cap(self):
+        reason = "看空" * 40
+
+        self.assertEqual("看空" * 30 + "…", live.first_sentence(reason))
+
+    def test_a_reason_no_longer_than_the_cap_is_its_own_brief(self):
+        for reason in ("", "看空", "看空" * 30):
+            self.assertEqual(reason, live.first_sentence(reason), len(reason))
+
+
 class ChatRoomTest(unittest.TestCase):
     """The room is what the events say, in the order they were written."""
 
@@ -2028,6 +2155,45 @@ class ChatRoomTest(unittest.TestCase):
         self.assertEqual("stance-oppose", message["stance_class"])
         self.assertEqual("這裡有反證", message["public_reason"])
         self.assertEqual(["news-01"], message["evidence_ids"])
+
+    def test_a_message_carries_the_brief_it_opens_with_beside_the_whole_reason(self):
+        """Computed here once, so the page and the stream show the same brief
+        without either of them splitting a sentence of its own."""
+        room = self.room()
+
+        room.ingest(
+            [
+                seat_message(
+                    "news", "bearish", 300000,
+                    reason="本席看空。第一，資金流出。第二，量能萎縮。",
+                )
+            ]
+        )
+
+        message = room.messages[0]
+        self.assertEqual("本席看空。", message["public_brief"])
+        self.assertEqual(
+            "本席看空。第一，資金流出。第二，量能萎縮。", message["public_reason"]
+        )
+
+    def test_a_reason_of_one_sentence_is_its_own_brief(self):
+        room = self.room()
+
+        room.ingest([seat_message("news", "bearish", 300000, reason="本席看空。")])
+
+        message = room.messages[0]
+        self.assertEqual(message["public_reason"], message["public_brief"])
+
+    def test_a_seat_that_gave_no_reason_briefs_as_the_words_shown_for_that(self):
+        room = self.room()
+        record = seat_message("news", "bearish", 300000)
+        record["public_reason"] = ""
+
+        room.ingest([record])
+
+        message = room.messages[0]
+        self.assertEqual(live.NO_REASON_LABEL, message["public_reason"])
+        self.assertEqual(live.NO_REASON_LABEL, message["public_brief"])
 
     def test_each_ballot_position_gets_a_colour_class_in_the_ballots_own_order(self):
         room = self.room()
@@ -2454,6 +2620,107 @@ class LivePageTest(PageFixture, unittest.TestCase):
         self.assertEqual(3, body.count('class="message '))
         self.assertIn("spot-technical 的公開理由", body)
 
+    LONG_REASON = "鏈上籌碼持續流入。交易所餘額同步下降，賣壓有限。"
+
+    def folded(self, body):
+        """The one ``<details>`` reason on the page, tags and all."""
+        return re.search(
+            r'<details class="message-reason">.*?</details>', body, re.DOTALL
+        ).group(0)
+
+    def words_of(self, markup):
+        """An opened reason as a reader sees it, without its fold controls."""
+        without_hint = re.sub(
+            r'<span class="reason-(?:hint|fold|ellipsis)">.*?</span>',
+            "",
+            markup,
+            flags=re.DOTALL,
+        )
+        return re.sub(r"<[^>]+>", "", without_hint)
+
+    def test_a_reason_with_more_to_say_is_folded_at_its_first_sentence(self):
+        append_events(
+            self.run_dir,
+            [seat_message("onchain", "bullish", 500000, reason=self.LONG_REASON)],
+        )
+
+        folded = self.folded(self.get("/live").body)
+
+        summary = re.search(r"<summary>.*?</summary>", folded, re.DOTALL).group(0)
+        self.assertIn("鏈上籌碼持續流入。", summary)
+        self.assertNotIn("交易所餘額", summary)
+        self.assertIn("顯示全文", summary)
+
+    def test_the_folded_reason_holds_the_whole_reason_once(self):
+        """Opening it must read as the reason itself: the summary keeps its
+        first sentence and the body carries exactly the rest."""
+        append_events(
+            self.run_dir,
+            [seat_message("onchain", "bullish", 500000, reason=self.LONG_REASON)],
+        )
+
+        folded = self.folded(self.get("/live").body)
+
+        self.assertEqual("判斷／挑戰理由：" + self.LONG_REASON, self.words_of(folded))
+
+    def test_a_capped_brief_opens_to_exactly_the_original_reason(self):
+        reason = "甲" * 61
+        append_events(
+            self.run_dir,
+            [seat_message("onchain", "bullish", 500000, reason=reason)],
+        )
+        timeline = [
+            {"at_ms": 0, "label": "開始", "required_votes": None},
+            {"at_ms": 900000, "label": "結束", "required_votes": None},
+        ]
+
+        with (
+            mock.patch.object(live, "rule_timeline", return_value=timeline),
+            mock.patch.object(live, "threshold_label", return_value="尚未進入投票"),
+        ):
+            body = self.get("/live").body
+            folded = self.folded(body)
+
+        self.assertEqual("判斷／挑戰理由：" + reason, self.words_of(folded))
+        self.assertIn('<span class="reason-ellipsis">…</span>', folded)
+        self.assertIn(
+            '.message-reason[open] .reason-ellipsis{display:none;}',
+            self.get("/static/site.css").body,
+        )
+        self.assertIn("收合", folded)
+
+    def test_a_folded_reason_holding_markup_is_shown_as_text_on_both_sides(self):
+        """A fold escapes in two places — the summary and the body — so a
+        reason carrying markup on each side of its first sentence is asserted
+        on each side."""
+        append_events(
+            self.run_dir,
+            [
+                seat_message(
+                    "onchain", "bullish", 500000,
+                    reason="<b>第一句</b>。<script>alert(1)</script>後面還有。",
+                )
+            ],
+        )
+
+        body = self.get("/live").body
+
+        self.assertNotIn("<b>第一句</b>", body)
+        self.assertNotIn("<script>alert(1)</script>", body)
+        self.assertIn("&lt;b&gt;第一句", body)
+        self.assertIn("&lt;script&gt;alert(1)", body)
+
+    def test_a_reason_that_says_it_all_at_once_is_not_folded(self):
+        """The three messages in the fixture are each one sentence, so there is
+        nothing to hide and no control to offer."""
+        feed = re.search(
+            r'<div class="feed".*?</div>\s*<button', self.get("/live").body, re.DOTALL
+        ).group(0)
+
+        self.assertEqual(3, feed.count('<p class="message-reason">'))
+        self.assertNotIn("<details", feed)
+        self.assertNotIn("顯示全文", feed)
+
     def test_a_change_of_vote_is_named_on_the_message_that_made_it(self):
         body = self.get("/live").body
 
@@ -2778,12 +3045,13 @@ class LiveSinglePageTest(HeaderFixture, unittest.TestCase):
         for label in ("規則與時間線", "票數變化", "可驗證證據"):
             self.assertIn(label, body, label)
 
-    def test_the_rules_panel_shows_the_seal_milestone_with_its_vote_count(self):
+    def test_the_rules_panel_shows_every_vote_round_with_its_threshold(self):
         body = self.get("/live").body
 
         rules = debate_rules()
-        self.assertIn("封存證據並開始辯論", body)
-        self.assertIn("{} 票".format(rules.initial_votes), body)
+        for index, vote_round in enumerate(rules.vote_rounds, start=1):
+            self.assertIn("第 {} 輪開票".format(index), body)
+            self.assertIn("門檻 {} 票".format(vote_round.threshold), body)
 
     # -- constraint A: the timeline reads the rule authority live -----------
 
@@ -2794,12 +3062,16 @@ class LiveSinglePageTest(HeaderFixture, unittest.TestCase):
 
         self.assertTrue(spy.called)
 
-    def test_a_reduced_threshold_edited_in_the_rules_reaches_the_next_render(self):
-        stub = _rules_with(reduced_votes=3)
+    def test_a_round_threshold_edited_in_the_rules_reaches_the_next_render(self):
+        rules = debate_rules()
+        changed_rounds = list(rules.vote_rounds)
+        changed_rounds[2] = replace(changed_rounds[2], threshold=3)
+        changed_rounds[3] = replace(changed_rounds[3], threshold=2)
+        stub = replace(rules, vote_rounds=tuple(changed_rounds))
         with mock.patch.object(live, "debate_rules", return_value=stub):
             body = self.get("/live").body
 
-        self.assertIn("共識門檻降為 3 票", body)
+        self.assertRegex(body, r"第 3 輪開票.*門檻 3 票")
 
     # -- the tally is exactly one cell per ballot position ------------------
 
@@ -2810,11 +3082,6 @@ class LiveSinglePageTest(HeaderFixture, unittest.TestCase):
 
         cells = re.findall(r'<div class="stance-\w+"><span class="tally-label"', body)
         self.assertEqual(3, len(cells))
-
-
-def _rules_with(**overrides):
-    """A DebateRules just like the shipped one but for the named overrides."""
-    return replace(debate_rules(), **overrides)
 
 
 class LiveComparisonSealTest(PageFixture, unittest.TestCase):
@@ -2853,7 +3120,7 @@ class LiveComparisonSealTest(PageFixture, unittest.TestCase):
 
         body = self.get("/live").body
 
-        self.assertRegex(body, r"<time>T\+04:30</time><span>封存證據並開始辯論")
+        self.assertRegex(body, r"<time>T\+04:30</time><span>封存證據並整理開場票")
 
     # -- FP: the single-asset run is not moved by the fix above -------------
 
@@ -2870,7 +3137,7 @@ class LiveComparisonSealTest(PageFixture, unittest.TestCase):
 
         body = self.get("/live").body
 
-        self.assertRegex(body, r"<time>T\+04:00</time><span>封存證據並開始辯論")
+        self.assertRegex(body, r"<time>T\+04:00</time><span>封存證據並整理開場票")
 
     # -- the "not yet voting" gate follows the real seal -------------------
 
@@ -2881,7 +3148,67 @@ class LiveComparisonSealTest(PageFixture, unittest.TestCase):
         )
 
     def test_at_that_same_moment_a_single_asset_run_is_already_voting(self):
-        self.assertEqual("6 票", live.threshold_label(250000, None))
+        self.assertEqual("7 票", live.threshold_label(250000, None))
+
+
+class LiveVoteRoundTimelineTest(unittest.TestCase):
+    """The public timeline is a direct projection of the schema-v2 rounds."""
+
+    def test_every_configured_vote_round_is_one_reload_aware_milestone(self):
+        rules = debate_rules()
+        seal_ms = research_deadlines(None).seal_ms
+
+        timeline = live.rule_timeline()
+        rounds = [entry for entry in timeline if entry.get("round") is not None]
+
+        self.assertEqual(
+            [
+                {
+                    "at_ms": seal_ms + vote_round.open_offset_ms,
+                    "label": "第 {} 輪開票".format(index),
+                    "required_votes": vote_round.threshold,
+                    "round": index,
+                }
+                for index, vote_round in enumerate(rules.vote_rounds, start=1)
+            ],
+            rounds,
+        )
+
+    def test_default_rounds_and_final_settle_land_at_the_approved_times(self):
+        timeline = live.rule_timeline()
+        vote_rounds = [entry for entry in timeline if entry.get("round")]
+        final_settle = [entry for entry in timeline if entry["label"] == "硬停結算"]
+
+        self.assertEqual(
+            [(300_000, 7), (390_000, 6), (480_000, 5), (570_000, 4)],
+            [(entry["at_ms"], entry["required_votes"]) for entry in vote_rounds],
+        )
+        self.assertEqual([(600_000, 4)], [
+            (entry["at_ms"], entry["required_votes"]) for entry in final_settle
+        ])
+
+    def test_comparison_rounds_and_final_settle_all_move_thirty_seconds(self):
+        single = [
+            entry for entry in live.rule_timeline(None)
+            if entry.get("round") or entry["label"] == "硬停結算"
+        ]
+        comparison = [
+            entry for entry in live.rule_timeline("two_asset_comparison")
+            if entry.get("round") or entry["label"] == "硬停結算"
+        ]
+
+        self.assertEqual(
+            [entry["at_ms"] + 30_000 for entry in single],
+            [entry["at_ms"] for entry in comparison],
+        )
+
+    def test_threshold_label_changes_only_at_the_reload_aware_round_walls(self):
+        seal_ms = research_deadlines(None).seal_ms
+
+        self.assertEqual("尚未進入投票", live.threshold_label(seal_ms - 1))
+        self.assertEqual("7 票", live.threshold_label(seal_ms))
+        self.assertEqual("7 票", live.threshold_label(seal_ms + 149_999))
+        self.assertEqual("6 票", live.threshold_label(seal_ms + 150_000))
 
 
 class RootIsTheDebateRoomTest(PageFixture, unittest.TestCase):
@@ -2964,7 +3291,11 @@ class EveryPageCanReachTheRoomTest(HeaderFixture, unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        write_live_run(self.data_root)
+        run_dir = write_live_run(self.data_root)
+        append_events(
+            run_dir,
+            [seat_message("spot-technical", "bullish", 240000)],
+        )
         self.index_two_runs()
 
     def nav(self, path):
@@ -3597,16 +3928,18 @@ class SingleSiteStylesheetTest(PageFixture, unittest.TestCase):
         self.index_two_runs()
 
     def style_of(self, path):
-        return re.search(
-            r"<style>(.*?)</style>", self.get(path).body, re.DOTALL
-        ).group(1)
+        body = self.get(path).body
+        self.assertIn('<link rel="stylesheet" href="/static/site.css">', body, path)
+        self.assertNotIn("<style", body, path)
+        return self.get("/static/site.css").body
 
     def test_every_page_carries_the_one_sheet_and_nothing_else(self):
         sheet = pages.stylesheet()
         for path in self.PAGES + ("/run/20260801T020000Z-btc-aaaa11",):
             body = self.get(path).body
             self.assertEqual(sheet, self.style_of(path), path)
-            self.assertEqual(1, body.count("<style"), path)
+            self.assertEqual(0, body.count("<style"), path)
+            self.assertEqual(1, body.count('href="/static/site.css"'), path)
 
     def test_the_room_is_painted_by_the_token_table_and_by_one_palette(self):
         """Spec R-004 retires dark mode: the room reads the same tokens it
@@ -3858,7 +4191,9 @@ class GoogleStyleShellTest(HeaderFixture, unittest.TestCase):
         }
 
     def sheet_of(self, body):
-        return re.search(r"<style>(.*?)</style>", body, re.DOTALL).group(1)
+        self.assertIn('<link rel="stylesheet" href="/static/site.css">', body)
+        self.assertNotIn("<style", body)
+        return self.get("/static/site.css").body
 
     def test_every_kind_of_page_is_built_from_the_one_shell(self):
         """The furniture of the redesign, on all six: one sheet, one skip link
@@ -3866,7 +4201,8 @@ class GoogleStyleShellTest(HeaderFixture, unittest.TestCase):
         older layout would be a page missing one of them."""
         for name, body in self.page_kinds().items():
             self.assertEqual(pages.stylesheet(), self.sheet_of(body), name)
-            self.assertEqual(1, body.count("<style"), name)
+            self.assertEqual(0, body.count("<style"), name)
+            self.assertEqual(1, body.count('href="/static/site.css"'), name)
             self.assertIn('<a class="skip-link" href="#main">', body, name)
             self.assertIn('<main id="main"', body, name)
             self.assertIn("<header", body, name)
@@ -3994,12 +4330,113 @@ class GoogleStyleShellTest(HeaderFixture, unittest.TestCase):
                 self.assertGreater(luminance(value), 0.5, "{} {}".format(name, token))
 
 
+class VisualRefreshTest(PageFixture, unittest.TestCase):
+    """Ticket 09's polish, checked where a browser receives it.
+
+    The fixture renders real page responses and fetches the routed stylesheet;
+    it does not inspect the Python assemblers or the CSS source path directly.
+    Component assertions first prove that the rendered DOM wears the selector
+    being checked, so a dead rule cannot satisfy the visual contract.
+    """
+
+    def setUp(self):
+        super().setUp()
+        run_dir = write_live_run(self.data_root)
+        append_events(
+            run_dir,
+            [seat_message("spot-technical", "bullish", 240000, round_number=1)],
+        )
+        self.index_two_runs()
+        self.sheet = self.get("/static/site.css").body
+        self.live_page = self.get("/live").body
+        self.history_page = self.get("/history").body
+        self.settings_page = self.get("/settings").body
+
+    def declarations_for(self, selector_fragment):
+        return "".join(
+            declarations
+            for selector, declarations in declaration_blocks(self.sheet)
+            if selector_fragment in selector
+        )
+
+    def at_rule(self, heading):
+        start = self.sheet.index(heading)
+        opening = self.sheet.index("{", start)
+        depth = 1
+        for index in range(opening + 1, len(self.sheet)):
+            if self.sheet[index] == "{":
+                depth += 1
+            elif self.sheet[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return self.sheet[opening + 1 : index]
+        self.fail("unclosed CSS at-rule: {}".format(heading))
+
+    def test_rendered_controls_move_gently_and_keep_a_visible_keyboard_ring(self):
+        for body in (self.live_page, self.history_page, self.settings_page):
+            self.assertRegex(body, r"<(?:button|input|select)\b")
+
+        controls = self.declarations_for("button.primary")
+        fields = self.declarations_for(".field input")
+        focus = self.declarations_for(":focus-visible")
+        self.assertIn("transition:", controls)
+        self.assertIn("transition:", fields)
+        self.assertIn("outline:", focus)
+        self.assertIn("outline-offset:", focus)
+
+    def test_rendered_tables_have_a_scannable_header_and_row_hover(self):
+        self.assertIn("<table", self.history_page)
+        header = self.declarations_for("thead th")
+        hover = self.declarations_for("tbody tr:hover")
+        self.assertIn("text-transform:uppercase", header)
+        self.assertIn("letter-spacing:", header)
+        self.assertIn("background:var(--page)", hover)
+
+    def test_chat_bubbles_and_avatars_share_a_top_edge(self):
+        self.assertIn('class="message ', self.live_page)
+        self.assertIn('class="speaker-avatar"', self.live_page)
+        self.assertIn("align-items:flex-start", self.declarations_for(".message-head"))
+        self.assertIn("align-items:flex-start", self.declarations_for(".speaker"))
+        self.assertIn("flex:0 0 auto", self.declarations_for(".speaker-avatar"))
+
+    def test_rendered_badges_and_seat_cards_receive_their_polish(self):
+        self.assertIn('class="badge ', self.live_page)
+        self.assertIn('class="agent ', self.live_page)
+        badge = self.declarations_for(".badge")
+        agent = self.declarations_for(".agent")
+        hover = self.declarations_for(".agent:hover")
+        self.assertIn("display:inline-flex", badge)
+        self.assertIn("letter-spacing:", badge)
+        self.assertIn("transition:", agent)
+        self.assertIn("transform:translateY(", hover)
+
+    def test_reduced_motion_preference_cancels_animation_and_transitions(self):
+        reduced = self.at_rule("@media (prefers-reduced-motion:reduce)")
+        self.assertIn("animation-duration:", reduced)
+        self.assertIn("transition-duration:", reduced)
+        self.assertIn("scroll-behavior:auto", reduced)
+
+    def test_every_page_keeps_the_viewport_contract_and_small_screen_rules(self):
+        for body in (self.live_page, self.history_page, self.settings_page):
+            self.assertIn(
+                '<meta name="viewport" content="width=device-width, initial-scale=1">',
+                body,
+            )
+            self.assertIn('class="page-layout ', body)
+        compact = self.at_rule("@media (max-width:38rem)")
+        self.assertIn("width:100%", compact)
+        self.assertIn("grid-template-columns:1fr", compact)
+
+
 class LiveScriptTest(PageFixture, unittest.TestCase):
     """One script, served from this origin, and no inline block anywhere."""
 
     def setUp(self):
         super().setUp()
         write_live_run(self.data_root)
+        self.script = (Path(live.__file__).parent / "static" / "live.js").read_text(
+            encoding="utf-8"
+        )
 
     def test_the_script_is_served_as_javascript(self):
         response = self.get("/live.js")
@@ -4021,17 +4458,136 @@ class LiveScriptTest(PageFixture, unittest.TestCase):
 
     def test_the_script_never_assembles_markup_from_run_data(self):
         """``innerHTML`` is how a public reason would become a page's markup."""
-        self.assertNotIn("innerHTML", pages.LIVE_SCRIPT)
-        self.assertNotIn("insertAdjacentHTML", pages.LIVE_SCRIPT)
-        self.assertNotIn("document.write", pages.LIVE_SCRIPT)
+        self.assertNotIn("innerHTML", self.script)
+        self.assertNotIn("insertAdjacentHTML", self.script)
+        self.assertNotIn("document.write", self.script)
+
+    def test_the_script_folds_a_streamed_reason_the_way_the_page_does(self):
+        """Same two shapes as :func:`pages._message`, built from the brief the
+        server already computed."""
+        self.assertIn('el("details", "message-reason")', self.script)
+        self.assertIn('el("p", "message-reason")', self.script)
+        self.assertIn("item.public_brief", self.script)
+        self.assertIn('el("span", "reason-ellipsis", "…")', self.script)
+        self.assertIn("brief.length - 1", self.script)
+        self.assertIn("顯示全文", self.script)
+        self.assertIn("收合", self.script)
+
+    def test_the_script_splits_no_sentences_of_its_own(self):
+        """The brief arrives with the message. A stop table here would be a
+        second answer to the question :func:`live.first_sentence` answers, and
+        the two would drift."""
+        self.assertNotIn("。！？", self.script)
+        self.assertNotIn(".!?", self.script)
 
     def test_the_script_opens_the_stream_at_the_cursor_the_page_was_drawn_with(self):
         self.assertIn('"?after=" + encodeURIComponent(feed.dataset.cursor)',
-                      pages.LIVE_SCRIPT)
+                      self.script)
 
     def test_the_script_listens_for_the_three_frames_the_server_sends(self):
         for name in ("snapshot", "append", "done"):
-            self.assertIn('addEventListener("{}"'.format(name), pages.LIVE_SCRIPT, name)
+            self.assertIn('addEventListener("{}"'.format(name), self.script, name)
+
+
+class WebappLayeringTest(PageFixture, unittest.TestCase):
+    """Ticket 08: templates, page assemblers and static files are real inputs."""
+
+    def setUp(self):
+        super().setUp()
+        write_live_run(self.data_root)
+        self.webapp_root = Path(live.__file__).parent
+
+    def test_the_approved_frontend_layers_exist(self):
+        for relative in (
+            "templates/document.html",
+            "templates/history.html",
+            "templates/run.html",
+            "templates/live.html",
+            "templates/settings.html",
+            "static/site.css",
+            "static/live.js",
+            "pages/__init__.py",
+            "pages/components.py",
+            "pages/history_page.py",
+            "pages/run_page.py",
+            "pages/live_page.py",
+            "pages/settings_page.py",
+        ):
+            self.assertTrue((self.webapp_root / relative).is_file(), relative)
+
+    def test_the_settings_route_uses_the_settings_template(self):
+        templates = self.data_root / "templates"
+        shutil.copytree(self.webapp_root / "templates", templates)
+        marker = '<div data-template="settings"></div>'
+        settings_template = templates / "settings.html"
+        settings_template.write_text(
+            marker + settings_template.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+        with mock.patch(
+            "hoya_market_agents.webapp.pages.components.TEMPLATES_DIR", templates
+        ):
+            body = self.get("/settings").body
+
+        self.assertIn(marker, body)
+
+    def test_every_page_loads_the_external_site_sheet_and_has_no_inline_style(self):
+        self.index_two_runs()
+        for path in ("/", "/live", "/history", "/settings", "/nope",
+                     "/run/20260801T020000Z-btc-aaaa11"):
+            body = self.get(path).body
+            self.assertIn(
+                '<link rel="stylesheet" href="/static/site.css">', body, path
+            )
+            self.assertNotIn("<style", body, path)
+            policy = self.get(path).headers["Content-Security-Policy"]
+            self.assertIn("style-src 'self'", policy, path)
+            self.assertNotIn("unsafe-inline", policy, path)
+
+    def test_the_two_static_files_are_served_from_the_approved_directory(self):
+        css = self.get("/static/site.css")
+        script = self.get("/static/live.js")
+
+        self.assertEqual(200, css.status)
+        self.assertEqual("text/css; charset=utf-8", css.headers["Content-Type"])
+        self.assertEqual(pages.stylesheet().encode("utf-8"), css.body_bytes)
+        self.assertIn(
+            (self.webapp_root / "static" / "site.css").read_text(encoding="utf-8"),
+            css.body,
+        )
+        self.assertEqual(200, script.status)
+        self.assertEqual("text/javascript; charset=utf-8", script.headers["Content-Type"])
+        self.assertEqual(
+            (self.webapp_root / "static" / "live.js").read_bytes(),
+            script.body_bytes,
+        )
+
+    def test_the_legacy_live_script_route_reads_the_static_file(self):
+        self.assertEqual(
+            self.get("/static/live.js").body_bytes,
+            self.get("/live.js").body_bytes,
+        )
+
+    def test_the_static_route_is_an_exact_allowlist(self):
+        for path in (
+            "/static/server.py",
+            "/static/../server.py",
+            "/static/%2e%2e/server.py",
+            "/static/site.css/anything",
+            "/static/unknown.css",
+        ):
+            self.assertEqual(404, self.get(path).status, path)
+
+    def test_the_public_pages_module_is_the_new_package(self):
+        package = Path(pages.__file__)
+
+        self.assertEqual("__init__.py", package.name)
+        self.assertEqual("pages", package.parent.name)
+        self.assertNotEqual(
+            Path(server_module.__file__).with_name("pages.py").resolve(),
+            package.resolve(),
+        )
 
 
 class LiveStreamTest(PageFixture, unittest.TestCase):
@@ -5063,19 +5619,19 @@ class SettingsFieldDerivationTest(SettingsFixture, unittest.TestCase):
     def test_a_field_added_to_the_document_appears_without_editing_this_module(self):
         """The whole point: a new rule field must not be silently dropped."""
         document = self.document()
-        document["timeline_ms"]["a_brand_new_wall"] = 123
+        document["timeline"]["a_brand_new_wall"] = 123
 
         paths = [path for path, _, _ in settings.field_texts(document)]
 
-        self.assertIn("timeline_ms.a_brand_new_wall", paths)
+        self.assertIn("timeline.a_brand_new_wall", paths)
 
     def test_a_field_removed_from_the_document_leaves_no_control_behind(self):
         document = self.document()
-        del document["timeline_ms"]["force_stop"]
+        del document["timeline"]["final_settle_offset_ms"]
 
         paths = [path for path, _, _ in settings.field_texts(document)]
 
-        self.assertNotIn("timeline_ms.force_stop", paths)
+        self.assertNotIn("timeline.final_settle_offset_ms", paths)
 
     def test_a_comment_key_is_not_a_field(self):
         paths = [path for path, _, _ in settings.field_texts(self.document())]
@@ -5087,7 +5643,7 @@ class SettingsFieldDerivationTest(SettingsFixture, unittest.TestCase):
 
         self.assertEqual(self.shipped["_about"], rebuilt["_about"])
         self.assertEqual(
-            self.shipped["timeline_ms"]["_about"], rebuilt["timeline_ms"]["_about"]
+            self.shipped["timeline"]["_about"], rebuilt["timeline"]["_about"]
         )
 
     def test_submitting_the_form_unchanged_rebuilds_the_same_document(self):
@@ -5114,7 +5670,7 @@ class SettingsFieldDerivationTest(SettingsFixture, unittest.TestCase):
     def test_a_path_the_document_does_not_have_is_ignored_rather_than_added(self):
         """FP direction: a submitted name the document never had changes nothing."""
         submitted = self.texts()
-        submitted["timeline_ms.made_up"] = "1"
+        submitted["timeline.made_up"] = "1"
 
         self.assertEqual(
             self.document(), settings.candidate_document(self.document(), submitted)
@@ -5122,11 +5678,11 @@ class SettingsFieldDerivationTest(SettingsFixture, unittest.TestCase):
 
     def test_a_field_left_out_of_the_submission_keeps_the_value_it_had(self):
         submitted = self.texts()
-        del submitted["timeline_ms.force_stop"]
+        del submitted["timeline.final_settle_offset_ms"]
 
         rebuilt = settings.candidate_document(self.document(), submitted)
 
-        self.assertEqual(600_000, rebuilt["timeline_ms"]["force_stop"])
+        self.assertEqual(360_000, rebuilt["timeline"]["final_settle_offset_ms"])
 
 
 class SettingsEditsValuesOnlyTest(SettingsFixture, unittest.TestCase):
@@ -5146,7 +5702,7 @@ class SettingsEditsValuesOnlyTest(SettingsFixture, unittest.TestCase):
         return settings.save_rules(self.rules_path, submitted, self.data_root)
 
     def test_a_saved_document_has_the_same_keys_it_had(self):
-        self.save(self.edited(timeline_ms__force_stop="660000"))
+        self.save(self.edited(timeline__final_settle_offset_ms="420000"))
 
         self.assertEqual(
             leaf_paths_of(self.shipped), leaf_paths_of(self.document())
@@ -5252,22 +5808,25 @@ class SettingsFieldNamingTest(SettingsFixture, unittest.TestCase):
 
     def test_a_sentence_naming_one_field_names_that_field(self):
         named = settings.fields_named_in(
-            "vote_thresholds.initial 必須是 1 到 7 之間的整數票數，收到 0。",
+            "timeline.vote_rounds[0].threshold 必須是 1 到 7 之間的整數票數，收到 0。",
             self.paths(),
         )
 
-        self.assertEqual(("vote_thresholds.initial",), named)
+        self.assertEqual(("timeline.vote_rounds[0].threshold",), named)
 
     def test_a_sentence_naming_two_fields_names_both_of_them(self):
         """An inverted pair implicates both ends, so both are marked."""
         named = settings.fields_named_in(
-            "timeline_ms.final_round_start（1）必須大於 "
-            "timeline_ms.reduced_threshold_from（2）；時間軸必須嚴格遞增。",
+            "timeline.vote_rounds[1].open_offset_ms（1）必須大於 "
+            "timeline.vote_rounds[0].open_offset_ms（2）；開票 offset 必須嚴格遞增。",
             self.paths(),
         )
 
         self.assertEqual(
-            {"timeline_ms.final_round_start", "timeline_ms.reduced_threshold_from"},
+            {
+                "timeline.vote_rounds[0].open_offset_ms",
+                "timeline.vote_rounds[1].open_offset_ms",
+            },
             set(named),
         )
 
@@ -5324,48 +5883,61 @@ class SettingsSaveTest(SettingsFixture, unittest.TestCase):
             probe.unlink()
 
     def test_a_legal_change_is_written_to_the_file(self):
-        outcome = self.save(self.edited(timeline_ms__force_stop="660000"))
+        outcome = self.save(self.edited(timeline__final_settle_offset_ms="420000"))
 
         self.assertEqual(settings.SAVED, outcome.state)
-        self.assertEqual(660_000, self.document()["timeline_ms"]["force_stop"])
+        self.assertEqual(420_000, self.document()["timeline"]["final_settle_offset_ms"])
 
     def test_a_legal_change_becomes_the_rules_the_next_run_reads(self):
         self.save(
-            self.edited(vote_thresholds__reduced="4", vote_thresholds__forced_stop="3")
+            self.edited(
+                **{
+                    "timeline__vote_rounds[2]__threshold": "4",
+                    "timeline__vote_rounds[3]__threshold": "3",
+                }
+            )
         )
 
-        self.assertEqual(4, debate_rules().reduced_votes)
+        self.assertEqual(4, debate_rules().vote_rounds[2].threshold)
 
     def test_a_saved_file_is_still_json_a_person_can_read(self):
-        self.save(self.edited(timeline_ms__force_stop="660000"))
+        self.save(self.edited(timeline__final_settle_offset_ms="420000"))
 
         self.assertTrue(self.rules_path.read_text(encoding="utf-8").endswith("}\n"))
 
     def test_a_timeline_in_the_wrong_order_is_refused(self):
-        outcome = self.save(self.edited(timeline_ms__final_round_start="1000"))
+        outcome = self.save(
+            self.edited(**{"timeline__vote_rounds[1]__open_offset_ms": "1000"})
+        )
 
         self.assertEqual(settings.REFUSED, outcome.state)
 
     def test_a_refused_timeline_names_the_field_it_is_about(self):
-        outcome = self.save(self.edited(timeline_ms__final_round_start="1000"))
+        outcome = self.save(
+            self.edited(**{"timeline__vote_rounds[1]__open_offset_ms": "1000"})
+        )
 
-        self.assertIn("timeline_ms.final_round_start", outcome.fields)
+        self.assertIn("timeline.vote_rounds[1].open_offset_ms", outcome.fields)
 
     def test_a_refused_change_leaves_the_file_byte_for_byte_as_it_was(self):
         before = self.bytes_now()
 
-        self.save(self.edited(timeline_ms__final_round_start="1000"))
+        self.save(
+            self.edited(**{"timeline__vote_rounds[1]__open_offset_ms": "1000"})
+        )
 
         self.assertEqual(before, self.bytes_now())
 
     def test_a_vote_count_of_zero_is_refused_and_named(self):
-        outcome = self.save(self.edited(vote_thresholds__initial="0"))
+        outcome = self.save(
+            self.edited(**{"timeline__vote_rounds[0]__threshold": "0"})
+        )
 
         self.assertEqual(settings.REFUSED, outcome.state)
-        self.assertIn("vote_thresholds.initial", outcome.fields)
+        self.assertIn("timeline.vote_rounds[0].threshold", outcome.fields)
 
     def test_a_refused_change_leaves_no_temporary_file_in_the_directory(self):
-        self.save(self.edited(vote_thresholds__initial="0"))
+        self.save(self.edited(**{"timeline__vote_rounds[0]__threshold": "0"}))
 
         self.assertEqual(
             ["debate_rules.json"], sorted(p.name for p in self.rules_dir.iterdir())
@@ -5374,7 +5946,7 @@ class SettingsSaveTest(SettingsFixture, unittest.TestCase):
     def test_a_refused_change_does_not_become_the_published_rules(self):
         before = debate_rules()
 
-        self.save(self.edited(vote_thresholds__initial="0"))
+        self.save(self.edited(**{"timeline__vote_rounds[0]__threshold": "0"}))
 
         self.assertIs(before, debate_rules())
 
@@ -5397,23 +5969,52 @@ class SettingsSaveTest(SettingsFixture, unittest.TestCase):
     # Each entry is ``(the loader rule it reaches, control path, typed text)``.
     ILLEGAL = (
         ("schema_version is not an integer", "schema_version", "abc"),
-        ("schema_version is an unsupported integer", "schema_version", "2"),
-        ("timeline instant is not an integer", "timeline_ms.debate_start", "abc"),
-        ("timeline instant is negative", "timeline_ms.debate_start", "-1"),
+        ("schema_version is an unsupported integer", "schema_version", "1"),
         (
-            "timeline is not strictly increasing",
-            "timeline_ms.final_round_start",
+            "round offset is not an integer",
+            "timeline.vote_rounds[0].open_offset_ms",
+            "abc",
+        ),
+        (
+            "round offset is negative",
+            "timeline.vote_rounds[0].open_offset_ms",
+            "-1",
+        ),
+        (
+            "round offsets are not strictly increasing",
+            "timeline.vote_rounds[1].open_offset_ms",
             "1000",
         ),
-        ("first-round window is not positive", "timeline_ms.round_one_window", "0"),
-        ("vote count is not an integer", "vote_thresholds.initial", "abc"),
-        ("vote count is below one", "vote_thresholds.initial", "0"),
         (
-            "vote count is above the seat count",
-            "vote_thresholds.unanimous_blind_pass",
+            "round threshold is not an integer",
+            "timeline.vote_rounds[0].threshold",
+            "abc",
+        ),
+        (
+            "round threshold is below one",
+            "timeline.vote_rounds[0].threshold",
+            "0",
+        ),
+        (
+            "round threshold is above the seat count",
+            "timeline.vote_rounds[0].threshold",
             "8",
         ),
-        ("vote ladder is not strictly decreasing", "vote_thresholds.reduced", "6"),
+        (
+            "round thresholds are not strictly decreasing",
+            "timeline.vote_rounds[1].threshold",
+            "7",
+        ),
+        (
+            "final settle offset is not an integer",
+            "timeline.final_settle_offset_ms",
+            "abc",
+        ),
+        (
+            "final settle is not after the last round",
+            "timeline.final_settle_offset_ms",
+            "1000",
+        ),
         (
             "light rung min_votes is not an integer",
             "confidence.light_scale[0].min_votes",
@@ -5549,7 +6150,7 @@ class SettingsSaveTest(SettingsFixture, unittest.TestCase):
 
     def test_a_legal_change_carries_no_refusal_and_no_named_field(self):
         """FP direction: a saver that refused everything would pass those tests."""
-        outcome = self.save(self.edited(timeline_ms__force_stop="660000"))
+        outcome = self.save(self.edited(timeline__final_settle_offset_ms="420000"))
 
         self.assertIsNone(outcome.message)
         self.assertEqual((), outcome.fields)
@@ -5600,7 +6201,9 @@ class SettingsAtomicWriteTest(SettingsFixture, unittest.TestCase):
             moves.append((Path(source).name, Path(target).name))
             os.replace(source, target)
 
-        self.save(self.edited(timeline_ms__force_stop="660000"), replace=replace)
+        self.save(
+            self.edited(timeline__final_settle_offset_ms="420000"), replace=replace
+        )
 
         self.assertEqual(1, len(moves))
         self.assertEqual("debate_rules.json", moves[0][1])
@@ -5613,7 +6216,9 @@ class SettingsAtomicWriteTest(SettingsFixture, unittest.TestCase):
             seen.append(load_debate_rules(target).force_stop_ms)
             os.replace(source, target)
 
-        self.save(self.edited(timeline_ms__force_stop="660000"), replace=replace)
+        self.save(
+            self.edited(timeline__final_settle_offset_ms="420000"), replace=replace
+        )
 
         self.assertEqual([600_000], seen)
         self.assertEqual(660_000, load_debate_rules(self.rules_path).force_stop_ms)
@@ -5625,7 +6230,9 @@ class SettingsAtomicWriteTest(SettingsFixture, unittest.TestCase):
             raise OSError("磁碟滿了")
 
         with self.assertRaises(OSError):
-            self.save(self.edited(timeline_ms__force_stop="660000"), replace=replace)
+            self.save(
+                self.edited(timeline__final_settle_offset_ms="420000"), replace=replace
+            )
 
         self.assertEqual(before, self.bytes_now())
 
@@ -5634,7 +6241,9 @@ class SettingsAtomicWriteTest(SettingsFixture, unittest.TestCase):
             raise OSError("磁碟滿了")
 
         with self.assertRaises(OSError):
-            self.save(self.edited(timeline_ms__force_stop="660000"), replace=replace)
+            self.save(
+                self.edited(timeline__final_settle_offset_ms="420000"), replace=replace
+            )
 
         self.assertEqual(
             ["debate_rules.json"], sorted(p.name for p in self.rules_dir.iterdir())
@@ -5646,23 +6255,23 @@ class SettingsAtomicWriteTest(SettingsFixture, unittest.TestCase):
         Both callers are told they saved. Only the second one's number is in the
         file, and the first one is never told its edit is gone.
         """
-        first = self.save(self.edited(timeline_ms__force_stop="660000"))
-        second = self.save(self.edited(timeline_ms__force_stop="720000"))
+        first = self.save(self.edited(timeline__final_settle_offset_ms="420000"))
+        second = self.save(self.edited(timeline__final_settle_offset_ms="480000"))
 
         self.assertEqual(settings.SAVED, first.state)
         self.assertEqual(settings.SAVED, second.state)
-        self.assertEqual(720_000, self.document()["timeline_ms"]["force_stop"])
+        self.assertEqual(480_000, self.document()["timeline"]["final_settle_offset_ms"])
 
     def test_a_publish_that_fails_says_the_file_moved_and_the_rules_did_not(self):
         def publish(_path):
             raise DebateRulesError("讀不到了")
 
         outcome = self.save(
-            self.edited(timeline_ms__force_stop="660000"), publish=publish
+            self.edited(timeline__final_settle_offset_ms="420000"), publish=publish
         )
 
         self.assertEqual(settings.NOT_PUBLISHED, outcome.state)
-        self.assertEqual(660_000, self.document()["timeline_ms"]["force_stop"])
+        self.assertEqual(420_000, self.document()["timeline"]["final_settle_offset_ms"])
         self.assertEqual(600_000, debate_rules().force_stop_ms)
 
 
@@ -5681,7 +6290,7 @@ class SettingsLockTest(SettingsFixture, unittest.TestCase):
     def save(self):
         return settings.save_rules(
             self.rules_path,
-            self.edited(timeline_ms__force_stop="660000"),
+            self.edited(timeline__final_settle_offset_ms="420000"),
             self.data_root,
         )
 
@@ -5768,7 +6377,12 @@ class RulesTakeEffectOnTheNextRunTest(SettingsFixture, unittest.TestCase):
     def lower_the_ladder(self):
         return settings.save_rules(
             self.rules_path,
-            self.edited(vote_thresholds__reduced="4", vote_thresholds__forced_stop="3"),
+            self.edited(
+                **{
+                    "timeline__vote_rounds[2]__threshold": "4",
+                    "timeline__vote_rounds[3]__threshold": "3",
+                }
+            ),
             self.data_root,
         )
 
@@ -5784,13 +6398,13 @@ class RulesTakeEffectOnTheNextRunTest(SettingsFixture, unittest.TestCase):
         self.lower_the_ladder()
 
         self.assertEqual(5, required_votes_at(480_000, rules=held))
-        self.assertEqual(5, held.reduced_votes)
+        self.assertEqual(5, held.vote_rounds[2].threshold)
 
     def test_the_next_run_reads_the_new_numbers(self):
         self.lower_the_ladder()
 
         self.assertEqual(4, required_votes_at(480_000))
-        self.assertEqual(4, debate_rules().reduced_votes)
+        self.assertEqual(4, debate_rules().vote_rounds[2].threshold)
 
     def test_the_two_answers_come_from_two_different_frozen_objects(self):
         held = debate_rules()
@@ -5804,7 +6418,9 @@ class RulesTakeEffectOnTheNextRunTest(SettingsFixture, unittest.TestCase):
         held = debate_rules()
 
         settings.save_rules(
-            self.rules_path, self.edited(vote_thresholds__initial="0"), self.data_root
+            self.rules_path,
+            self.edited(**{"timeline__vote_rounds[0]__threshold": "0"}),
+            self.data_root,
         )
 
         self.assertIs(held, debate_rules())
@@ -5851,6 +6467,27 @@ class SettingsPageTest(SettingsPageFixture, unittest.TestCase):
     def test_the_page_opens(self):
         self.assertEqual(200, self.get("/settings").status)
 
+    def test_the_timeline_has_one_row_per_schema_v2_vote_round(self):
+        rows = settings.settings_data(
+            self.data_root, rules_path=self.rules_path
+        )["timeline"]
+
+        self.assertEqual(
+            [
+                {
+                    "round": index,
+                    "label": "第 {} 輪".format(index),
+                    "open_offset_ms": vote_round["open_offset_ms"],
+                    "threshold": vote_round["threshold"],
+                    "clock": settings._clock(vote_round["open_offset_ms"]),
+                }
+                for index, vote_round in enumerate(
+                    self.shipped["timeline"]["vote_rounds"], start=1
+                )
+            ],
+            rows,
+        )
+
     def test_every_field_in_the_document_has_a_control_on_the_page(self):
         body = self.page()
 
@@ -5866,8 +6503,10 @@ class SettingsPageTest(SettingsPageFixture, unittest.TestCase):
     def test_each_control_is_filled_with_what_the_file_says(self):
         body = self.page()
 
-        self.assertEqual("240000", self.value_of(body, "timeline_ms.debate_start"))
-        self.assertEqual("6", self.value_of(body, "vote_thresholds.initial"))
+        self.assertEqual(
+            "60000", self.value_of(body, "timeline.vote_rounds[0].open_offset_ms")
+        )
+        self.assertEqual("7", self.value_of(body, "timeline.vote_rounds[0].threshold"))
         self.assertEqual("blue", self.value_of(body, "confidence.light_scale[0].level"))
         self.assertEqual(
             "1, 2",
@@ -5890,20 +6529,26 @@ class SettingsPageTest(SettingsPageFixture, unittest.TestCase):
     def test_the_timeline_is_drawn_with_every_number_written_out_as_well(self):
         body = self.page()
 
-        for name in self.shipped["timeline_ms"]:
-            if name.startswith("_"):
-                continue
-            self.assertIn(name, body, name)
-        self.assertIn("04:00", body)
-        self.assertIn("10:00", body)
+        for index, vote_round in enumerate(
+            self.shipped["timeline"]["vote_rounds"], start=1
+        ):
+            self.assertIn("第 {} 輪".format(index), body)
+            self.assertIn("{} ms".format(vote_round["open_offset_ms"]), body)
+            self.assertIn("門檻 {} 票".format(vote_round["threshold"]), body)
 
-    def test_the_bar_is_decoration_and_the_number_is_the_content(self):
-        self.assertIn('aria-hidden="true"', self.page())
+    def test_the_timeline_has_exactly_one_list_row_per_vote_round(self):
+        timeline = re.search(
+            r'<ul class="timeline">(.*?)</ul>', self.page(), re.DOTALL
+        ).group(1)
+
+        self.assertEqual(
+            len(self.shipped["timeline"]["vote_rounds"]), timeline.count("<li>")
+        )
 
     def test_the_comments_in_the_file_are_shown_rather_than_dropped(self):
         body = self.page()
 
-        self.assertIn(escape(self.shipped["timeline_ms"]["_about"][:20]), body)
+        self.assertIn(escape(self.shipped["timeline"]["_about"][:20]), body)
 
     def test_the_history_page_offers_a_way_to_reach_this_one(self):
         self.assertIn('href="/settings"', self.get("/").body)
@@ -5932,108 +6577,130 @@ class SettingsPageTest(SettingsPageFixture, unittest.TestCase):
     def test_a_rule_file_the_loader_refuses_is_still_shown_for_editing(self):
         """An operator cannot fix a file the page will not display."""
         document = self.document()
-        document["vote_thresholds"]["initial"] = 0
+        document["timeline"]["vote_rounds"][0]["threshold"] = 0
         self.rules_path.write_text(
             json.dumps(document, ensure_ascii=False), encoding="utf-8"
         )
 
         body = self.get("/settings").body
 
-        self.assertIn("vote_thresholds.initial", body)
-        self.assertEqual("0", self.value_of(body, "vote_thresholds.initial"))
+        path = "timeline.vote_rounds[0].threshold"
+        self.assertIn(path, body)
+        self.assertEqual("0", self.value_of(body, path))
 
 
 class SettingsSubmissionTest(SettingsPageFixture, unittest.TestCase):
     """Submitting the form: accepted, refused, and what the reader is shown."""
 
     def test_a_legal_change_is_accepted_and_the_file_says_so(self):
-        response = self.submit(timeline_ms__force_stop="660000")
+        response = self.submit(timeline__final_settle_offset_ms="420000")
 
         self.assertEqual(200, response.status)
-        self.assertEqual(660_000, self.document()["timeline_ms"]["force_stop"])
+        self.assertEqual(420_000, self.document()["timeline"]["final_settle_offset_ms"])
 
     def test_an_accepted_change_says_it_takes_effect_on_the_next_run(self):
-        body = self.submit(timeline_ms__force_stop="660000").body
+        body = self.submit(timeline__final_settle_offset_ms="420000").body
 
         self.assertIn("下一個開始的 run", body)
         self.assertIn("不受影響", body)
 
     def test_an_accepted_change_comes_back_on_the_page_it_was_typed_on(self):
-        body = self.submit(timeline_ms__force_stop="660000").body
+        body = self.submit(timeline__final_settle_offset_ms="420000").body
 
-        self.assertEqual("660000", self.value_of(body, "timeline_ms.force_stop"))
+        self.assertEqual(
+            "420000", self.value_of(body, "timeline.final_settle_offset_ms")
+        )
 
     def test_an_accepted_change_is_recorded(self):
-        self.submit(timeline_ms__force_stop="660000")
+        self.submit(timeline__final_settle_offset_ms="420000")
 
         events = [record["event"] for record in self.records()]
 
         self.assertIn("settings_saved", events)
 
     def test_a_refused_change_shows_the_loaders_own_sentence(self):
-        body = self.submit(vote_thresholds__initial="0").body
+        body = self.submit(**{"timeline__vote_rounds[0]__threshold": "0"}).body
 
-        self.assertIn(escape("vote_thresholds.initial 必須是 1 到 7"), body)
+        self.assertIn(
+            escape("timeline.vote_rounds[0].threshold 必須是 1 到 7"), body
+        )
 
     def test_a_refused_change_marks_the_control_it_is_about(self):
-        body = self.submit(vote_thresholds__initial="0").body
-        control = self.input_of(body, "vote_thresholds.initial")
+        body = self.submit(**{"timeline__vote_rounds[0]__threshold": "0"}).body
+        path = "timeline.vote_rounds[0].threshold"
+        control = self.input_of(body, path)
 
         self.assertIn('aria-invalid="true"', control)
-        self.assertIn("error-vote_thresholds.initial", control)
-        self.assertIn('id="error-vote_thresholds.initial"', body)
+        self.assertIn("error-{}".format(path), control)
+        self.assertIn('id="error-{}"'.format(path), body)
 
     def test_the_message_is_reachable_from_the_control_that_names_it(self):
         """``aria-describedby`` is how a screen reader gets from one to the other."""
-        body = self.submit(vote_thresholds__initial="0").body
-        control = self.input_of(body, "vote_thresholds.initial")
+        body = self.submit(**{"timeline__vote_rounds[0]__threshold": "0"}).body
+        path = "timeline.vote_rounds[0].threshold"
+        control = self.input_of(body, path)
         described = re.search(r'aria-describedby="([^"]+)"', control).group(1).split()
 
-        self.assertIn("error-vote_thresholds.initial", described)
+        self.assertIn("error-{}".format(path), described)
         for identifier in described:
             self.assertIn('id="{}"'.format(identifier), body, identifier)
 
     def test_a_control_nobody_complained_about_is_not_marked(self):
         """FP direction: marking every box would pass the two tests above."""
-        body = self.submit(vote_thresholds__initial="0").body
+        body = self.submit(**{"timeline__vote_rounds[0]__threshold": "0"}).body
 
-        self.assertNotIn('aria-invalid', self.input_of(body, "timeline_ms.force_stop"))
+        self.assertNotIn(
+            'aria-invalid', self.input_of(body, "timeline.final_settle_offset_ms")
+        )
 
     def test_a_refused_change_is_not_only_a_colour(self):
-        body = self.submit(vote_thresholds__initial="0").body
+        body = self.submit(**{"timeline__vote_rounds[0]__threshold": "0"}).body
 
         self.assertIn("這次沒有存檔", body)
         self.assertIn("這一欄被拒絕", body)
 
     def test_a_refused_change_keeps_what_was_typed_so_it_can_be_corrected(self):
-        body = self.submit(vote_thresholds__initial="0").body
+        body = self.submit(**{"timeline__vote_rounds[0]__threshold": "0"}).body
 
-        self.assertEqual("0", self.value_of(body, "vote_thresholds.initial"))
+        self.assertEqual("0", self.value_of(body, "timeline.vote_rounds[0].threshold"))
 
     def test_a_refused_change_leaves_the_file_alone(self):
         before = self.bytes_now()
 
-        self.submit(vote_thresholds__initial="0")
+        self.submit(**{"timeline__vote_rounds[0]__threshold": "0"})
 
         self.assertEqual(before, self.bytes_now())
 
     def test_a_refused_change_is_recorded(self):
-        self.submit(vote_thresholds__initial="0")
+        self.submit(**{"timeline__vote_rounds[0]__threshold": "0"})
 
         events = [record["event"] for record in self.records()]
 
         self.assertIn("settings_refused", events)
 
     def test_an_out_of_order_timeline_marks_both_ends_of_the_pair(self):
-        body = self.submit(timeline_ms__final_round_start="1000").body
+        body = self.submit(
+            **{"timeline__vote_rounds[1]__open_offset_ms": "1000"}
+        ).body
 
         self.assertIn(
-            'aria-invalid="true"', self.input_of(body, "timeline_ms.final_round_start")
+            'aria-invalid="true"',
+            self.input_of(body, "timeline.vote_rounds[1].open_offset_ms"),
         )
         self.assertIn(
             'aria-invalid="true"',
-            self.input_of(body, "timeline_ms.reduced_threshold_from"),
+            self.input_of(body, "timeline.vote_rounds[0].open_offset_ms"),
         )
+
+    def test_a_non_decreasing_threshold_is_refused_in_the_loaders_own_words(self):
+        body = self.submit(**{"timeline__vote_rounds[1]__threshold": "7"}).body
+
+        self.assertIn("票數門檻必須嚴格遞減", body)
+        for path in (
+            "timeline.vote_rounds[0].threshold",
+            "timeline.vote_rounds[1].threshold",
+        ):
+            self.assertIn('aria-invalid="true"', self.input_of(body, path), path)
 
     def test_only_the_first_problem_the_loader_found_is_reported(self):
         """The loader stops at the first refusal, so one is all there is to show.
@@ -6044,27 +6711,35 @@ class SettingsSubmissionTest(SettingsPageFixture, unittest.TestCase):
         second pass of its own — a second pass would be a second validator.
         """
         body = self.submit(
-            vote_thresholds__initial="0", timeline_ms__final_round_start="1000"
+            **{
+                "timeline__vote_rounds[0]__open_offset_ms": "-1",
+                "timeline__vote_rounds[1]__threshold": "7",
+            }
         ).body
 
-        self.assertIn("時間軸必須嚴格遞增", body)
-        self.assertNotIn("整數票數", body)
+        self.assertIn("必須是非負整數毫秒", body)
+        self.assertNotIn("票數門檻必須嚴格遞減", body)
         self.assertNotIn(
-            'aria-invalid="true"', self.input_of(body, "vote_thresholds.initial")
+            'aria-invalid="true"',
+            self.input_of(body, "timeline.vote_rounds[1].threshold"),
         )
 
     def test_the_next_problem_is_reported_once_the_first_one_is_fixed(self):
         """FP direction: the second problem is not lost, only queued."""
         body = self.submit(
-            vote_thresholds__initial="0", timeline_ms__final_round_start="1000"
+            **{
+                "timeline__vote_rounds[0]__open_offset_ms": "-1",
+                "timeline__vote_rounds[1]__threshold": "7",
+            }
         ).body
-        self.assertIn("時間軸必須嚴格遞增", body)
+        self.assertIn("必須是非負整數毫秒", body)
 
-        body = self.submit(vote_thresholds__initial="0").body
+        body = self.submit(**{"timeline__vote_rounds[1]__threshold": "7"}).body
 
-        self.assertIn("整數票數", body)
+        self.assertIn("票數門檻必須嚴格遞減", body)
         self.assertIn(
-            'aria-invalid="true"', self.input_of(body, "vote_thresholds.initial")
+            'aria-invalid="true"',
+            self.input_of(body, "timeline.vote_rounds[1].threshold"),
         )
 
     def test_a_body_that_carries_no_field_is_not_read_as_an_empty_form(self):
@@ -6108,7 +6783,7 @@ class SettingsLockedPageTest(SettingsPageFixture, unittest.TestCase):
         self.assertIn('type="submit" disabled', self.page())
 
     def test_a_submission_while_it_is_locked_is_refused_as_a_conflict(self):
-        response = self.submit(timeline_ms__force_stop="660000")
+        response = self.submit(timeline__final_settle_offset_ms="420000")
 
         self.assertEqual(409, response.status)
         self.assertIn("設定頁目前鎖定", response.body)
@@ -6116,12 +6791,12 @@ class SettingsLockedPageTest(SettingsPageFixture, unittest.TestCase):
     def test_a_submission_while_it_is_locked_does_not_touch_the_file(self):
         before = self.bytes_now()
 
-        self.submit(timeline_ms__force_stop="660000")
+        self.submit(timeline__final_settle_offset_ms="420000")
 
         self.assertEqual(before, self.bytes_now())
 
     def test_a_locked_submission_is_recorded(self):
-        self.submit(timeline_ms__force_stop="660000")
+        self.submit(timeline__final_settle_offset_ms="420000")
 
         events = [record["event"] for record in self.records()]
 
@@ -6140,17 +6815,20 @@ class SettingsLockedPageTest(SettingsPageFixture, unittest.TestCase):
     def test_a_submission_once_that_run_has_ended_is_accepted(self):
         self.finish()
 
-        response = self.submit(timeline_ms__force_stop="660000")
+        response = self.submit(timeline__final_settle_offset_ms="420000")
 
         self.assertEqual(200, response.status)
-        self.assertEqual(660_000, self.document()["timeline_ms"]["force_stop"])
+        self.assertEqual(420_000, self.document()["timeline"]["final_settle_offset_ms"])
 
 
 class SettingsPolicyTest(SettingsPageFixture, unittest.TestCase):
     """The settings page is a server-rendered form, so it keeps the strict policy."""
 
     def test_the_page_is_sent_with_the_policy_that_forbids_every_script(self):
-        for response in (self.get("/settings"), self.submit(timeline_ms__force_stop="660000")):
+        for response in (
+            self.get("/settings"),
+            self.submit(timeline__final_settle_offset_ms="420000"),
+        ):
             self.assertEqual(
                 CONTENT_SECURITY_POLICY,
                 response.headers["Content-Security-Policy"],
@@ -6158,7 +6836,10 @@ class SettingsPolicyTest(SettingsPageFixture, unittest.TestCase):
 
     def test_the_page_carries_no_script_at_all(self):
         self.assertNotIn("<script", self.page())
-        self.assertNotIn("<script", self.submit(vote_thresholds__initial="0").body)
+        self.assertNotIn(
+            "<script",
+            self.submit(**{"timeline__vote_rounds[0]__threshold": "0"}).body,
+        )
 
     def test_the_strict_policy_still_allows_this_form_to_post_to_this_origin(self):
         self.assertIn("form-action 'self'", CONTENT_SECURITY_POLICY)
@@ -6179,19 +6860,26 @@ class OnlyTheRoomIsGivenAScriptTest(unittest.TestCase):
     """
 
     def renderers_passing_scripts(self):
-        tree = ast.parse(Path(pages.__file__).read_text(encoding="utf-8"))
         found = set()
-        for function in ast.walk(tree):
-            if not isinstance(function, ast.FunctionDef):
-                continue
-            for node in ast.walk(function):
-                if not isinstance(node, ast.Call):
+        entry = Path(pages.__file__)
+        sources = (
+            [entry]
+            if entry.name != "__init__.py"
+            else sorted(entry.parent.glob("*_page.py"))
+        )
+        for source in sources:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+            for function in ast.walk(tree):
+                if not isinstance(function, ast.FunctionDef):
                     continue
-                name = getattr(node.func, "id", None)
-                if name != "_document":
-                    continue
-                if any(word.arg == "scripts" for word in node.keywords):
-                    found.add(function.name)
+                for node in ast.walk(function):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    name = getattr(node.func, "id", None)
+                    if name != "_document":
+                        continue
+                    if any(word.arg == "scripts" for word in node.keywords):
+                        found.add(function.name)
         return found
 
     def test_the_room_is_the_only_page_handed_a_script(self):
@@ -6285,7 +6973,8 @@ class RenderedSettingsPageTest(SettingsPageFixture, unittest.TestCase):
         super().setUp()
         self.rendered = self.data_root / "settings-refused.html"
         self.rendered.write_text(
-            self.submit(vote_thresholds__initial="0").body, encoding="utf-8"
+            self.submit(**{"timeline__vote_rounds[0]__threshold": "0"}).body,
+            encoding="utf-8",
         )
         self.text = self.rendered.read_text(encoding="utf-8")
 
@@ -6298,7 +6987,7 @@ class RenderedSettingsPageTest(SettingsPageFixture, unittest.TestCase):
         self.assertIn("這次沒有存檔", self.text)
 
     def test_the_kept_page_names_the_field_and_quotes_the_reason(self):
-        self.assertIn('id="error-vote_thresholds.initial"', self.text)
+        self.assertIn('id="error-timeline.vote_rounds[0].threshold"', self.text)
         self.assertIn(escape("必須是 1 到 7 之間的整數票數"), self.text)
 
     def test_the_kept_page_still_holds_every_control(self):
@@ -6308,7 +6997,7 @@ class RenderedSettingsPageTest(SettingsPageFixture, unittest.TestCase):
         )
 
     def test_the_file_on_disk_was_not_changed_by_the_page_that_was_kept(self):
-        self.assertEqual(6, self.document()["vote_thresholds"]["initial"])
+        self.assertEqual(7, self.document()["timeline"]["vote_rounds"][0]["threshold"])
 
 
 class SettingsValueSurvivesAReloadTest(SettingsPageFixture, unittest.TestCase):
@@ -6322,83 +7011,45 @@ class SettingsValueSurvivesAReloadTest(SettingsPageFixture, unittest.TestCase):
     """
 
     #: The control's own id, which is the rule's path in the document.
-    PATH = "timeline_ms.debate_start"
+    PATH = "timeline.vote_rounds[0].open_offset_ms"
 
     def test_a_saved_value_is_the_one_a_fresh_render_shows(self):
         before = self.value_of(self.page(), self.PATH)
         self.assertIsNotNone(before)
-        self.assertNotEqual("200000", before)
+        self.assertNotEqual("70000", before)
 
-        self.submit(timeline_ms__debate_start="200000")
+        self.submit(**{"timeline__vote_rounds[0]__open_offset_ms": "70000"})
 
-        self.assertEqual("200000", self.value_of(self.page(), self.PATH))
+        self.assertEqual("70000", self.value_of(self.page(), self.PATH))
 
     def test_a_second_handler_built_after_the_save_shows_it_too(self):
         """FP direction: the render above could have been answered from state the
         POST left behind in this handler. A new handler has none."""
-        self.submit(timeline_ms__debate_start="200000")
+        self.submit(**{"timeline__vote_rounds[0]__open_offset_ms": "70000"})
         self.build_handler()
 
-        self.assertEqual("200000", self.value_of(self.page(), self.PATH))
+        self.assertEqual("70000", self.value_of(self.page(), self.PATH))
 
 
-class SettingsChangeReachesTheStateMachineTest(SettingsPageFixture, unittest.TestCase):
-    """Acceptance: edit the page, and a new fixture run behaves differently.
+class SettingsChangeReachesLiveTimelineTest(SettingsPageFixture, unittest.TestCase):
+    """Acceptance: a saved nested round reaches the next live render."""
 
-    Not "the file changed" and not "``required_votes_at`` returns another
-    number" — a whole fixture run is driven through the real research scheduler,
-    the real seal and the real :class:`DebateStateMachine`, before and after the
-    edit, and what changes is where that run stops.
-    """
+    PATH = "timeline__vote_rounds[0]__open_offset_ms"
 
-    def setUp(self):
-        super().setUp()
-        self._drill_tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._drill_tmp.cleanup)
-        self.drill_root = Path(self._drill_tmp.name)
+    def test_a_saved_round_offset_reaches_the_next_live_page(self):
+        response = self.submit(**{self.PATH: "70000"})
 
-    def drill(self, token):
-        root = self.drill_root / token
-        try:
-            run_fake_competition_drill(
-                data_root=root, question="BTC 未來七天會不會漲", token=token
-            )
-        except LateMessageError as exc:
-            self.late = str(exc)
-        found = sorted(root.rglob("votes.json"))
-        self.assertEqual(1, len(found))
-        return json.loads(found[0].read_text(encoding="utf-8"))
-
-    def test_moving_the_five_vote_threshold_earlier_changes_where_a_run_stops(self):
-        self.late = None
-        before = self.drill("aaaa11")
-        self.assertEqual("consensus_6_votes", before["stop_reason"])
-        self.assertEqual(6, before["threshold_required"])
-        self.assertEqual(7, before["valid_vote_count"])
-        self.assertIsNone(self.late)
-
-        response = self.submit(
-            timeline_ms__debate_start="200000",
-            timeline_ms__reduced_threshold_from="220000",
-        )
         self.assertEqual(200, response.status)
-        self.assertIn("下一個開始的 run", response.body)
+        self.assertRegex(self.get("/live").body, r"T\+05:10.*第 1 輪開票")
 
-        after = self.drill("bbbb22")
+    def test_the_edit_really_went_through_the_page_and_reload(self):
+        self.submit(**{self.PATH: "70000"})
 
-        self.assertEqual("consensus_5_votes", after["stop_reason"])
-        self.assertEqual(5, after["threshold_required"])
-        self.assertEqual(6, after["valid_vote_count"])
-        self.assertIsNotNone(self.late)
-
-    def test_the_edit_really_went_through_the_page_and_not_around_it(self):
-        self.submit(
-            timeline_ms__debate_start="200000",
-            timeline_ms__reduced_threshold_from="220000",
+        self.assertEqual(
+            70_000,
+            self.document()["timeline"]["vote_rounds"][0]["open_offset_ms"],
         )
-
-        self.assertEqual(220_000, self.document()["timeline_ms"]["reduced_threshold_from"])
-        self.assertEqual(220_000, debate_rules().reduced_threshold_from_ms)
+        self.assertEqual(70_000, debate_rules().vote_rounds[0].open_offset_ms)
 
 
 # -- 設定頁白話中文（Spec R-001） ---------------------------------------------
@@ -6410,37 +7061,18 @@ class SettingsChangeReachesTheStateMachineTest(SettingsPageFixture, unittest.Tes
 #: 改掉、打錯字或漏一個鍵，斷言仍然會通過。抄一份的代價是改文案要改兩個地方，而那
 #: 正是這一份的用途——文案是需求本身，不該被實作單方面改掉。
 PLAIN_FIELD_WORDS = {
-    "schema_version": ("規則檔版本", "規則檔的格式版本，目前僅支援 1，平常不需改動"),
-    "timeline_ms.debate_start": (
-        "證據封存時刻",
-        "開賽後多久結束研究、封存證據（毫秒），之後進入辯論",
+    "schema_version": ("規則檔版本", "規則檔的格式版本，目前僅支援 2，平常不需改動"),
+    "timeline.vote_rounds[].open_offset_ms": (
+        "開票時刻（封存後毫秒）",
+        "封存後過這麼多毫秒開這一輪票；單幣題封存在第 4 分鐘",
     ),
-    "timeline_ms.round_one_window": (
-        "第一輪挑戰時窗",
-        "證據封存後，留給第一輪反方挑戰的時間長度（毫秒）",
+    "timeline.vote_rounds[].threshold": (
+        "所需同立場票數",
+        "這一輪要幾席同立場才能結案寫報告",
     ),
-    "timeline_ms.reduced_threshold_from": (
-        "門檻下調時刻",
-        "從此時間點起，過關票數由「初始」降為「下調後」",
-    ),
-    "timeline_ms.final_round_start": ("最終輪開始", "最後一輪辯論的開始時間"),
-    "timeline_ms.final_round_end": ("最終輪結束", "最後一輪辯論的結束時間"),
-    "timeline_ms.force_stop": (
-        "強制結算時刻",
-        "時間到就強制結算：達強停票數採納立場，否則未達共識",
-    ),
-    "vote_thresholds.unanimous_blind_pass": (
-        "盲投直過票數",
-        "開場盲投全數同立場達此票數，直接產出藍燈報告、不進辯論",
-    ),
-    "vote_thresholds.initial": ("初始過關票數", "辯論開始時，達成共識所需的有效票數"),
-    "vote_thresholds.reduced": (
-        "下調後過關票數",
-        "門檻下調時刻後，達成共識所需的有效票數",
-    ),
-    "vote_thresholds.forced_stop": (
-        "強停採納票數",
-        "強制結算時至少要這麼多票才採納立場，否則未達共識",
+    "timeline.final_settle_offset_ms": (
+        "硬停結算時刻（封存後毫秒）",
+        "時間到直接停止辯論做最終結算；沒有立場達到末輪票數就亮紅燈",
     ),
     "confidence.light_scale[].min_votes": (
         "最低票數",
@@ -6476,12 +7108,17 @@ PLAIN_FIELD_WORDS = {
 #: 項，所以畫不出它的 fieldset；它仍然在表裡，由下面單獨一條斷言守住。
 PLAIN_SECTION_WORDS = {
     "": "基本",
-    "timeline_ms": "時間軸（毫秒）",
-    "vote_thresholds": "票數門檻",
+    "timeline": "時間軸",
+    "timeline.vote_rounds[]": "投票輪清單",
     "confidence": "燈號規則",
     "confidence.light_scale[]": "燈號階梯",
     "confidence.downgrades.few_independent_domains": "降級：獨立來源不足",
     "confidence.downgrades.low_trust_source": "降級：低可信來源",
+}
+
+PLAIN_SECTION_DESCRIPTIONS = {
+    "timeline": "辯論各輪開票時刻，全部從證據封存那一刻起算",
+    "timeline.vote_rounds[]": "一列一輪：何時開票、需要幾席同立場才結案",
 }
 
 
@@ -6509,6 +7146,22 @@ class SettingsPlainWordsTest(SettingsPageFixture, unittest.TestCase):
 
     def test_the_group_titles_say_exactly_what_the_spec_says(self):
         self.assertEqual(PLAIN_SECTION_WORDS, dict(settings.SECTION_LABELS))
+
+    def test_the_group_descriptions_say_exactly_what_the_spec_says(self):
+        self.assertEqual(
+            PLAIN_SECTION_DESCRIPTIONS, dict(settings.SECTION_DESCRIPTIONS)
+        )
+
+    def test_the_approved_group_descriptions_are_rendered(self):
+        body = self.page()
+
+        self.assertEqual(
+            1, body.count(PLAIN_SECTION_DESCRIPTIONS["timeline"])
+        )
+        self.assertEqual(
+            len(self.document()["timeline"]["vote_rounds"]),
+            body.count(PLAIN_SECTION_DESCRIPTIONS["timeline.vote_rounds[]"]),
+        )
 
     def test_the_table_covers_every_key_the_shipped_file_has_and_no_other(self):
         """漏一個鍵會讓它退回原鍵名；多一個是沒人會看到的死文案。"""
@@ -6541,20 +7194,23 @@ class SettingsPlainWordsTest(SettingsPageFixture, unittest.TestCase):
 
     def test_the_sentence_is_reachable_from_the_control_it_explains(self):
         """一句話擺在畫面上不算數：讀螢幕的人要從欄位本身走得到它。"""
-        control = self.input_of(self.page(), "vote_thresholds.initial")
+        path = "timeline.vote_rounds[0].threshold"
+        control = self.input_of(self.page(), path)
         described = re.search(r'aria-describedby="([^"]+)"', control).group(1).split()
 
-        self.assertIn("note-vote_thresholds.initial", described)
+        self.assertIn("note-{}".format(path), described)
 
     def test_nothing_in_the_shipped_file_is_left_untranslated(self):
         """FP 方向：整頁退回原鍵名也會通過「有標籤」那一條。"""
         self.assertNotIn(settings.UNTRANSLATED_NOTE, self.page())
 
     def test_every_group_title_is_the_chinese_one_the_spec_wrote(self):
+        vote_rounds = len(self.document()["timeline"]["vote_rounds"])
         rungs = len(self.document()["confidence"]["light_scale"])
         expected = (
-            [PLAIN_SECTION_WORDS[""], PLAIN_SECTION_WORDS["timeline_ms"],
-             PLAIN_SECTION_WORDS["vote_thresholds"]]
+            [PLAIN_SECTION_WORDS[""]]
+            + [PLAIN_SECTION_WORDS["timeline.vote_rounds[]"]] * vote_rounds
+            + [PLAIN_SECTION_WORDS["timeline"]]
             + [PLAIN_SECTION_WORDS["confidence.light_scale[]"]] * rungs
             + [
                 PLAIN_SECTION_WORDS["confidence.downgrades.few_independent_domains"],
@@ -6579,14 +7235,16 @@ class SettingsPlainWordsTest(SettingsPageFixture, unittest.TestCase):
 
         self.assertIn(settings.KIND_HINTS[settings.KIND_INTEGER], body)
         self.assertIn(settings.KIND_HINTS[settings.KIND_LIST], body)
-        self.assertRegex(body, r'<p[^>]*\bid="hint-vote_thresholds\.initial"')
+        self.assertRegex(
+            body, r'<p[^>]*\bid="hint-timeline\.vote_rounds\[0\]\.threshold"'
+        )
 
     def test_the_about_notes_in_the_file_are_shown_the_way_they_were(self):
         """``_about`` 照舊：仍然綁在它被寫在上面的那一區，文字一字不動。"""
         body = self.page()
 
-        self.assertIn('id="about-timeline_ms"', body)
-        self.assertIn(escape(self.shipped["timeline_ms"]["_about"]), body)
+        self.assertIn('id="about-timeline"', body)
+        self.assertIn(escape(self.shipped["timeline"]["_about"]), body)
         self.assertIn(escape(self.shipped["_about"]), body)
 
 
@@ -6619,49 +7277,49 @@ class SettingsUntranslatedKeyTest(SettingsPageFixture, unittest.TestCase):
         return found.group(1) if found else None
 
     def test_the_page_still_opens_when_a_key_has_no_translation(self):
-        self.add(timeline_ms__warm_up=30_000)
+        self.add(timeline__warm_up=30_000)
 
         self.assertEqual(200, self.get("/settings").status)
 
     def test_the_new_key_is_shown_under_the_name_the_file_spells(self):
-        self.add(timeline_ms__warm_up=30_000)
+        self.add(timeline__warm_up=30_000)
 
-        label = self.label_of(self.get("/settings").body, "timeline_ms.warm_up")
+        label = self.label_of(self.get("/settings").body, "timeline.warm_up")
 
         self.assertIn("warm_up", label)
         self.assertIn(settings.UNTRANSLATED_NOTE, label)
 
     def test_only_the_new_key_is_marked(self):
         """FP 方向：把整頁都標成尚未翻譯也會通過上面那一條。"""
-        self.add(timeline_ms__warm_up=30_000)
+        self.add(timeline__warm_up=30_000)
 
         self.assertEqual(
             1, self.get("/settings").body.count(settings.UNTRANSLATED_NOTE)
         )
 
     def test_the_new_key_can_still_be_typed_into(self):
-        self.add(timeline_ms__warm_up=30_000)
+        self.add(timeline__warm_up=30_000)
 
-        control = self.input_of(self.get("/settings").body, "timeline_ms.warm_up")
+        control = self.input_of(self.get("/settings").body, "timeline.warm_up")
 
         self.assertIn('value="30000"', control)
         self.assertNotIn("disabled", control)
 
     def test_what_is_typed_into_it_reaches_the_document_that_would_be_saved(self):
-        self.add(timeline_ms__warm_up=30_000)
+        self.add(timeline__warm_up=30_000)
 
         rebuilt = settings.candidate_document(
-            self.document(), self.edited(timeline_ms__warm_up="45000")
+            self.document(), self.edited(timeline__warm_up="45000")
         )
 
-        self.assertEqual(45_000, rebuilt["timeline_ms"]["warm_up"])
+        self.assertEqual(45_000, rebuilt["timeline"]["warm_up"])
 
     def test_the_only_thing_that_refuses_the_new_key_is_the_loader(self):
         """這一頁沒有替載入器擋任何東西——擋下來的是載入器自己的句子。"""
-        self.add(timeline_ms__warm_up=30_000)
+        self.add(timeline__warm_up=30_000)
 
         outcome = settings.save_rules(
-            self.rules_path, self.edited(timeline_ms__warm_up="45000"), self.data_root
+            self.rules_path, self.edited(timeline__warm_up="45000"), self.data_root
         )
 
         self.assertEqual(settings.REFUSED, outcome.state)
@@ -6684,7 +7342,7 @@ class SettingsUntranslatedKeyTest(SettingsPageFixture, unittest.TestCase):
         legends = re.findall(r"<legend>(.*?)</legend>", self.get("/settings").body)
 
         self.assertIn("降級：低可信來源", legends)
-        self.assertIn("時間軸（毫秒）", legends)
+        self.assertIn("時間軸", legends)
 
 
 # -- Ticket 12: after the fact ----------------------------------------------
@@ -8694,7 +9352,7 @@ class QuoteApiStaysOutOfTheResearchPipelineTest(unittest.TestCase):
     ALLOWED = {"quote_api_client.py", "webapp/outcome.py"}
 
     def package_files(self):
-        root = Path(pages.__file__).resolve().parent.parent
+        root = Path(live.__file__).resolve().parent.parent
         return [
             path
             for path in sorted(root.rglob("*.py"))
@@ -8702,7 +9360,7 @@ class QuoteApiStaysOutOfTheResearchPipelineTest(unittest.TestCase):
         ]
 
     def modules_naming(self, needle):
-        root = Path(pages.__file__).resolve().parent.parent
+        root = Path(live.__file__).resolve().parent.parent
         return {
             path.relative_to(root).as_posix()
             for path in self.package_files()

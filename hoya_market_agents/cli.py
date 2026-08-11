@@ -65,7 +65,7 @@ from .system_preflight import (
 )
 
 CODE_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DATA_ROOT = CODE_ROOT.parent / "hoya-bit-market-agents_data"
+DEFAULT_DATA_ROOT = CODE_ROOT.parent / "AI-agnets-debating-chamber_data"
 
 PROVIDERS = {"fake": FakeProvider}
 
@@ -77,7 +77,7 @@ EXIT_REJECTED = 2
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="python -m hoya_market_agents",
-        description="Hoya Bit market agents controller (WSL, Python 3 standard library only).",
+        description="AI agnets debating chamber controller (WSL, Python 3 standard library only).",
         epilog=(
             "另有 submit-seat --run-id ... --seat-id ... --attempt-id ... "
             "[--data-root ...]：把一個固定 GPT 席的 raw 輸出從 stdin 寫入 run inbox。"
@@ -92,7 +92,7 @@ def build_parser():
     launch.add_argument(
         "--data-root",
         default=str(DEFAULT_DATA_ROOT),
-        help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
+        help="Data Root 路徑（預設為 Code Root 旁的 AI-agnets-debating-chamber_data）",
     )
     launch.add_argument(
         "--no-live",
@@ -136,7 +136,7 @@ def build_parser():
     run.add_argument(
         "--data-root",
         default=str(DEFAULT_DATA_ROOT),
-        help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
+        help="Data Root 路徑（預設為 Code Root 旁的 AI-agnets-debating-chamber_data）",
     )
     prepare = subcommands.add_parser(
         "prepare-launch",
@@ -203,7 +203,7 @@ def build_parser():
     preflight.add_argument(
         "--data-root",
         default=str(DEFAULT_DATA_ROOT),
-        help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
+        help="Data Root 路徑（預設為 Code Root 旁的 AI-agnets-debating-chamber_data）",
     )
     fixture = subcommands.add_parser(
         "render-fixture", help="驗證並渲染固定 Ticket #10 報告 fixture"

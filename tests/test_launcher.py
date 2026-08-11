@@ -956,7 +956,7 @@ class LauncherTest(unittest.TestCase):
         self.assertFalse((self.data_root / "runs").exists())
 
     def test_data_root_inside_code_root_exits_two_without_creating_a_run(self):
-        forbidden_root = CODE_ROOT / "hoya-bit-market-agents_data"
+        forbidden_root = CODE_ROOT / "AI-agnets-debating-chamber_data"
 
         code = run_launch(
             QUESTION,

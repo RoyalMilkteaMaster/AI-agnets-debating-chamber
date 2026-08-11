@@ -1,4 +1,4 @@
-"""WSL Python controller for the Hoya Bit market research run.
+"""WSL Python controller for the AI agnets debating chamber research run.
 
 The controller owns time, process orchestration, validation, merging and
 rendering. It never produces a market direction of its own.

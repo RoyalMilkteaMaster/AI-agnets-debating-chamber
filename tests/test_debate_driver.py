@@ -24,13 +24,11 @@ from hoya_market_agents.debate_driver import (
     CORE_REPORT_SCHEMA,
     DebateDriver,
     assemble_market_report,
-    assign_challenges,
     build_turns,
-    challenge_message_id,
     run_after_seal,
     validate_core_narrative,
 )
-from hoya_market_agents.debate_rules import debate_rules
+from hoya_market_agents.debate_rules import VoteRound, debate_rules
 from hoya_market_agents.debate_state_machine import content_sha256, stances_for
 from hoya_market_agents.report_audit_renderer import render_debate_html
 from hoya_market_agents.report_contract import (
@@ -284,48 +282,10 @@ class ScriptedDebateRunner:
     def _payload(self, seat_id, slug):
         if slug == "opening":
             return self._vote(seat_id, self.stances[seat_id])
-        if slug == "r1":
-            return {
-                "seat_id": seat_id,
-                "challenges": [
-                    {
-                        "target_seat_id": other,
-                        "public_reason": "本席以已引用的證據反駁 {} 的公開立場。".format(other),
-                        "evidence_ids": ["{}-01".format(seat_id)],
-                    }
-                    for other in self._challenge_targets(seat_id)
-                ],
-                "response": {
-                    "public_reason": "本席回應反方挑戰並維持原立場。",
-                    "evidence_ids": ["{}-01".format(seat_id)],
-                    "responds_to": list(self.responds_to.get(seat_id, ())),
-                },
-                "final_vote": self._vote(seat_id, self.stances[seat_id]),
-            }
         stance = self.revotes.get((seat_id, slug), self.stances[seat_id])
         changed = stance != self.stances[seat_id]
         self.stances[seat_id] = stance
         return self._vote(seat_id, stance, changed=changed)
-
-    def _challenge_targets(self, seat_id):
-        """Opposing seats, or — when the room agrees — every other seat.
-
-        A real seat writes its challenges against whoever the round 1 prompt
-        names, so a unanimous room's scrutiny round has to be answerable here
-        too; refusing to write one would test the double, not the driver.
-        """
-        opposing = [
-            other
-            for other in SEAT_IDS
-            if self.stances.get(other) not in (None, self.stances[seat_id])
-        ]
-        if opposing:
-            return opposing
-        return [
-            other
-            for other in SEAT_IDS
-            if other != seat_id and self.stances.get(other) is not None
-        ]
 
     def _vote(self, seat_id, stance, changed=False):
         return {
@@ -643,7 +603,7 @@ CONCLUSION_FIRST_RULE = (
 )
 
 # Ticket 03 範圍第 3 條的原文語意，逐字寫在測試裡，不從實作 import 回來。
-PERSUASION_GOAL = "你的目標是以證據說服對立席位改票，使己方達到當前門檻"
+PERSUASION_GOAL = "用證據說服對方"
 
 
 QUESTION_BY_TYPE = {
@@ -700,9 +660,7 @@ class StanceVocabularyTest(DebateDriverTestCase):
                 )
                 self.assertEqual(
                     stances,
-                    turns["r1"].schema["properties"]["final_vote"]["properties"]["stance"][
-                        "enum"
-                    ],
+                    turns["r1"].schema["properties"]["stance"]["enum"],
                 )
                 self.assertEqual(
                     stances, turns["r2"].schema["properties"]["stance"]["enum"]
@@ -775,38 +733,26 @@ class DebateRoundTest(DebateDriverTestCase):
         self.assertEqual("bullish", votes["adopted_stance"])
         self.assertEqual(6, votes["tally"]["bullish"])
         self.assertLess(votes["stop_elapsed_ms"], THRESHOLD_FIVE_FROM_MS)
-        self.assertTrue(votes["challenge_completed"])
-        # 少數票先 relay，六票停止時異議仍留在正式紀錄裡。
+        self.assertFalse(votes["challenge_completed"])
         self.assertEqual(7, votes["valid_vote_count"])
         self.assertEqual("counter-evidence", votes["dissent"][0]["seat_id"])
         self.assertEqual([], [note for note in driver.notes if note["seat_id"]])
         self.assertEqual(votes, self.votes_file())
 
-    def test_a_seat_may_cite_its_own_incoming_challenge_ids(self):
-        _, incoming = assign_challenges(BULLISH_SIX)
-        responds_to = {
-            seat_id: [challenge_message_id(author, seat_id) for author in authors]
-            for seat_id, authors in incoming.items()
-        }
-        # 這一席只回應排程表上的最後一則挑戰，target_seat_id 必須跟著它走。
-        responds_to["counter-evidence"] = responds_to["counter-evidence"][-1:]
-        runner = self.build_runner(BULLISH_SIX, responds_to=responds_to)
+    def test_a_free_turn_has_no_assigned_target_metadata(self):
+        runner = self.build_runner(BULLISH_SIX)
 
         driver, votes = self.drive(runner)
 
-        responses = {
-            entry["seat_id"]: entry
+        free_messages = [
+            entry
             for entry in driver.machine.entries
-            if entry.get("kind") == "response"
-        }
-        self.assertEqual(7, len(responses))
-        self.assertEqual(
-            [challenge_message_id("social-macro", "counter-evidence")],
-            responses["counter-evidence"]["responds_to"],
-        )
-        self.assertEqual(
-            "social-macro", responses["counter-evidence"]["target_seat_id"]
-        )
+            if entry.get("kind") == "final_vote"
+        ]
+        self.assertTrue(free_messages)
+        for entry in free_messages:
+            self.assertIsNone(entry["target_seat_id"])
+            self.assertEqual([], entry["responds_to"])
         self.assertEqual("consensus", votes["consensus_status"])
 
     def test_five_votes_after_t7_stop_the_debate_at_the_lower_threshold(self):
@@ -824,7 +770,7 @@ class DebateRoundTest(DebateDriverTestCase):
         self.assertGreaterEqual(votes["stop_elapsed_ms"], THRESHOLD_FIVE_FROM_MS)
         self.assertLess(votes["stop_elapsed_ms"], FORCE_STOP_MS)
 
-    def test_four_votes_are_adopted_only_at_the_forced_stop(self):
+    def test_four_votes_are_adopted_at_the_fourth_ballot(self):
         stances = dict.fromkeys(SEAT_IDS[:4], "bullish")
         stances.update(
             {"news": "bearish", "social-macro": "bearish", "counter-evidence": "neutral"}
@@ -836,8 +782,8 @@ class DebateRoundTest(DebateDriverTestCase):
 
         _, votes = self.drive(runner)
 
-        self.assertEqual("forced_stop_4_votes", votes["stop_reason"])
-        self.assertEqual(FORCE_STOP_MS, votes["stop_elapsed_ms"])
+        self.assertEqual("consensus_4_votes", votes["stop_reason"])
+        self.assertEqual(self.seal_ms + 330_000, votes["stop_elapsed_ms"])
         self.assertEqual(4, votes["threshold_required"])
         self.assertEqual("bullish", votes["adopted_stance"])
         self.assertEqual(7, votes["valid_vote_count"])
@@ -897,10 +843,9 @@ class DebateRoundTest(DebateDriverTestCase):
         driver, votes = self.drive(runner)
 
         self.assertEqual("consensus", votes["consensus_status"])
-        self.assertEqual(6, votes["valid_vote_count"])
-        # 這一席只發布了初始立場，沒完成第一輪：有提名無有效票。
-        self.assertEqual("provisional", _seat_row(votes, "news")["state"])
-        self.assertIsNone(_seat_row(votes, "news")["final_stance"])
+        self.assertEqual(7, votes["valid_vote_count"])
+        self.assertEqual("valid", _seat_row(votes, "news")["state"])
+        self.assertEqual("bullish", _seat_row(votes, "news")["final_stance"])
         self.assertFalse(votes["challenge_completed"])
         self.assertIn("news-r1", runner.cancelled)
         self.assertIn(
@@ -954,10 +899,10 @@ class DebateRoundTest(DebateDriverTestCase):
         )
         self.assertEqual("bullish", report_row["initial_stance"])
         self.assertNotEqual("未取得初始票。", report_row["initial_public_reason"])
-        self.assertIsNone(report_row["final_stance"])
+        self.assertEqual("bullish", report_row["final_stance"])
 
-        # 3) 沒有第一輪就沒有有效票；這條規則只由狀態機認定。
-        self.assertNotIn("news", driver.machine.valid_votes())
+        # 3) 沒有自由辯論回覆時，opening 仍是開票牆上的最新公開立場。
+        self.assertIn("news", driver.machine.valid_votes())
         self.assertEqual("provisional", driver.machine.seats["news"].state)
         self.assertFalse(votes["challenge_completed"])
 
@@ -967,9 +912,9 @@ class DebateRoundTest(DebateDriverTestCase):
             )
         )
         self.assertIn("news", diagnostics["seats_in_public_record"])
-        self.assertNotIn("news", diagnostics["seats_completing_first_round"])
+        self.assertNotIn("news", diagnostics["completed_free_debate_turns"]["r1"])
         self.assertIn(
-            "position_published_without_first_round",
+            "deadline_missed",
             [note["reason"] for note in driver.notes if note["seat_id"] == "news"],
         )
 
@@ -991,7 +936,7 @@ class DebateRoundTest(DebateDriverTestCase):
         # 七席都公開講過話，紀錄必須留著；開場原文就是每一席的最終票。
         self.assertEqual(["bullish"] * 7, [row["initial_stance"] for row in votes["votes"]])
         self.assertEqual(["bullish"] * 7, [row["final_stance"] for row in votes["votes"]])
-        self.assertEqual((), driver.viable)
+        self.assertEqual({}, driver.completed_turns)
         self.assertEqual(list(SEAT_IDS), list(driver.published))
         self.assertEqual(votes, self.votes_file())
 
@@ -1032,8 +977,7 @@ class DebateRoundTest(DebateDriverTestCase):
         self.assertEqual(list(SEAT_IDS), list(driver.published))
         self.assertEqual("consensus", votes["consensus_status"])
 
-    def test_a_room_with_a_single_published_position_has_nobody_to_pair(self):
-        # 只有一席公開發言時，連輪替配對都湊不出對象：誠實退化，不得炸掉整場。
+    def test_a_room_with_a_single_published_position_still_finishes(self):
         runner = self.build_runner(
             UNANIMOUS_SEVEN,
             wave_advance_ms={"opening": 30_000, "r2": 60_000, "r3": 60_000},
@@ -1042,21 +986,14 @@ class DebateRoundTest(DebateDriverTestCase):
 
         driver, votes = self.drive(runner)
 
-        self.assertEqual(
-            ["{}-opening".format(seat_id) for seat_id in SEAT_IDS], runner.started
-        )
-        self.assertEqual(
-            1,
-            len(
-                [
-                    note
-                    for note in driver.notes
-                    if note["reason"] == "skipped_r1_wave_no_opposing_pair"
-                ]
-            ),
-        )
+        expected = ["{}-opening".format(seat_id) for seat_id in SEAT_IDS]
+        expected += ["{}-r{}".format(SEAT_IDS[0], index) for index in (1, 2, 3)]
+        self.assertEqual(expected, runner.started)
         self.assertEqual([SEAT_IDS[0]], list(driver.published))
-        self.assertEqual((), driver.viable)
+        self.assertEqual(
+            {"r1": [SEAT_IDS[0]], "r2": [SEAT_IDS[0]], "r3": [SEAT_IDS[0]]},
+            driver.completed_turns,
+        )
         self.assertEqual("failed_insufficient_valid_votes", votes["consensus_status"])
 
     def test_a_failed_dispatch_is_recorded_instead_of_being_swallowed(self):
@@ -1085,19 +1022,13 @@ class DebateRoundTest(DebateDriverTestCase):
 
 
 class FirstRoundBudgetTest(DebateDriverTestCase):
-    """開場收集預算不得吃掉第一輪：吃掉了整場就沒有任何有效票。
-
-    run 20260802T022316Z 的七席開場全部發布（315505-360080ms），第一輪七次呼叫
-    卻只剩 24 秒，全部 timeout，只有最快的一席回得來，於是
-    ``forced_stop_insufficient_valid_votes``、valid_vote_count 0。
-    """
+    """Each free turn keeps five seconds for relay and wall-time tallying."""
 
     def test_openings_spread_across_the_window_still_get_a_first_round(self):
         latency_ms = {
             (seat_id, "opening"): value
             for seat_id, value in REAL_OPENING_LATENCY_MS.items()
         }
-        # 第一輪比開場更長：真實 run 裡 24 秒的殘餘預算讓整波全滅。
         latency_ms.update(
             {(seat_id, "r1"): 30_000 for seat_id in SEAT_IDS}
         )
@@ -1106,22 +1037,19 @@ class FirstRoundBudgetTest(DebateDriverTestCase):
         driver, votes = self.drive(runner)
 
         first_round = [item for item in runner.started if item.endswith("-r1")]
-        challenges = [
+        free_votes = [
             entry
             for entry in driver.machine.entries
-            if entry.get("kind") == "challenge"
+            if entry.get("kind") == "final_vote" and entry.get("round") == 1
         ]
-        self.assertTrue(first_round, "第一輪必須被派發")
-        self.assertTrue(challenges, "第一輪必須真的產生挑戰")
-        self.assertTrue(driver.viable, "至少要有一組完成第一輪的對手")
+        self.assertTrue(first_round, "第一輪未過後必須派發自由辯論")
+        self.assertTrue(free_votes, "自由辯論回覆必須原文進公開紀錄")
         self.assertGreaterEqual(votes["valid_vote_count"], 4)
         self.assertNotEqual(
             "forced_stop_insufficient_valid_votes", votes["stop_reason"]
         )
 
-    def test_a_bearish_and_neutral_room_pairs_every_seat(self):
-        # viable_seats 的本意只是排除「全場單一立場」；沒有 bullish 不代表
-        # neutral 不能被挑戰，也不代表 neutral 不能挑戰別人。
+    def test_a_bearish_and_neutral_room_calls_every_published_seat(self):
         runner = self.build_runner(
             BEARISH_FIVE_NEUTRAL_TWO,
             wave_advance_ms={"opening": 30_000, "r1": 50_000},
@@ -1133,15 +1061,13 @@ class FirstRoundBudgetTest(DebateDriverTestCase):
             ["{}-r1".format(seat_id) for seat_id in SEAT_IDS],
             [item for item in runner.started if item.endswith("-r1")],
         )
-        self.assertEqual(tuple(SEAT_IDS), driver.viable)
-        for author, targets in driver.assignment.items():
-            for target in targets:
-                self.assertNotEqual(
-                    BEARISH_FIVE_NEUTRAL_TWO[author],
-                    BEARISH_FIVE_NEUTRAL_TWO[target],
-                    (author, target),
-                )
-        self.assertTrue(votes["challenge_completed"])
+        self.assertEqual(list(SEAT_IDS), driver.completed_turns["r1"])
+        self.assertFalse(
+            any(
+                entry.get("kind") in ("challenge", "response")
+                for entry in driver.machine.entries
+            )
+        )
         self.assertEqual(7, votes["valid_vote_count"])
 
     def test_two_stances_in_the_room_always_dispatch_the_first_round(self):
@@ -1164,29 +1090,12 @@ class FirstRoundBudgetTest(DebateDriverTestCase):
                     ["{}-r1".format(seat_id) for seat_id in driver.published],
                     [item for item in runner.started if item.endswith("-r1")],
                 )
-                self.assertNotIn(
-                    "skipped_r1_wave_no_opposing_pair",
-                    [note["reason"] for note in driver.notes],
-                )
-
-
-SCRUTINY_RULE = (
-    "全場立場一致；本輪為壓力測試：請針對目標席位的證據品質提出質疑，"
-    "或從快照中找出最強反證；若審視後仍維持立場，照實說明理由。"
-)
+                for prompt in runner.prompts["r1"]:
+                    self.assertIn(PERSUASION_GOAL, prompt)
 
 
 class UnanimousRoomScrutinyTest(DebateDriverTestCase):
-    """Ticket R8 修訂一：全場一致是最強共識，不得判成流局。
-
-    run 20260802T043728Z-btc-eth-f8ea46 的七席開場立場完全一致，「第一輪必須挑戰
-    相反立場」讓整波 r1 被跳過、零有效票，乾等到 T+10 才流局。修訂後同一個房間
-    要跑完魔鬼代言人輪，發言的席位都拿到有效票，並在最早的門檻點收工。
-
-    Ticket 03 把「七席全數同立場」改判為盲投直過，所以魔鬼代言人輪剩下的適用範
-    圍是「立場一致、但還缺一席開場」——§11.3 明文保留給 6 票以下的原規則。這裡
-    缺的那一席由真實的 provider 超時造成（實測 run 20260802T022316Z 的形狀）。
-    """
+    """Six matching openings still use the same free-debate path."""
 
     def latencies(self):
         """實測開場延遲，配上落在第一輪牆之內的第一輪回覆。"""
@@ -1205,55 +1114,40 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
         latency_ms[(SCRUTINY_SILENT_SEAT, "opening")] = 10_000_000
         return latency_ms
 
-    def test_a_unanimous_room_runs_a_scrutiny_round_and_reaches_consensus(self):
+    def test_matching_openings_run_free_debate_and_reach_their_first_threshold(self):
         runner = self.build_latency_runner(UNANIMOUS_SEVEN, self.latencies())
 
         driver, votes = self.drive(runner)
 
         self.assertEqual(
-            ["{}-r1".format(seat_id) for seat_id in SCRUTINY_SPEAKING_SEATS],
-            [item for item in runner.started if item.endswith("-r1")],
+            set(driver.published),
+            {
+                item[: -len("-r1")]
+                for item in runner.started
+                if item.endswith("-r1")
+            },
         )
-        self.assertEqual(SCRUTINY_SPEAKING_SEATS, driver.viable)
-        self.assertEqual("consensus_6_votes", votes["stop_reason"])
+        self.assertEqual(set(driver.published), set(driver.completed_turns["r1"]))
+        self.assertEqual("consensus_5_votes", votes["stop_reason"])
         self.assertEqual("consensus", votes["consensus_status"])
         self.assertEqual("bullish", votes["adopted_stance"])
-        self.assertEqual(6, votes["tally"]["bullish"])
-        self.assertTrue(votes["challenge_completed"])
-        self.assertLess(votes["stop_elapsed_ms"], THRESHOLD_FIVE_FROM_MS)
-        self.assertNotIn(
-            "skipped_r1_wave_no_opposing_pair",
-            [note["reason"] for note in driver.notes],
-        )
+        self.assertEqual(5, votes["tally"]["bullish"])
+        self.assertFalse(votes["challenge_completed"])
+        self.assertEqual(self.seal_ms + 240_000, votes["stop_elapsed_ms"])
 
-    def test_every_scrutiny_challenge_rotates_the_roster_and_is_marked_for_audit(self):
+    def test_free_debate_creates_no_challenge_audit_records(self):
         runner = self.build_latency_runner(UNANIMOUS_SEVEN, self.latencies())
 
         driver, _ = self.drive(runner)
 
-        challenges = {
-            entry["seat_id"]: entry
-            for entry in driver.machine.entries
-            if entry.get("kind") == "challenge"
-        }
-        self.assertEqual(set(SCRUTINY_SPEAKING_SEATS), set(challenges))
-        self.assertEqual(
-            {"scrutiny"}, {entry["challenge_mode"] for entry in challenges.values()}
-        )
-        # roster 順序輪替：每席挑戰下一席，最後一席挑戰第一席。
-        rotated = [
-            SCRUTINY_SPEAKING_SEATS[(index + 1) % len(SCRUTINY_SPEAKING_SEATS)]
-            for index in range(len(SCRUTINY_SPEAKING_SEATS))
-        ]
-        self.assertEqual(
-            rotated,
-            [
-                challenges[seat_id]["target_seat_id"]
-                for seat_id in SCRUTINY_SPEAKING_SEATS
-            ],
+        self.assertFalse(
+            any(
+                entry.get("kind") in ("challenge", "response")
+                for entry in driver.machine.entries
+            )
         )
 
-    def test_the_scrutiny_prompt_asks_for_a_stress_test_not_a_fake_opponent(self):
+    def test_matching_room_prompt_uses_free_persuasion_wording(self):
         runner = self.build_runner(
             UNANIMOUS_SEVEN,
             wave_advance_ms={"opening": 30_000, "r1": 50_000},
@@ -1264,10 +1158,11 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
 
         self.assertEqual(len(SCRUTINY_SPEAKING_SEATS), len(runner.prompts["r1"]))
         for prompt in runner.prompts["r1"]:
-            self.assertIn(SCRUTINY_RULE, prompt)
-            self.assertNotIn("持相反立場", prompt)
+            for wording in (PERSUASION_GOAL, "不盲從", "不死守"):
+                self.assertIn(wording, prompt)
+            self.assertNotIn("你必須挑戰", prompt)
 
-    def test_a_mixed_room_keeps_the_opposing_wording_and_the_opposing_mode(self):
+    def test_mixed_room_uses_the_same_free_persuasion_wording(self):
         runner = self.build_runner(
             BEARISH_FIVE_NEUTRAL_TWO,
             wave_advance_ms={"opening": 30_000, "r1": 50_000},
@@ -1275,15 +1170,15 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
 
         driver, votes = self.drive(runner)
 
-        modes = {
-            entry["challenge_mode"]
-            for entry in driver.machine.entries
-            if entry.get("kind") == "challenge"
-        }
-        self.assertEqual({"opposing"}, modes)
         for prompt in runner.prompts["r1"]:
-            self.assertIn("持相反立場", prompt)
-            self.assertNotIn(SCRUTINY_RULE, prompt)
+            self.assertIn(PERSUASION_GOAL, prompt)
+            self.assertNotIn("主席排定", prompt)
+        self.assertFalse(
+            any(
+                entry.get("kind") in ("challenge", "response")
+                for entry in driver.machine.entries
+            )
+        )
         self.assertEqual(7, votes["valid_vote_count"])
 
 
@@ -1295,7 +1190,10 @@ class PersuasionPromptTest(DebateDriverTestCase):
     """
 
     def test_every_debate_round_prompt_states_the_persuasion_goal(self):
-        runner = self.build_runner(BEARISH_FIVE_NEUTRAL_TWO)
+        room = dict.fromkeys(SEAT_IDS[:3], "bullish")
+        room.update(dict.fromkeys(SEAT_IDS[3:5], "bearish"))
+        room.update(dict.fromkeys(SEAT_IDS[5:], "neutral"))
+        runner = self.build_runner(room)
 
         self.drive(runner)
 
@@ -1307,7 +1205,10 @@ class PersuasionPromptTest(DebateDriverTestCase):
 
     def test_the_blind_opening_prompt_carries_no_persuasion_goal(self):
         # 開場是互不可見的盲投：這一刻場上還沒有任何立場可以被說服。
-        runner = self.build_runner(BEARISH_FIVE_NEUTRAL_TWO)
+        room = dict.fromkeys(SEAT_IDS[:3], "bullish")
+        room.update(dict.fromkeys(SEAT_IDS[3:5], "bearish"))
+        room.update(dict.fromkeys(SEAT_IDS[5:], "neutral"))
+        runner = self.build_runner(room)
 
         self.drive(runner)
 
@@ -1316,37 +1217,29 @@ class PersuasionPromptTest(DebateDriverTestCase):
             self.assertNotIn(PERSUASION_GOAL, prompt)
 
     def test_the_goal_names_the_threshold_this_round_s_votes_will_face(self):
-        """「當前門檻」是這一輪的票被計入時的門檻，不是派工那一刻的門檻。
-
-        最後一輪的內容要等自己的視窗（T+8:45）打開才 relay，那時門檻已經降成
-        五票；照派工時刻報六票，等於要席位去湊一個它的票永遠碰不到的目標。
-        """
-        runner = self.build_runner(BEARISH_FIVE_NEUTRAL_TWO)
+        """Each turn names the threshold at its next discrete ballot."""
+        room = dict.fromkeys(SEAT_IDS[:3], "bullish")
+        room.update(dict.fromkeys(SEAT_IDS[3:5], "bearish"))
+        room.update(dict.fromkeys(SEAT_IDS[5:], "neutral"))
+        runner = self.build_runner(room)
 
         self.drive(runner)
 
         expected = {
-            "r1": RULES.initial_votes,
-            "r2": RULES.initial_votes,
-            "r3": RULES.reduced_votes,
+            "r1": RULES.vote_rounds[1].threshold,
+            "r2": RULES.vote_rounds[2].threshold,
+            "r3": RULES.vote_rounds[3].threshold,
         }
-        # 這一版的預期值必須真的分歧，否則測不出「跟著視窗走」這件事。
-        self.assertNotEqual(expected["r2"], expected["r3"])
+        self.assertEqual([6, 5, 4], list(expected.values()))
         for slug, votes in expected.items():
             self.assertIn(slug, runner.prompts)
             for prompt in runner.prompts[slug]:
                 self.assertIn(
-                    "{}（{} 票）".format(PERSUASION_GOAL, votes), prompt, slug
+                    "目標是達到下一輪門檻（{} 票）".format(votes), prompt, slug
                 )
 
     def test_a_late_revote_wave_names_the_threshold_it_is_dispatched_under(self):
-        """Reviewer B 第 1 輪 [建議]：r2 延後到門檻降低之後才產 prompt。
-
-        補上 B 造出的 operand-replacement 缺口：把
-        ``max(elapsed, relay_from)`` 換成單獨的 ``relay_from`` 時，r2 永遠報六
-        票，這個案例會紅。第一席的 prompt 在門檻降低前產出（六票），其餘席位
-        的 prompt 產在 r2 波推進之後（五票）。
-        """
+        """A slow wave cannot change the threshold of its next fixed wall."""
         runner = self.build_runner(
             BEARISH_FIVE_NEUTRAL_TWO,
             wave_advance_ms={"opening": 30_000, "r1": 50_000, "r2": 170_000},
@@ -1354,19 +1247,8 @@ class PersuasionPromptTest(DebateDriverTestCase):
 
         self.drive(runner)
 
-        named = [
-            RULES.reduced_votes
-            if "（{} 票）".format(RULES.reduced_votes) in prompt
-            else RULES.initial_votes
-            for prompt in runner.prompts["r2"]
-        ]
-        self.assertEqual(RULES.initial_votes, named[0])
-        self.assertEqual(RULES.reduced_votes, named[-1])
-        self.assertEqual(
-            {RULES.initial_votes, RULES.reduced_votes},
-            set(named),
-            "r2 波跨過 T+8:00，門檻必須跟著降階",
-        )
+        for prompt in runner.prompts["r2"]:
+            self.assertIn("目標是達到下一輪門檻（5 票）", prompt)
 
     def test_a_unanimous_scrutiny_round_still_states_the_same_goal(self):
         # 全場一致時沒有對立席位，但那一輪仍然是為了移動票數而存在。
@@ -1424,8 +1306,7 @@ class UnanimousBlindPassDriverTest(DebateDriverTestCase):
         self.assertEqual({"position"}, {entry["kind"] for entry in seat_messages})
         self.assertEqual(len(SEAT_IDS), len(seat_messages))
         self.assertEqual(list(SEAT_IDS), list(driver.published))
-        self.assertEqual((), driver.viable)
-        self.assertEqual({}, driver.assignment)
+        self.assertEqual({}, driver.completed_turns)
 
     def test_the_run_stops_at_the_last_opening_not_at_the_forced_stop(self):
         # 直過的價值就是「最快被辨識」：時間不能拖到 T+10 才結算。
@@ -1438,15 +1319,10 @@ class UnanimousBlindPassDriverTest(DebateDriverTestCase):
         self.assertEqual(SEAL_MS + 30_000, votes["stop_elapsed_ms"])
         self.assertLess(votes["stop_elapsed_ms"], CHALLENGE_DEADLINE_MS)
 
-    def test_a_configured_six_vote_threshold_also_skips_every_debate_round(self):
-        """Reviewer B 第 1 輪 [重要] ②：非預設門檻下仍派出整輪 r1。
-
-        停止發生在 ``_publish_position`` 內部那一則 relay 裡，而不是開場波結束
-        時。預設 7 票看不出來——七席一致時停止後 ``viable_seats`` 本來就是空
-        的，沒有東西可派；門檻設 6 時最後一席是反方，場上有兩種立場，停止之後
-        那一次 ``_call_first_round`` 就會把七席 r1 全派出去。
-        """
-        rules = replace(RULES, unanimous_blind_pass_votes=6)
+    def test_a_configured_six_vote_first_round_is_not_a_blind_pass(self):
+        rounds = list(RULES.vote_rounds)
+        rounds[0] = VoteRound(rounds[0].open_offset_ms, 6)
+        rules = replace(RULES, vote_rounds=tuple(rounds))
         runner = self.build_runner(
             BULLISH_SIX, wave_advance_ms={"opening": 30_000}
         )
@@ -1457,7 +1333,7 @@ class UnanimousBlindPassDriverTest(DebateDriverTestCase):
             ["{}-opening".format(seat_id) for seat_id in SEAT_IDS], runner.started
         )
         self.assertEqual([], [item for item in runner.started if item.endswith("-r1")])
-        self.assertEqual("unanimous_blind_pass", votes["stop_reason"])
+        self.assertEqual("consensus_6_votes", votes["stop_reason"])
         self.assertEqual(6, votes["threshold_required"])
         self.assertEqual("bullish", votes["adopted_stance"])
         self.assertEqual(7, votes["valid_vote_count"])
@@ -1466,7 +1342,7 @@ class UnanimousBlindPassDriverTest(DebateDriverTestCase):
         self.assertEqual(
             ["counter-evidence"], [item["seat_id"] for item in votes["dissent"]]
         )
-        self.assertEqual((), driver.viable)
+        self.assertEqual({}, driver.completed_turns)
 
     def test_a_six_one_blind_opening_still_runs_the_whole_debate(self):
         """驗收條件二：6/1 盲投照常進辯論，行為與現制一致。"""
@@ -1481,12 +1357,9 @@ class UnanimousBlindPassDriverTest(DebateDriverTestCase):
             [item for item in runner.started if item.endswith("-r1")],
         )
         self.assertEqual("consensus_6_votes", votes["stop_reason"])
-        self.assertEqual(tuple(SEAT_IDS), driver.viable)
-        self.assertTrue(
-            any(
-                entry.get("kind") == "challenge"
-                for entry in driver.machine.entries
-            )
+        self.assertEqual(list(SEAT_IDS), driver.completed_turns["r1"])
+        self.assertFalse(
+            any(entry.get("kind") in ("challenge", "response") for entry in driver.machine.entries)
         )
 
 
@@ -1508,53 +1381,49 @@ class RevisedScheduleTimingTest(DebateDriverTestCase):
         )
         return latency_ms
 
-    def test_every_seat_earns_a_valid_vote_inside_the_first_round_wall(self):
+    def test_openings_inside_the_first_wall_become_valid_without_a_turn_reply(self):
         runner = self.build_latency_runner(
             BEARISH_FIVE_NEUTRAL_TWO, self.latencies()
         )
 
         driver, votes = self.drive(runner)
 
-        self.assertEqual(7, votes["valid_vote_count"])
-        self.assertTrue(votes["challenge_completed"])
-        self.assertEqual(tuple(SEAT_IDS), driver.viable)
-        # 開場與第一輪是有效票的必經之路：這兩輪不准有任何一席掉隊。
-        self.assertEqual(
-            [], [note for note in driver.notes if note["turn"] in ("opening", "r1")]
+        self.assertEqual(6, votes["valid_vote_count"])
+        self.assertFalse(votes["challenge_completed"])
+        self.assertEqual("missing", _seat_row(votes, "social-macro")["state"])
+        reasons = [
+            note["reason"]
+            for note in driver.notes
+            if note["seat_id"] == "social-macro"
+        ]
+        self.assertTrue(
+            any("timeout" in reason or reason == "deadline_missed" for reason in reasons)
         )
 
-    def test_a_fast_seat_gets_its_first_round_call_without_waiting_for_a_slow_one(self):
-        # 快席不等慢席：只要公開紀錄裡出現第二種立場，該席的 r1 立刻派出去。
+    def test_free_debate_starts_only_after_the_first_ballot_wall(self):
         runner = self.build_latency_runner(
             BEARISH_FIVE_NEUTRAL_TWO, self.latencies()
         )
 
         self.drive(runner)
 
-        slowest_opening = DEBATE_START_MS + max(REAL_OPENING_LATENCY_MS.values())
-        self.assertLess(
-            runner.dispatched_at_ms["counter-evidence-r1"], slowest_opening
-        )
-        self.assertLess(runner.dispatched_at_ms["onchain-r1"], slowest_opening)
-        # 慢席自己的 r1 仍然在它交出開場之後才派發，不是提前亂猜。
-        self.assertGreaterEqual(
-            runner.dispatched_at_ms["social-macro-r1"],
-            DEBATE_START_MS + REAL_OPENING_LATENCY_MS["social-macro"],
-        )
+        first_wall = self.seal_ms + RULES.vote_rounds[0].open_offset_ms
+        for dispatch_id, dispatched_at in runner.dispatched_at_ms.items():
+            if dispatch_id.endswith("-r1"):
+                self.assertGreaterEqual(dispatched_at, first_wall)
 
-    def test_six_votes_in_the_first_round_stop_before_the_first_round_wall(self):
-        runner = self.build_latency_runner(BULLISH_SIX, self.latencies())
+    def test_six_votes_stop_at_the_second_ballot_wall(self):
+        latency_ms = self.latencies()
+        latency_ms[("social-macro", "opening")] = 50_000
+        runner = self.build_latency_runner(BULLISH_SIX, latency_ms)
 
         _, votes = self.drive(runner)
 
         self.assertEqual("consensus_6_votes", votes["stop_reason"])
         self.assertEqual(6, votes["tally"]["bullish"])
-        self.assertLessEqual(votes["stop_elapsed_ms"], CHALLENGE_DEADLINE_MS)
+        self.assertEqual(self.seal_ms + 150_000, votes["stop_elapsed_ms"])
 
-    def test_a_hundred_second_opening_still_completes_that_seat_s_first_round(self):
-        # 第一輪牆＝封存＋3:00，支援的最慢鏈是 175 秒（180 秒窗 − 5 秒 relay
-        # 裕度）。100 秒開場＋60 秒挑戰＝160 秒仍在窗內：慢席不該只因為慢
-        # 就失去有效票，因為少一張票就可能讓六票同向的共識不成立。
+    def test_an_opening_past_the_first_wall_is_excluded(self):
         latency_ms = self.latencies()
         latency_ms[("social-macro", "opening")] = 100_000
         latency_ms[("social-macro", "r1")] = 60_000
@@ -1562,12 +1431,10 @@ class RevisedScheduleTimingTest(DebateDriverTestCase):
 
         driver, votes = self.drive(runner)
 
-        self.assertEqual("valid", _seat_row(votes, "social-macro")["state"])
-        self.assertEqual(7, votes["valid_vote_count"])
+        self.assertEqual("missing", _seat_row(votes, "social-macro")["state"])
+        self.assertEqual(6, votes["valid_vote_count"])
 
-    def test_a_chain_past_the_wall_is_honestly_left_provisional(self):
-        # 牆之外仍然 fail closed：180 秒窗放不下的鏈（100 秒開場＋120 秒挑戰）
-        # 只留初始立場，不產生有效票，其餘六席照常。
+    def test_a_late_opening_never_unlocks_a_later_turn(self):
         latency_ms = self.latencies()
         latency_ms[("social-macro", "opening")] = 100_000
         latency_ms[("social-macro", "r1")] = 120_000
@@ -1575,39 +1442,40 @@ class RevisedScheduleTimingTest(DebateDriverTestCase):
 
         driver, votes = self.drive(runner)
 
-        self.assertEqual("provisional", _seat_row(votes, "social-macro")["state"])
+        self.assertEqual("missing", _seat_row(votes, "social-macro")["state"])
         self.assertEqual(6, votes["valid_vote_count"])
+        self.assertNotIn("social-macro-r1", runner.started)
 
     def test_the_collection_budgets_stay_inside_their_own_walls(self):
         turns = build_turns(("bullish", "bearish", "neutral"))
 
         self.assertEqual(
-            DEBATE_START_MS + ROUND_ONE_WINDOW_MS - 5_000, turns["r1"].collect_until_ms
+            DEBATE_START_MS + 60_000 - 5_000, turns["opening"].collect_until_ms
         )
-        self.assertEqual(FINAL_ROUND_START_MS - 5_000, turns["r2"].collect_until_ms)
-        self.assertEqual(FINAL_ROUND_END_MS - 5_000, turns["r3"].collect_until_ms)
+        self.assertEqual(DEBATE_START_MS + 150_000 - 5_000, turns["r1"].collect_until_ms)
+        self.assertEqual(DEBATE_START_MS + 240_000 - 5_000, turns["r2"].collect_until_ms)
+        self.assertEqual(DEBATE_START_MS + 330_000 - 5_000, turns["r3"].collect_until_ms)
         self.assertEqual(DEBATE_START_MS, turns["opening"].relay_from_ms)
-        self.assertEqual(FINAL_ROUND_START_MS, turns["r3"].relay_from_ms)
+        self.assertEqual(DEBATE_START_MS + 60_000, turns["r1"].relay_from_ms)
+        self.assertEqual(DEBATE_START_MS + 240_000, turns["r3"].relay_from_ms)
 
     def test_a_later_seal_moves_the_first_round_wall_with_it(self):
-        """相對牆：第一輪牆＝封存＋ROUND_ONE_WINDOW_MS；r2/r3 的絕對牆不動。"""
+        """Every ballot and turn moves with a later comparison seal."""
         turns = build_turns(
             ("asset_a_stronger", "asset_b_stronger", "no_clear_difference"),
             COMPARISON_SEAL_MS,
         )
 
         self.assertEqual(COMPARISON_SEAL_MS, turns["opening"].relay_from_ms)
-        self.assertEqual(COMPARISON_SEAL_MS, turns["r1"].relay_from_ms)
-        self.assertEqual(COMPARISON_SEAL_MS + 120_000, turns["opening"].collect_until_ms)
+        self.assertEqual(COMPARISON_SEAL_MS + 60_000, turns["r1"].relay_from_ms)
+        self.assertEqual(COMPARISON_SEAL_MS + 55_000, turns["opening"].collect_until_ms)
         self.assertEqual(
-            COMPARISON_SEAL_MS + ROUND_ONE_WINDOW_MS - 5_000,
+            COMPARISON_SEAL_MS + 145_000,
             turns["r1"].collect_until_ms,
         )
-        self.assertEqual(
-            COMPARISON_SEAL_MS + ROUND_ONE_WINDOW_MS + 1, turns["r2"].relay_from_ms
-        )
-        self.assertEqual(FINAL_ROUND_START_MS - 5_000, turns["r2"].collect_until_ms)
-        self.assertEqual(FINAL_ROUND_END_MS - 5_000, turns["r3"].collect_until_ms)
+        self.assertEqual(COMPARISON_SEAL_MS + 150_000, turns["r2"].relay_from_ms)
+        self.assertEqual(COMPARISON_SEAL_MS + 235_000, turns["r2"].collect_until_ms)
+        self.assertEqual(COMPARISON_SEAL_MS + 325_000, turns["r3"].collect_until_ms)
 
 
 class TurnWindowAuthorityTest(unittest.TestCase):
@@ -1619,6 +1487,188 @@ class TurnWindowAuthorityTest(unittest.TestCase):
         for slug, turn in turns.items():
             names = {field.name for field in fields(turn)}
             self.assertNotIn("relay_until_ms", names, slug)
+
+
+class DriverFreeDebateTurnsTest(DebateDriverTestCase):
+    """Ticket 03: round-array turns replace assigned challenge bundles."""
+
+    def test_build_turns_follows_any_round_array_and_each_next_wall(self):
+        rules = replace(
+            RULES,
+            vote_rounds=(
+                VoteRound(10_000, 3),
+                VoteRound(20_000, 2),
+                VoteRound(30_000, 1),
+            ),
+            final_settle_offset_ms=35_000,
+        )
+
+        turns = build_turns(("yes", "no", "undecided"), 40_000, rules)
+
+        self.assertEqual(["opening", "r1", "r2"], list(turns))
+        self.assertEqual(
+            (45_000, 40_000),
+            (turns["opening"].collect_until_ms, turns["opening"].relay_from_ms),
+        )
+        self.assertEqual(
+            (55_000, 50_000),
+            (turns["r1"].collect_until_ms, turns["r1"].relay_from_ms),
+        )
+        self.assertEqual(
+            (65_000, 60_000),
+            (turns["r2"].collect_until_ms, turns["r2"].relay_from_ms),
+        )
+        for turn in turns.values():
+            self.assertNotIn("challenges", turn.schema["properties"])
+            self.assertNotIn("response", turn.schema["properties"])
+            self.assertNotIn("final_vote", turn.schema["properties"])
+
+    def test_failed_first_ballot_dispatches_free_debate_and_records_vote_change(self):
+        stances = dict.fromkeys(SEAT_IDS[:5], "bullish")
+        stances.update(dict.fromkeys(SEAT_IDS[5:], "bearish"))
+        changed_seat = SEAT_IDS[5]
+        runner = self.build_runner(
+            stances,
+            revotes={(changed_seat, "r1"): "bullish"},
+        )
+
+        _, votes = self.drive(runner)
+
+        self.assertEqual("consensus_6_votes", votes["stop_reason"])
+        self.assertEqual(self.seal_ms + 150_000, votes["stop_elapsed_ms"])
+        entries = [
+            json.loads(line)
+            for line in (self.run.path / "debate.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        seat_messages = [
+            entry for entry in entries if entry.get("event") == "seat_message"
+        ]
+        self.assertFalse(
+            any(entry.get("kind") in ("challenge", "response") for entry in seat_messages)
+        )
+        changed = next(row for row in votes["votes"] if row["seat_id"] == changed_seat)
+        self.assertEqual("反方證據改變本席判斷。", changed["stance_change_reason"])
+        self.assertEqual(
+            "反方證據改變本席判斷。", changed["vote_changes"][-1]["reason"]
+        )
+        free_prompt = runner.prompts["r1"][0]
+        for wording in ("用證據說服對方", "不盲從", "不死守"):
+            self.assertIn(wording, free_prompt)
+        for retired in ("你必須挑戰", "主席排定", "魔鬼代言人"):
+            self.assertNotIn(retired, free_prompt)
+        diagnostics = json.loads(
+            (self.run.path / "diagnostics/debate-driver.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertNotIn("challenge_assignment", diagnostics)
+
+
+class EvidenceVisibilityGateTest(DebateDriverTestCase):
+    """Ticket 04: prompt visibility changes only after the first ballot fails."""
+
+    @staticmethod
+    def _evidence_block(prompt):
+        start = prompt.index("## 共享證據快照")
+        end = prompt.index("## 共享辯論快照", start)
+        return prompt[start:end]
+
+    def test_opening_prompt_contains_only_its_own_evidence_id_and_content(self):
+        runner = self.build_runner(BULLISH_SIX)
+
+        self.drive(runner)
+
+        self.assertEqual(len(SEAT_IDS), len(runner.prompts["opening"]))
+        for seat_id, prompt in zip(SEAT_IDS, runner.prompts["opening"]):
+            self.assertIn("{}-01".format(seat_id), prompt)
+            self.assertIn(
+                "https://example.invalid/{}/1".format(seat_id), prompt
+            )
+            for other_seat_id in SEAT_IDS:
+                if other_seat_id == seat_id:
+                    continue
+                self.assertNotIn("{}-01".format(other_seat_id), prompt)
+                self.assertNotIn(
+                    "https://example.invalid/{}/1".format(other_seat_id), prompt
+                )
+
+    def test_every_free_turn_restores_the_full_snapshot_and_public_history(self):
+        room = dict.fromkeys(SEAT_IDS[:3], "bullish")
+        room.update(dict.fromkeys(SEAT_IDS[3:5], "bearish"))
+        room.update(dict.fromkeys(SEAT_IDS[5:], "neutral"))
+        runner = self.build_runner(room)
+
+        self.drive(runner)
+
+        prior_message_ids = ["{}-position".format(seat_id) for seat_id in SEAT_IDS]
+        for round_number, slug in enumerate(("r1", "r2", "r3"), start=1):
+            prompts = runner.prompts[slug]
+            self.assertEqual(1, len({self._evidence_block(prompt) for prompt in prompts}))
+            for prompt in prompts:
+                for seat_id in SEAT_IDS:
+                    self.assertIn("{}-01".format(seat_id), prompt)
+                for message_id in prior_message_ids:
+                    self.assertIn(message_id, prompt)
+            prior_message_ids.extend(
+                "{}-r{}-vote".format(seat_id, round_number)
+                for seat_id in SEAT_IDS
+            )
+
+    def test_unanimous_blind_pass_never_exposes_another_seats_evidence(self):
+        runner = self.build_runner(UNANIMOUS_SEVEN)
+
+        _, votes = self.drive(runner)
+
+        self.assertEqual("unanimous_blind_pass", votes["stop_reason"])
+        self.assertEqual({"opening"}, set(runner.prompts))
+        for seat_id, prompt in zip(SEAT_IDS, runner.prompts["opening"]):
+            self.assertIn("{}-01".format(seat_id), prompt)
+            for other_seat_id in SEAT_IDS:
+                if other_seat_id != seat_id:
+                    self.assertNotIn("{}-01".format(other_seat_id), prompt)
+
+    def test_visibility_gate_does_not_change_the_sealed_artifact_contract(self):
+        evidence_path = self.run.path / "evidence.jsonl"
+        before_bytes = evidence_path.read_bytes()
+        before_entry = dict(self.run.artifact_index()["evidence.jsonl"])
+        expected_fields = {
+            "schema_version",
+            "evidence_id",
+            "run_id",
+            "seat_id",
+            "attempt_id",
+            "phase",
+            "created_at_utc",
+            "elapsed_ms",
+            "asset",
+            "category",
+            "statement",
+            "direction",
+            "source_url",
+            "source_origin",
+            "source_tier",
+            "published_at_utc",
+            "retrieved_at_utc",
+            "excerpt",
+            "credibility_note",
+        }
+        runner = self.build_runner(BULLISH_SIX)
+
+        self.finish(runner)
+
+        manifest = json.loads(
+            (self.run.path / "manifest.json").read_text(encoding="utf-8")
+        )
+        records = [
+            json.loads(line)
+            for line in evidence_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(before_bytes, evidence_path.read_bytes())
+        self.assertEqual(before_entry, manifest["artifacts"]["evidence.jsonl"])
+        self.assertTrue(records)
+        self.assertTrue(all(set(record) == expected_fields for record in records))
 
 
 class CoreNarrativeLightSetTest(unittest.TestCase):
@@ -2334,43 +2384,35 @@ class FullLaunchTest(unittest.TestCase):
             "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
         )
 
-    def test_a_bundle_may_not_lie_about_whether_the_room_challenged(self):
-        """Reviewer A 第 2 輪 [重要] ②：旗標的兩個方向都必須被公開紀錄戳破。
-
-        只驗它是布林值擋不住說謊。這裡兩個方向各測一次：真的辯論過的 run 謊
-        稱沒質詢，以及一席掉隊的 run 謊稱全員完成。
-        """
+    def test_a_v2_bundle_has_no_assigned_challenge_lineage(self):
         finalized = self._launch(BULLISH_SIX)
         run_dir = Path(finalized["run_dir"])
         self.assertEqual(
             "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
         )
-        self.assertTrue(
-            json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))[
-                "challenge_completed"
-            ]
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        self.assertFalse(votes["challenge_completed"])
+        self.assertFalse(
+            any(
+                entry.get("kind") in ("challenge", "response")
+                for entry in self._debate_entries(run_dir)
+            )
         )
 
-        self._forge_votes(
-            run_dir, lambda votes: votes.update(challenge_completed=False)
-        )
-
-        with self.assertRaisesRegex(RunVerificationError, "challenge_completed"):
-            verify_run(self.data_root, finalized["run_id"])
-
-    def test_a_blind_pass_bundle_may_not_claim_it_challenged(self):
+    def test_a_blind_pass_bundle_also_has_no_challenge_lineage(self):
         finalized = self._launch(UNANIMOUS_SEVEN)
         run_dir = Path(finalized["run_dir"])
         self.assertEqual(
             "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
         )
-
-        self._forge_votes(
-            run_dir, lambda votes: votes.update(challenge_completed=True)
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        self.assertFalse(votes["challenge_completed"])
+        self.assertFalse(
+            any(
+                entry.get("kind") in ("challenge", "response", "final_vote")
+                for entry in self._debate_entries(run_dir)
+            )
         )
-
-        with self.assertRaisesRegex(RunVerificationError, "challenge_completed"):
-            verify_run(self.data_root, finalized["run_id"])
 
     def test_a_bundle_may_not_invent_an_extra_tally_column(self):
         """Reviewer B 第 2 輪 [建議]：多一個永遠是 0 的立場，重算照樣相等。
@@ -2395,37 +2437,21 @@ class FullLaunchTest(unittest.TestCase):
         with self.assertRaisesRegex(RunVerificationError, "立場 enum"):
             verify_run(self.data_root, finalized["run_id"])
 
-    def test_a_valid_vote_whose_first_round_vanished_is_refused(self):
-        """§5.4 的逐席規則必須真的接在 verify_run 上，不能只有函式自己有測試。
-
-        由合法 6/1 run 刪掉一席的 challenge 與 response、重算整條雜湊鏈並重新
-        渲染三頁報告；votes.json 不動，那一席仍宣稱自己是有效票。房間旗標在這
-        份 bundle 裡仍是 true，所以擋下它的只可能是逐席回查。
-        """
-        finalized = self._launch(BULLISH_SIX)
+    def test_an_opening_remains_valid_when_its_free_turn_times_out(self):
+        finalized = self._launch(BULLISH_SIX, silent=(("news", "r1"),))
         run_dir = Path(finalized["run_dir"])
         self.assertEqual(
             "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
         )
-
-        entries = self._debate_entries(run_dir)
-        kept = [
-            entry
-            for entry in entries
-            if not (
-                entry.get("seat_id") == "news"
-                and entry.get("kind") in ("challenge", "response")
-            )
-        ]
-        self.assertLess(len(kept), len(entries), "這一席本來就該有第一輪訊息")
-        self._reforge_debate(run_dir, kept)
-
         votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
         self.assertEqual("valid", _seat_row(votes, "news")["state"])
-        self.assertTrue(votes["challenge_completed"])
-
-        with self.assertRaisesRegex(RunVerificationError, "news.*第一輪"):
-            verify_run(self.data_root, finalized["run_id"])
+        self.assertEqual("bullish", _seat_row(votes, "news")["final_stance"])
+        self.assertFalse(
+            any(
+                entry.get("seat_id") == "news" and entry.get("kind") == "final_vote"
+                for entry in self._debate_entries(run_dir)
+            )
+        )
 
     def test_a_blind_pass_bundle_may_not_invent_a_replacement_attempt(self):
         """兩位 Reviewer 第 2 輪 [重要] ①：完整 bundle 追加幽靈 attempt。
@@ -2772,12 +2798,8 @@ class FullLaunchTest(unittest.TestCase):
         with self.assertRaisesRegex(RunVerificationError, "非負整數毫秒"):
             verify_run(self.data_root, finalized["run_id"])
 
-    def test_a_first_round_message_stamped_before_the_opening_is_refused(self):
-        """第 4 輪 R3：紀錄順序原封不動，只把 challenge 的時間戳移到開場之前。
-
-        我第 3 輪主張「逐席已涵蓋，全域單調性不必驗」——Reviewer A 證明逐席
-        當時只比了 final vote，position 與 challenge 之間根本沒有人在比。
-        """
+    def test_a_first_free_turn_vote_is_stamped_after_its_ballot_wall(self):
+        """The driver itself publishes no free-turn vote before round one opens."""
         finalized = self._launch(BULLISH_SIX)
         run_dir = Path(finalized["run_dir"])
         self.assertEqual(
@@ -2791,59 +2813,21 @@ class FullLaunchTest(unittest.TestCase):
             if entry.get("seat_id") == "spot-technical"
             and entry.get("kind") == "position"
         )
-        challenge = next(
-            entry
-            for entry in entries
-            if entry.get("seat_id") == "spot-technical"
-            and entry.get("kind") == "challenge"
-        )
-        self.assertGreater(challenge["elapsed_ms"], position["elapsed_ms"])
-        challenge["elapsed_ms"] = position["elapsed_ms"] - 1
-        self._reforge_debate(run_dir, entries)
-
-        # 紀錄順序完全沒動，只有時間戳被改。
-        order = [
-            entry["kind"]
-            for entry in self._debate_entries(run_dir)
-            if entry.get("seat_id") == "spot-technical"
-        ]
-        self.assertEqual(["position", "challenge"], order[:2])
-
-        with self.assertRaisesRegex(
-            RunVerificationError, "spot-technical.*elapsed_ms 早於該席開場"
-        ):
-            verify_run(self.data_root, finalized["run_id"])
-
-    def test_a_vote_recorded_before_its_own_first_round_is_refused(self):
-        """Reviewer B 第 2 輪 [重要] ③：把 final vote 移到 challenge 之前。
-
-        訊息集合一則不多一則不少，只有順序變了；整條公開歷史雜湊鏈、三頁報告
-        與 manifest index 全部重算過。§5.4 的「完成」蘊含順序，所以只確認「三
-        種訊息都出現過」的檢查抓不到這一種。
-        """
-        finalized = self._launch(BULLISH_SIX)
-        run_dir = Path(finalized["run_dir"])
-        self.assertEqual(
-            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
-        )
-
-        entries = self._debate_entries(run_dir)
         vote = next(
             entry
             for entry in entries
             if entry.get("seat_id") == "spot-technical"
             and entry.get("kind") == "final_vote"
         )
-        entries.remove(vote)
-        position_index = next(
-            index
-            for index, entry in enumerate(entries)
-            if entry.get("seat_id") == "spot-technical"
-            and entry.get("kind") == "position"
+        self.assertGreater(vote["elapsed_ms"], position["elapsed_ms"])
+        self.assertGreaterEqual(vote["elapsed_ms"], SEAL_MS + 60_000)
+
+    def test_a_free_vote_is_recorded_after_its_opening(self):
+        finalized = self._launch(BULLISH_SIX)
+        run_dir = Path(finalized["run_dir"])
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"]
         )
-        vote["elapsed_ms"] = entries[position_index]["elapsed_ms"]
-        entries.insert(position_index + 1, vote)
-        self._reforge_debate(run_dir, entries)
 
         order = [
             (entry["kind"], entry["elapsed_ms"])
@@ -2851,11 +2835,7 @@ class FullLaunchTest(unittest.TestCase):
             if entry.get("seat_id") == "spot-technical"
         ]
         self.assertEqual("final_vote", order[1][0], order)
-
-        with self.assertRaisesRegex(
-            RunVerificationError, "spot-technical.*第一輪生命週期"
-        ):
-            verify_run(self.data_root, finalized["run_id"])
+        self.assertGreater(order[1][1], order[0][1])
 
     def test_a_seat_that_missed_its_first_round_does_not_void_the_consensus(self):
         """Reviewer B 第 1 輪 [重要] ③：一席掉隊的合法 run 必須 PASS。
@@ -2880,11 +2860,11 @@ class FullLaunchTest(unittest.TestCase):
         self.assertEqual("accepted", finalized["report_status"])
         self.assertEqual("consensus_{}_votes".format(RULES.reduced_votes), votes["stop_reason"])
         self.assertEqual(RULES.reduced_votes, votes["threshold_required"])
-        self.assertEqual(len(SEAT_IDS) - 1, votes["valid_vote_count"])
+        self.assertEqual(len(SEAT_IDS), votes["valid_vote_count"])
         self.assertEqual("consensus", votes["consensus_status"])
         self.assertEqual("bullish", votes["adopted_stance"])
-        self.assertEqual("provisional", row["state"])
-        self.assertIsNone(row["final_stance"])
+        self.assertEqual("valid", row["state"])
+        self.assertEqual("bearish", row["final_stance"])
         self.assertEqual("bearish", row["initial_stance"])
         # 房間旗標誠實地是 False，但共識仍然成立。
         self.assertFalse(votes["challenge_completed"])
@@ -2893,7 +2873,7 @@ class FullLaunchTest(unittest.TestCase):
         )
 
     def test_a_two_asset_comparison_seals_at_four_thirty_and_still_verifies(self):
-        """Ticket R7: 比較題晚 30 秒封存，仍在第一輪內拿到七張有效票。"""
+        """Comparison ballots and final settle all move with the later seal."""
         code = run_launch(
             COMPARISON_QUESTION,
             self.data_root,
@@ -2919,8 +2899,7 @@ class FullLaunchTest(unittest.TestCase):
         self.assertEqual("consensus_6_votes", votes["stop_reason"])
         self.assertEqual(7, votes["valid_vote_count"])
         self.assertEqual(6, votes["tally"]["asset_a_stronger"])
-        self.assertLessEqual(votes["stop_elapsed_ms"], CHALLENGE_DEADLINE_MS)
-        self.assertGreaterEqual(votes["stop_elapsed_ms"], COMPARISON_SEAL_MS)
+        self.assertEqual(COMPARISON_SEAL_MS + 150_000, votes["stop_elapsed_ms"])
         self.assertEqual("VERIFIED", verify_run(self.data_root, finalized["run_id"])["status"])
 
 

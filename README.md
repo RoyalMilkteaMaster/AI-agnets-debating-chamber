@@ -1,4 +1,4 @@
-# Hoya Bit Market Agents
+# AI agnets debating chamber
 
 七席多模型加密市場研究流程的 WSL Python 控制程式。
 
@@ -31,7 +31,7 @@ EvidenceCard contract 與操作邊界等價注入七席。這不代表 Ticket #2
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 --version
 ```
 
@@ -43,7 +43,7 @@ python3 --version
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m unittest discover -s tests -v
 ```
 
@@ -51,7 +51,7 @@ python3 -m unittest discover -s tests -v
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m unittest tests.test_question_package tests.test_prompt_builder -v
 ```
 
@@ -63,7 +63,7 @@ python3 -m unittest tests.test_question_package tests.test_prompt_builder -v
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents drill --provider-mode fake \
   --question "分析 BTC 過去 14 日市場狀態"
 ```
@@ -77,7 +77,7 @@ python3 -m hoya_market_agents drill --provider-mode fake \
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents preflight --provider system --seats 7 \
   --mode fixture --preflight-id rehearsal-fixture
 ```
@@ -92,10 +92,10 @@ fixture 即使全數通過仍輸出 `NOT_READY`；`simulation_status=PASS` 只�
 
 ```bash
 # WSL（Core 內部）
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents prepare-launch \
   --question "分析 BTC 過去 14 日市場狀態" \
-  --data-root "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data"
+  --data-root "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data"
 ```
 
 `PREPARED` 不等於 provider READY。Core 接著建立三個受控 Codex 席並取得
@@ -110,7 +110,7 @@ runtime 證明。
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents preflight --provider system --seats 7 \
   --mode real --codex-run-id <CODEX_RUN_ID> \
   --codex-challenge <CODEX_CHALLENGE> \
@@ -137,7 +137,7 @@ output 經 canonical normalize 必須精確等於該席正式 evidence records�
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m unittest tests.test_claude_adapter -v
 ```
 
@@ -149,7 +149,7 @@ session UUID：
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents preflight --provider claude --seats 3
 ```
 
@@ -160,7 +160,7 @@ python3 -m hoya_market_agents preflight --provider claude --seats 3
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m unittest tests.test_antigravity_adapter -v
 ```
 
@@ -171,7 +171,7 @@ python3 -m unittest tests.test_antigravity_adapter -v
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents preflight --provider antigravity --seats 1
 ```
 
@@ -184,7 +184,7 @@ success、timeout 或 error 後清除，輸出不包含 OAuth token 或帳號資
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents run --provider-mode fake --question "分析 BTC 過去 14 日市場狀態"
 ```
 
@@ -199,9 +199,9 @@ python3 -m hoya_market_agents run --provider-mode fake --question "分析 BTC �
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents live \
-  --data-root "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data" \
+  --data-root "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data" \
   --host 127.0.0.1 --port 8765
 ```
 
@@ -218,7 +218,7 @@ python3 -m hoya_market_agents live \
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents run --provider-mode fake \
   --question "分析 ETH 過去 7 日市場狀態" \
   --data-root /tmp/hoya-run-sandbox
@@ -231,14 +231,14 @@ python3 -m hoya_market_agents run --provider-mode fake \
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber"
 python3 -m hoya_market_agents verify-run --run-id <RUN_ID>
 ```
 
 ## 輸出位置
 
-- Code Root：`/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final`（程式、設定、測試、文件）
-- Data Root：`/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data`（執行結果，不進 Git）
+- Code Root：`/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber`（程式、設定、測試、文件）
+- Data Root：`/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data`（執行結果，不進 Git）
 
 每次執行建立一個新的 run 目錄，**永不覆寫**先前的執行。目錄依台北日期分層，
 資料夾名是給人看的標籤：台北 `HHMM`＋題目 slug＋**整串 `run_id` 的 16 碼
@@ -271,7 +271,7 @@ SHA-256 前綴**。run 的身分仍是含 UTC 時戳的 `run_id`，記在每一�
 
 ```bash
 # WSL
-cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data/runs"
+cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data/runs"
 cat latest.json
 ```
 
@@ -292,7 +292,7 @@ cat latest.json
 
 - 三個 GPT-5.6 Sol persistent threads 的 live `web_search`、actual model 與 runtime receipt。
 - 七個真實訂閱席在同一 run 於 T+3:50 前交付、T+4:00 seal，並於 T+13 前完成報告。
-- 在上述 blocker 關閉前，正式 `$hoya-market-research` 必須停止並交付 NOT READY。
+- 在上述 blocker 關閉前，正式 `$ai-agnets-debating-chamber` 必須停止並交付 NOT READY。
 - 向量資料庫、RAG、FinGPT、crawler 與 web service（依 ADR 0002 不在 MVP 範圍）。
 
 ## 相關文件

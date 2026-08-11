@@ -168,19 +168,24 @@ def run_fake_competition_drill(*, data_root, question, token):
         debate_start_ms=deadlines.seal_ms,
         rules=rules,
     )
-    _complete_first_round(debate, stances, scheduler.seal["sha256"])
-    # Persist minority first; the sixth bullish vote then stops at 6/1 with all
-    # seven seats valid instead of stopping before the dissenter can vote.
-    for index in (6, 0, 1, 2, 3, 4, 5):
-        debate.relay(
-            _message(
-                SEAT_IDS[index],
-                "final_vote",
-                "final",
-                stances[index],
-                scheduler.seal["sha256"],
+    _publish_openings(debate, stances, scheduler.seal["sha256"])
+    clock.advance_to(deadlines.seal_ms + rules.vote_rounds[0].open_offset_ms)
+    debate.tick()
+    if not debate.stopped:
+        # Persist minority first so the round-two wall sees all seven latest public
+        # stances, including the dissenter. Discrete ballots never stop between walls.
+        for index in (6, 0, 1, 2, 3, 4, 5):
+            debate.relay(
+                _message(
+                    SEAT_IDS[index],
+                    "final_vote",
+                    "final",
+                    stances[index],
+                    scheduler.seal["sha256"],
+                )
             )
-        )
+    clock.advance_to(deadlines.seal_ms + rules.vote_rounds[1].open_offset_ms)
+    debate.tick()
     votes = debate.persist()
 
     sources = {
@@ -335,63 +340,9 @@ def _message(seat_id, kind, suffix, stance, snapshot_sha, **overrides):
     return value
 
 
-def _complete_first_round(machine, stances, snapshot_sha):
+def _publish_openings(machine, stances, snapshot_sha):
     for seat_id, stance in zip(SEAT_IDS, stances):
         machine.relay(_message(seat_id, "position", "position", stance, snapshot_sha, round=0))
-
-    incoming = {seat_id: [] for seat_id in SEAT_IDS}
-    challenges = []
-    for index, seat_id in enumerate(SEAT_IDS):
-        target_index = next(
-            other for other in range(7)
-            if other != index and stances[other] != stances[index]
-        )
-        target = SEAT_IDS[target_index]
-        challenge = _message(
-            seat_id,
-            "challenge",
-            "challenge-to-{}".format(target),
-            stances[index],
-            snapshot_sha,
-            target_seat_id=target,
-            target_claim="{}-position".format(target),
-        )
-        challenges.append(challenge)
-        incoming[target].append(challenge)
-    for target_index, target in enumerate(SEAT_IDS):
-        if incoming[target]:
-            continue
-        author_index = next(
-            other for other in range(7)
-            if other != target_index and stances[other] != stances[target_index]
-        )
-        author = SEAT_IDS[author_index]
-        challenge = _message(
-            author,
-            "challenge",
-            "extra-challenge-to-{}".format(target),
-            stances[author_index],
-            snapshot_sha,
-            target_seat_id=target,
-            target_claim="{}-position".format(target),
-        )
-        challenges.append(challenge)
-        incoming[target].append(challenge)
-    for challenge in challenges:
-        machine.relay(challenge)
-    for index, seat_id in enumerate(SEAT_IDS):
-        challenge = incoming[seat_id][0]
-        machine.relay(
-            _message(
-                seat_id,
-                "response",
-                "response",
-                stances[index],
-                snapshot_sha,
-                responds_to=[challenge["message_id"]],
-                target_seat_id=challenge["seat_id"],
-            )
-        )
 
 
 def _core_report(run_id, sources, clock):

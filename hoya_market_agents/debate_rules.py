@@ -17,52 +17,26 @@ from pathlib import Path
 from .seats import CODE_ROOT, SEAT_IDS
 
 RULES_PATH = CODE_ROOT / "config" / "debate_rules.json"
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSION = 2
 
-# 2026-08-02 使用者核准的修訂時間表（設定檔的預設值就是它）。研究讓出一分鐘
-# 後，辯論從 T+4:00 起跑，每一道牆都往後挪，好讓兩次真實 CLI 呼叫（開場
-# 50-60 秒、第一輪 30-60 秒）各自有完整的時間，而不是擠在同一段 90 秒裡互相
-# 踩死。
-#
-# 起跑點是「該 run 實際封存的那一刻」，不是 debate_start：兩幣比較題的研究窗
-# 到 T+4:30（research_scheduler.research_deadlines 是封存時刻的唯一權威）。
-# debate_start 只是單幣預設，建構 DebateStateMachine 時可覆寫，且必須與
-# RunStore 的 seal 完全一致。
-#
-# 第一輪的牆因此是相對的：封存時刻 ＋ round_one_window，所以封存晚 30 秒的比
-# 較題第一輪也拿得到同樣長的視窗。這道牆不是「辯論何時結束」——湊滿門檻票數
-# 的那一刻就結束了。它是慢席的截止線，而慢席投不投得到票，決定的是六票同向
-# 能不能成立。實測 run 20260802T055930Z 的教訓：Claude 席開場落在封存＋40
-# 秒，第一輪呼叫要讀完整證據快照與全場逐字稿、再花 50-70 秒；120 秒的窗只留
-# 給它們 73 秒，三席同時掉隊，有效票剩四張，於是既湊不到六票（無法提早結
-# 束），信心也被壓成紅燈。180 秒讓「開場＋挑戰＋relay」那條鏈完整放得下；七
-# 席都投得到票時，共識反而在 T+6:30 前就成立，比原本乾等到 T+10 更早收工。
-#
-# 順序就是規則：時間軸必須嚴格遞增，違反的那一對欄位會被逐字指名。
-_TIMELINE_INSTANTS = (
+_ROUND_FIELDS = ("open_offset_ms", "threshold")
+_TIMELINE_FIELDS = ("vote_rounds", "final_settle_offset_ms")
+_CONFIDENCE_FIELDS = ("light_scale", "downgrades")
+_TOP_LEVEL_FIELDS = ("schema_version", "timeline", "confidence")
+
+# v1 只供舊 manifest 快照相容讀取；正式設定檔載入器不走這組欄位。
+_V1_TIMELINE_INSTANTS = (
     "debate_start",
     "reduced_threshold_from",
     "final_round_start",
     "final_round_end",
     "force_stop",
 )
-_TIMELINE_FIELDS = _TIMELINE_INSTANTS + ("round_one_window",)
-# 同樣是順序即規則：票數階梯必須嚴格遞減，否則 ``consensus_<n>_votes`` 這個停止
-# 原因會有兩種讀法，run_verifier 也就無從判斷哪一道門檻真的生效。
-_VOTE_LADDER_FIELDS = ("initial", "reduced", "forced_stop")
-# 盲投直過（Ticket 03）的門檻不屬於那條階梯：階梯是「辯論打到第幾分鐘要幾票」，
-# 這一個是「開場盲投當下要幾票才不必辯論」，兩者的計票對象不同（有效票 vs 開
-# 場票），停止原因也是自己的字串 ``unanimous_blind_pass``，不會和
-# ``consensus_<n>_votes`` 撞名。因此它只受 1..席位數 的票數校驗，不加入遞減檢
-# 查——設成低於 initial 是合法設定（操作者要更寬鬆的直過就會這樣填），語意是
-# 定義好的：開場票數達到它就直過，不是意外。
-_VOTE_FIELDS = ("unanimous_blind_pass",) + _VOTE_LADDER_FIELDS
-_CONFIDENCE_FIELDS = ("light_scale", "downgrades")
-_TOP_LEVEL_FIELDS = (
-    "schema_version",
-    "timeline_ms",
-    "vote_thresholds",
-    "confidence",
+_V1_TIMELINE_FIELDS = _V1_TIMELINE_INSTANTS + ("round_one_window",)
+_V1_VOTE_LADDER_FIELDS = ("initial", "reduced", "forced_stop")
+_V1_VOTE_FIELDS = ("unanimous_blind_pass",) + _V1_VOTE_LADDER_FIELDS
+_V1_TOP_LEVEL_FIELDS = (
+    "schema_version", "timeline_ms", "vote_thresholds", "confidence"
 )
 _LIGHT_STEP_FIELDS = ("min_votes", "level")
 # ADR 0003 的兩條降級，各自帶自己的欄位。新增第三條降級必然要寫評估它的程式，
@@ -132,8 +106,107 @@ class ConfidenceRules:
 
 
 @dataclass(frozen=True)
+class VoteRound:
+    """One opening offset and its absolute consensus threshold."""
+
+    open_offset_ms: int
+    threshold: int
+
+
+@dataclass(frozen=True)
 class DebateRules:
-    """One immutable answer to "which wall and how many votes, at T+n?"."""
+    """The schema-v2 round array anchored to a run's evidence seal."""
+
+    vote_rounds: tuple
+    final_settle_offset_ms: int
+    confidence: ConfidenceRules
+
+    def required_votes_at(self, elapsed_ms, seal_ms=None):
+        """Return the threshold selected by the latest opened round."""
+        offset = elapsed_ms - self._seal_ms(seal_ms)
+        threshold = self.vote_rounds[0].threshold
+        for vote_round in self.vote_rounds:
+            if offset < vote_round.open_offset_ms:
+                break
+            threshold = vote_round.threshold
+        return threshold
+
+    def phase_at(self, elapsed_ms, challenge_deadline_ms=None, seal_ms=None):
+        """Name the latest opened round without assuming a fixed round count."""
+        if seal_ms is None and challenge_deadline_ms is not None:
+            seal_ms = challenge_deadline_ms - self.round_one_window_ms
+        offset = elapsed_ms - self._seal_ms(seal_ms)
+        if offset >= self.final_settle_offset_ms:
+            return "final_settle"
+        phase = "before_vote_round_1"
+        for index, vote_round in enumerate(self.vote_rounds, start=1):
+            if offset < vote_round.open_offset_ms:
+                break
+            phase = "vote_round_{}".format(index)
+        return phase
+
+    @staticmethod
+    def _default_seal_ms():
+        from .research_scheduler import research_deadlines
+
+        return research_deadlines().seal_ms
+
+    def _seal_ms(self, seal_ms):
+        return self._default_seal_ms() if seal_ms is None else seal_ms
+
+    # Temporary compatibility accessors. The v2 array remains their only rule
+    # data; Tickets 02/03/07 migrate consumers to the explicit round API.
+    @property
+    def debate_start_ms(self):
+        return self._default_seal_ms()
+
+    @property
+    def round_one_window_ms(self):
+        index = 1 if len(self.vote_rounds) > 1 else 0
+        return self.vote_rounds[index].open_offset_ms
+
+    def challenge_deadline_ms(self, debate_start_ms=None):
+        return self._seal_ms(debate_start_ms) + self.round_one_window_ms
+
+    @property
+    def reduced_threshold_from_ms(self):
+        index = 2 if len(self.vote_rounds) > 2 else len(self.vote_rounds) - 1
+        return self.debate_start_ms + self.vote_rounds[index].open_offset_ms
+
+    @property
+    def final_round_start_ms(self):
+        return self.debate_start_ms + self.vote_rounds[-1].open_offset_ms
+
+    @property
+    def final_round_end_ms(self):
+        return self.force_stop_ms - 1
+
+    @property
+    def force_stop_ms(self):
+        return self.debate_start_ms + self.final_settle_offset_ms
+
+    @property
+    def unanimous_blind_pass_votes(self):
+        return self.vote_rounds[0].threshold
+
+    @property
+    def initial_votes(self):
+        index = 1 if len(self.vote_rounds) > 1 else 0
+        return self.vote_rounds[index].threshold
+
+    @property
+    def reduced_votes(self):
+        index = max(0, len(self.vote_rounds) - 2)
+        return self.vote_rounds[index].threshold
+
+    @property
+    def forced_stop_votes(self):
+        return self.vote_rounds[-1].threshold
+
+
+@dataclass(frozen=True)
+class LegacyDebateRules:
+    """A schema-v1 run snapshot; never returned by the live config loader."""
 
     debate_start_ms: int
     round_one_window_ms: int
@@ -148,16 +221,10 @@ class DebateRules:
     confidence: ConfidenceRules
 
     def challenge_deadline_ms(self, debate_start_ms=None):
-        """The first-round wall for a run that sealed at ``debate_start_ms``.
-
-        牆是相對的：晚封存的題型（兩幣比較題）第一輪一樣拿得到整個窗。省略
-        參數時用單幣預設封存時刻。
-        """
         start = self.debate_start_ms if debate_start_ms is None else debate_start_ms
         return start + self.round_one_window_ms
 
     def required_votes_at(self, elapsed_ms):
-        """The absolute vote threshold in force at an elapsed time."""
         if elapsed_ms >= self.force_stop_ms:
             return self.forced_stop_votes
         if elapsed_ms >= self.reduced_threshold_from_ms:
@@ -165,14 +232,6 @@ class DebateRules:
         return self.initial_votes
 
     def phase_at(self, elapsed_ms, challenge_deadline_ms=None):
-        """Name the deadline window an elapsed time falls in.
-
-        第一輪牆是相對的，所以晚封存的題型可能把它推到
-        ``reduced_threshold_from_ms`` 之後。重疊時**較晚的絕對牆優先命名**：
-        ``five_vote_threshold`` 蓋過 ``first_round_closed``，後者在該設定下不
-        出現。收件規則不受影響——``DebateStateMachine`` 判定第幾輪用的仍是該
-        run 自己的第一輪牆，所以慢席不會因為門檻降低就被提早關門。
-        """
         if challenge_deadline_ms is None:
             challenge_deadline_ms = self.challenge_deadline_ms()
         if elapsed_ms >= self.force_stop_ms:
@@ -189,24 +248,51 @@ class DebateRules:
 
 
 def load_debate_rules(path):
-    """Read one rule file, validate it whole, and freeze it."""
+    """Read one live schema-v2 rule file, validate it whole, and freeze it."""
     document = _read_document(Path(path))
-    _reject_unknown_keys(document, _TOP_LEVEL_FIELDS, "辯論規則設定檔最外層")
     _require_schema_version(document)
-    timeline = _require_section(document, "timeline_ms", _TIMELINE_FIELDS)
-    votes = _require_section(document, "vote_thresholds", _VOTE_FIELDS)
+    _reject_unknown_keys(document, _TOP_LEVEL_FIELDS, "辯論規則設定檔最外層")
+    timeline = _require_section(document, "timeline", _TIMELINE_FIELDS)
     confidence = _require_section(document, "confidence", _CONFIDENCE_FIELDS)
-
-    for name in _TIMELINE_FIELDS:
-        _require_non_negative_int(timeline[name], "timeline_ms.{}".format(name))
-    _require_increasing(timeline, "timeline_ms", _TIMELINE_INSTANTS)
-    _require_positive_window(timeline)
-
-    for name in _VOTE_FIELDS:
-        _require_vote_count(votes[name], "vote_thresholds.{}".format(name))
-    _require_decreasing(votes, "vote_thresholds", _VOTE_LADDER_FIELDS)
+    vote_rounds = _load_vote_rounds(timeline["vote_rounds"])
+    final_settle = timeline["final_settle_offset_ms"]
+    _require_non_negative_int(final_settle, "timeline.final_settle_offset_ms")
+    if final_settle <= vote_rounds[-1].open_offset_ms:
+        raise DebateRulesError(
+            "timeline.final_settle_offset_ms（{}）必須大於 "
+            "timeline.vote_rounds[{}].open_offset_ms（{}）。".format(
+                final_settle,
+                len(vote_rounds) - 1,
+                vote_rounds[-1].open_offset_ms,
+            )
+        )
 
     return DebateRules(
+        vote_rounds=vote_rounds,
+        final_settle_offset_ms=final_settle,
+        confidence=_build_confidence(confidence),
+    )
+
+
+def _load_legacy_debate_rules_document(document):
+    """Load schema v1 only for an existing run manifest snapshot."""
+    if not isinstance(document, dict):
+        raise DebateRulesError("v1 辯論規則快照的最外層必須是 object。")
+    _require_schema_version(document, expected=1)
+    _reject_unknown_keys(document, _V1_TOP_LEVEL_FIELDS, "v1 辯論規則快照最外層")
+    timeline = _require_section(document, "timeline_ms", _V1_TIMELINE_FIELDS)
+    votes = _require_section(document, "vote_thresholds", _V1_VOTE_FIELDS)
+    confidence = _require_section(document, "confidence", _CONFIDENCE_FIELDS)
+
+    for name in _V1_TIMELINE_FIELDS:
+        _require_non_negative_int(timeline[name], "timeline_ms.{}".format(name))
+    _require_increasing(timeline, "timeline_ms", _V1_TIMELINE_INSTANTS)
+    _require_positive_window(timeline)
+    for name in _V1_VOTE_FIELDS:
+        _require_vote_count(votes[name], "vote_thresholds.{}".format(name))
+    _require_decreasing(votes, "vote_thresholds", _V1_VOTE_LADDER_FIELDS)
+
+    return LegacyDebateRules(
         debate_start_ms=timeline["debate_start"],
         round_one_window_ms=timeline["round_one_window"],
         reduced_threshold_from_ms=timeline["reduced_threshold_from"],
@@ -313,17 +399,17 @@ def _read_document(path):
     return document
 
 
-def _require_schema_version(document):
+def _require_schema_version(document, expected=SUPPORTED_SCHEMA_VERSION):
     if "schema_version" not in document:
         raise DebateRulesError("辯論規則設定檔缺少必要欄位：schema_version")
     version = document["schema_version"]
     # 型別要先於值：Python 的 bool 是 int 的子型別、1.0 == 1，所以只比值的話
     # true 與 1.0 都會冒充成支援的版本。這個檔案裡每一處數值校驗都用
     # ``type(x) is int`` 這種精確比對，理由都是同一個。
-    if type(version) is not int or version != SUPPORTED_SCHEMA_VERSION:
+    if type(version) is not int or version != expected:
         raise DebateRulesError(
             "schema_version 必須為整數 {}，收到 {!r}。".format(
-                SUPPORTED_SCHEMA_VERSION, version
+                expected, version
             )
         )
 
@@ -405,6 +491,56 @@ def _require_decreasing(values, section, fields):
                     earlier_value=values[earlier],
                 )
             )
+
+
+def _load_vote_rounds(entries):
+    if not isinstance(entries, list):
+        raise DebateRulesError("timeline.vote_rounds 必須是 array。")
+    if not entries:
+        raise DebateRulesError("timeline.vote_rounds 至少需要一輪。")
+
+    rounds = []
+    for index, entry in enumerate(entries):
+        field = "timeline.vote_rounds[{}]".format(index)
+        if not isinstance(entry, dict):
+            raise DebateRulesError("{} 必須是 object。".format(field))
+        _reject_unknown_keys(entry, _ROUND_FIELDS, field)
+        for name in _ROUND_FIELDS:
+            if name not in entry:
+                raise DebateRulesError(
+                    "辯論規則設定檔缺少必要欄位：{}.{}".format(field, name)
+                )
+        _require_non_negative_int(entry["open_offset_ms"], field + ".open_offset_ms")
+        _require_vote_count(entry["threshold"], field + ".threshold")
+        if rounds:
+            previous = rounds[-1]
+            if entry["open_offset_ms"] <= previous.open_offset_ms:
+                raise DebateRulesError(
+                    "{}.open_offset_ms（{}）必須大於 timeline.vote_rounds[{}]."
+                    "open_offset_ms（{}）；開票 offset 必須嚴格遞增。".format(
+                        field,
+                        entry["open_offset_ms"],
+                        index - 1,
+                        previous.open_offset_ms,
+                    )
+                )
+            if entry["threshold"] >= previous.threshold:
+                raise DebateRulesError(
+                    "{}.threshold（{}）必須小於 timeline.vote_rounds[{}]."
+                    "threshold（{}）；票數門檻必須嚴格遞減。".format(
+                        field,
+                        entry["threshold"],
+                        index - 1,
+                        previous.threshold,
+                    )
+                )
+        rounds.append(
+            VoteRound(
+                open_offset_ms=entry["open_offset_ms"],
+                threshold=entry["threshold"],
+            )
+        )
+    return tuple(rounds)
 
 
 def _build_confidence(section):

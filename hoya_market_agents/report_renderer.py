@@ -197,7 +197,7 @@ def build_report(
 def render_markdown(report):
     """Render the report contract as Markdown."""
     lines = [
-        "# Hoya Bit 市場研究報告",
+        "# AI agnets debating chamber 市場研究報告",
         "",
         "> ⚠️ provider mode：{}。本報告內容為離線示範資料，不得作為市場依據。".format(
             report["provider_mode"]
@@ -266,14 +266,14 @@ def render_html(report):
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        "<title>{} — Hoya Bit 市場研究報告</title>".format(_e(report["run_id"])),
+        "<title>{} — AI agnets debating chamber 市場研究報告</title>".format(_e(report["run_id"])),
         "<style>{}</style>".format(stylesheet(_CSS)),
         "</head>",
         "<body>",
         '<p class="banner">⚠️ provider mode：{}。本報告內容為離線示範資料，不得作為市場依據。</p>'.format(
             _e(report["provider_mode"])
         ),
-        "<h1>Hoya Bit 市場研究報告</h1>",
+        "<h1>AI agnets debating chamber 市場研究報告</h1>",
         '<p><a class="button" href="debate.html">查看完整辯論與證據</a></p>',
         '<section class="headline">',
         "<dl>",
@@ -377,20 +377,7 @@ def stylesheet(rules):
     there is a single palette and the page is white whatever the operating
     system prefers.
     """
-    return (
-        ":root{"
-        + _custom_properties(design_tokens.PALETTE)
-        + _custom_properties(design_tokens.SCALE)
-        + "}"
-        + rules
-    )
-
-
-def _custom_properties(values):
-    return "".join(
-        "--{}:{};".format(name.replace("_", "-"), value)
-        for name, value in sorted(values.items())
-    )
+    return design_tokens.root_rule() + rules
 
 
 def decorative_hairline(selector):
@@ -544,7 +531,7 @@ def render_market_markdown(report):
     labels = _report_stance_labels(report)
     seat_labels = _report_seat_labels(report)
     lines = [
-        "# Hoya Bit 市場判斷報告",
+        "# AI agnets debating chamber 市場判斷報告",
         "",
         "## 判斷摘要",
         "",
@@ -617,12 +604,12 @@ def render_market_html(report, sources=None):
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        "<title>Hoya Bit 市場判斷報告</title>",
+        "<title>AI agnets debating chamber 市場判斷報告</title>",
         "<style>{}</style>".format(stylesheet(_MARKET_CSS)),
         "</head>",
         "<body>",
         "<main>",
-        '<header class="page-header"><div><p class="eyebrow">Hoya Bit 可稽核市場研究</p>',
+        '<header class="page-header"><div><p class="eyebrow">AI agnets debating chamber 可稽核市場研究</p>',
         "<h1>市場判斷報告</h1></div>",
         # 導覽只列這份 bundle 真的帶著的頁面。曾經有第三個 tab 指向
         # ``live.html``，但那個檔案從來不在 run 目錄裡：舊的直播頁走的是伺服器

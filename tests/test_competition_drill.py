@@ -17,6 +17,7 @@ from hoya_market_agents.competition_drill import (
     FALLBACK_EVIDENCE_ASSET,
     run_fake_competition_drill,
 )
+from hoya_market_agents.debate_rules import debate_rules
 from hoya_market_agents.debate_state_machine import STANCES_BY_QUESTION_TYPE
 from hoya_market_agents.question import UnsupportedQuestionError
 from hoya_market_agents.question_package import build_question_package
@@ -101,6 +102,43 @@ class CompetitionDrillTest(unittest.TestCase):
         self.assertIn('href="debate.html"', report_html)
         self.assertIn('href="report.html"', debate_html)
         self.assertEqual("VERIFIED", verify_run(self.data_root, result.run_id)["status"])
+
+    def test_drill_uses_free_debate_between_the_first_two_vote_walls(self):
+        result = run_fake_competition_drill(
+            data_root=self.data_root,
+            question="分析 BTC 過去 14 日市場狀態",
+            token="d22223",
+        )
+        entries = [
+            json.loads(line)
+            for line in (result.run_dir / "debate.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        messages = [entry for entry in entries if entry.get("event") == "seat_message"]
+        final_votes = [entry for entry in messages if entry["kind"] == "final_vote"]
+        rules = debate_rules()
+        seal_ms = research_deadlines("single_asset_market_state").seal_ms
+        first_wall = seal_ms + rules.vote_rounds[0].open_offset_ms
+        second_wall = seal_ms + rules.vote_rounds[1].open_offset_ms
+
+        self.assertEqual({"position", "final_vote"}, {entry["kind"] for entry in messages})
+        self.assertEqual(7, len(final_votes))
+        self.assertTrue(
+            all(
+                first_wall <= entry["elapsed_ms"] < second_wall
+                and entry["round"] == 1
+                and entry["public_reason"].strip()
+                for entry in final_votes
+            )
+        )
+        votes = json.loads((result.run_dir / "votes.json").read_text(encoding="utf-8"))
+        for row in votes["votes"]:
+            self.assertEqual(1, len(row["vote_changes"]))
+            self.assertEqual(
+                row["vote_changes"][0]["before"], row["vote_changes"][0]["after"]
+            )
+            self.assertTrue(row["vote_changes"][0]["public_reason"].strip())
 
     def test_drill_is_explicitly_fake_and_cannot_be_live_readiness_evidence(self):
         result = run_fake_competition_drill(

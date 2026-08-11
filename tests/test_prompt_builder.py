@@ -219,6 +219,38 @@ class PromptBuilderTest(unittest.TestCase):
         only = shared.pop()
         self.assertIn("news-01", only)
 
+    def test_per_seat_evidence_views_keep_the_stage_shared_section_identical(self):
+        views = {
+            seat.seat_id: [
+                {
+                    "evidence_id": "{}-private".format(seat.seat_id),
+                    "seat_id": seat.seat_id,
+                    "statement": "{} 的私有開場證據".format(seat.seat_id),
+                }
+            ]
+            for seat in self.roster
+        }
+
+        prompts = [
+            build_seat_prompt(
+                self.scope,
+                seat,
+                "debate",
+                evidence_view=views[seat.seat_id],
+            )
+            for seat in self.roster
+        ]
+
+        self.assertEqual(1, len({prompt.shared_section for prompt in prompts}))
+        for prompt in prompts:
+            own_id = "{}-private".format(prompt.seat_id)
+            self.assertIn(own_id, prompt.seat_section)
+            for other in self.roster:
+                if other.seat_id != prompt.seat_id:
+                    self.assertNotIn(
+                        "{}-private".format(other.seat_id), prompt.text
+                    )
+
     def test_vote_phase_shares_evidence_and_debate_snapshots(self):
         evidence = [{"evidence_id": "news-01", "statement": "示範證據"}]
         debate = [{"turn_id": "news-r1", "seat_id": "news", "public_reason": "示範理由"}]

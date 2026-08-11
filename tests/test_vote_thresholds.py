@@ -1,149 +1,207 @@
-"""Ticket #9 absolute 6/5/4 consensus thresholds with a fake clock."""
+"""Ticket 02 discrete vote walls and final-settle behavior."""
 
 import json
 import unittest
+from dataclasses import replace
 
-from hoya_market_agents.debate_rules import debate_rules
+from hoya_market_agents.debate_rules import VoteRound, debate_rules
 from hoya_market_agents.debate_state_machine import (
+    DebateLifecycleError,
     LateMessageError,
     phase_at,
     required_votes_at,
 )
+from hoya_market_agents.research_scheduler import research_deadlines
 from hoya_market_agents.seats import SEAT_IDS
 from tests.test_debate_state_machine import DebateHarness
 
-# 取值來源改成 config/debate_rules.json 的載入器；斷言值刻意不動，因為 Ticket
-# 02 的驗收就是「預設設定下行為零變化」。
+
 RULES = debate_rules()
-DEBATE_START_MS = RULES.debate_start_ms
-ROUND_ONE_WINDOW_MS = RULES.round_one_window_ms
-CHALLENGE_DEADLINE_MS = RULES.challenge_deadline_ms()
-THRESHOLD_FIVE_FROM_MS = RULES.reduced_threshold_from_ms
-FINAL_ROUND_START_MS = RULES.final_round_start_ms
-FINAL_ROUND_END_MS = RULES.final_round_end_ms
-FORCE_STOP_MS = RULES.force_stop_ms
+SINGLE_SEAL_MS = research_deadlines("single_asset_market_state").seal_ms
+COMPARISON_SEAL_MS = research_deadlines("two_asset_comparison").seal_ms
+SINGLE_WALLS = tuple(
+    SINGLE_SEAL_MS + vote_round.open_offset_ms
+    for vote_round in RULES.vote_rounds
+)
+FINAL_SETTLE_MS = SINGLE_SEAL_MS + RULES.final_settle_offset_ms
 
 
 class DebateScheduleTest(unittest.TestCase):
-    """Ticket R8 修訂二：第二輪提前到 T+6:00，門檻降五仍在 T+8:00。"""
+    def test_single_asset_uses_the_four_approved_vote_walls(self):
+        self.assertEqual((300_000, 390_000, 480_000, 570_000), SINGLE_WALLS)
+        self.assertEqual((7, 6, 5, 4), tuple(r.threshold for r in RULES.vote_rounds))
+        self.assertEqual(600_000, FINAL_SETTLE_MS)
 
-    def test_every_debate_wall_matches_the_approved_schedule(self):
-        self.assertEqual(240_000, DEBATE_START_MS)
-        # 第一輪牆是相對制：封存 ＋ 3 分鐘（單幣預設 T+7:00、比較題 T+7:30）。
-        self.assertEqual(180_000, ROUND_ONE_WINDOW_MS)
-        self.assertEqual(420_000, CHALLENGE_DEADLINE_MS)
-        self.assertEqual(480_000, THRESHOLD_FIVE_FROM_MS)
-        self.assertEqual(525_000, FINAL_ROUND_START_MS)
-        self.assertEqual(585_000, FINAL_ROUND_END_MS)
-        self.assertEqual(600_000, FORCE_STOP_MS)
+    def test_comparison_moves_the_whole_schedule_thirty_seconds(self):
+        comparison_walls = tuple(
+            COMPARISON_SEAL_MS + vote_round.open_offset_ms
+            for vote_round in RULES.vote_rounds
+        )
+        self.assertEqual((330_000, 420_000, 510_000, 600_000), comparison_walls)
+        self.assertEqual(630_000, COMPARISON_SEAL_MS + RULES.final_settle_offset_ms)
 
-    def test_the_second_round_opens_at_six_minutes_and_still_needs_six_votes(self):
-        # 第二輪提前開始不等於門檻提前放寬：T+8:00 之前仍然要六票。
-        self.assertEqual("first_round", phase_at(CHALLENGE_DEADLINE_MS - 1))
-        self.assertEqual("first_round_closed", phase_at(CHALLENGE_DEADLINE_MS))
-        self.assertEqual(6, required_votes_at(CHALLENGE_DEADLINE_MS))
-        self.assertEqual(6, required_votes_at(THRESHOLD_FIVE_FROM_MS - 1))
-        self.assertEqual(5, required_votes_at(THRESHOLD_FIVE_FROM_MS))
-
-    def test_the_second_round_owns_the_gap_between_the_first_and_final_walls(self):
-        # r2 迄與 r3 起是同一時刻：第二輪關門的那一秒最後一輪才開門。
-        self.assertEqual("first_round", phase_at(CHALLENGE_DEADLINE_MS - 1))
-        self.assertEqual("first_round_closed", phase_at(CHALLENGE_DEADLINE_MS))
-        self.assertEqual("five_vote_threshold", phase_at(FINAL_ROUND_START_MS - 1))
-        self.assertEqual("final_round", phase_at(FINAL_ROUND_START_MS))
+    def test_phase_and_threshold_helpers_accept_the_run_seal(self):
+        self.assertEqual(
+            "before_vote_round_1",
+            phase_at(SINGLE_WALLS[0] - 1, seal_ms=SINGLE_SEAL_MS),
+        )
+        for index, (opened_at, vote_round) in enumerate(
+            zip(SINGLE_WALLS, RULES.vote_rounds), start=1
+        ):
+            with self.subTest(round=index):
+                self.assertEqual(
+                    "vote_round_{}".format(index),
+                    phase_at(opened_at, seal_ms=SINGLE_SEAL_MS),
+                )
+                self.assertEqual(
+                    vote_round.threshold,
+                    required_votes_at(opened_at, seal_ms=SINGLE_SEAL_MS),
+                )
+        self.assertEqual(
+            "final_settle", phase_at(FINAL_SETTLE_MS, seal_ms=SINGLE_SEAL_MS)
+        )
 
 
 class VoteThresholdTest(unittest.TestCase):
-    def test_six_votes_stop_only_after_first_round_challenge(self):
+    def test_a_vote_change_stays_frozen_until_the_next_wall_opens(self):
         harness = DebateHarness(self)
-        stances = ["bullish"] * 6 + ["bearish"]
-        harness.positions(stances)
-        self.assertFalse(harness.machine.stopped)
-
-        harness.challenges_and_responses(stances)
-        harness.finals(stances, count=6)
-
-        self.assertEqual("consensus", harness.machine.summary()["consensus_status"])
-        self.assertEqual("bullish", harness.machine.summary()["adopted_stance"])
-        self.assertEqual("consensus_6_votes", harness.machine.stop_reason)
-
-    def test_five_votes_do_not_stop_before_t7_then_stop_on_tick(self):
-        harness = DebateHarness(self)
-        stances = ["bullish"] * 5 + ["bearish"] * 2
-        harness.complete_round(stances, count=5)
-        self.assertFalse(harness.machine.stopped)
-
-        harness.advance_to(THRESHOLD_FIVE_FROM_MS)
+        harness.positions(["bullish"] * 4 + ["bearish"] * 3)
+        harness.advance_to(SINGLE_WALLS[0])
         harness.machine.tick()
 
-        self.assertEqual(THRESHOLD_FIVE_FROM_MS, harness.machine.stop_elapsed_ms)
-        self.assertEqual("consensus_5_votes", harness.machine.stop_reason)
-        self.assertEqual("bullish", harness.machine.summary()["adopted_stance"])
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[4],
+                "final_vote",
+                "between-r1-r2",
+                round=1,
+                stance="bullish",
+                stance_change_reason="新證據支持改票",
+            )
+        )
 
-    def test_four_votes_are_adopted_only_at_t10_force_stop(self):
-        harness = DebateHarness(self)
-        stances = ["bullish"] * 4 + ["bearish"] * 3
-        harness.complete_round(stances)
-        harness.advance_to(FORCE_STOP_MS)
+        self.assertEqual(4, harness.machine.summary()["tally"]["bullish"])
+        self.assertEqual(
+            "bearish", harness.machine.vote_table()[4]["final_stance"]
+        )
 
+        harness.advance_to(SINGLE_WALLS[1])
         harness.machine.tick()
+        self.assertEqual(5, harness.machine.summary()["tally"]["bullish"])
+        self.assertEqual(
+            "bullish", harness.machine.vote_table()[4]["final_stance"]
+        )
 
+    def test_six_one_opening_waits_for_round_two_without_challenge_gate(self):
+        harness = DebateHarness(self)
+        harness.positions(["bullish"] * 6 + ["bearish"])
+
+        self.assertFalse(harness.machine.stopped)
+        self.assertEqual({}, harness.machine.valid_votes())
+
+        harness.advance_to(SINGLE_WALLS[0])
+        harness.machine.tick()
+        self.assertFalse(harness.machine.stopped)
+        self.assertEqual(7, len(harness.machine.valid_votes()))
+
+        harness.advance_to(SINGLE_WALLS[1])
+        harness.machine.tick()
         summary = harness.machine.summary()
+        self.assertEqual("consensus_6_votes", summary["stop_reason"])
         self.assertEqual("consensus", summary["consensus_status"])
         self.assertEqual("bullish", summary["adopted_stance"])
+
+    def test_five_votes_are_not_continuously_counted_between_walls(self):
+        harness = DebateHarness(self)
+        harness.positions(["bullish"] * 5 + ["bearish"] * 2)
+
+        harness.advance_to(SINGLE_WALLS[1] + 1)
+        harness.machine.tick()
+        self.assertFalse(harness.machine.stopped)
+
+        harness.advance_to(SINGLE_WALLS[2])
+        harness.machine.tick()
+        self.assertEqual("consensus_5_votes", harness.machine.stop_reason)
+        self.assertEqual(SINGLE_WALLS[2], harness.machine.stop_elapsed_ms)
+
+    def test_four_votes_settle_at_round_four_with_an_orange_threshold(self):
+        harness = DebateHarness(self)
+        harness.positions(["bullish"] * 4 + ["bearish"] * 3)
+
+        harness.advance_to(SINGLE_WALLS[3])
+        harness.machine.tick()
+
+        summary = harness.machine.summary()
+        self.assertEqual("consensus_4_votes", summary["stop_reason"])
+        self.assertEqual(4, summary["threshold_required"])
+        self.assertEqual("bullish", summary["adopted_stance"])
+
+    def test_final_settle_adopts_a_late_four_vote_leader(self):
+        harness = DebateHarness(self)
+        stances = ["bullish"] * 3 + ["bearish"] * 3 + ["neutral"]
+        harness.positions(stances)
+        harness.advance_to(SINGLE_WALLS[3])
+        harness.machine.tick()
+        self.assertFalse(harness.machine.stopped)
+
+        harness.machine.relay(
+            harness.message(
+                SEAT_IDS[6],
+                "final_vote",
+                "late-settle-change",
+                round=3,
+                stance="bullish",
+                stance_change_reason="完整證據支持改票",
+            )
+        )
+        harness.advance_to(FINAL_SETTLE_MS)
+        harness.machine.tick()
+
+        summary = harness.machine.summary()
         self.assertEqual("forced_stop_4_votes", summary["stop_reason"])
-        self.assertEqual(FORCE_STOP_MS, summary["stop_elapsed_ms"])
+        self.assertEqual("consensus", summary["consensus_status"])
+        self.assertEqual("bullish", summary["adopted_stance"])
 
-    def test_three_two_two_is_no_consensus_and_preserves_every_position_as_dissent(self):
+    def test_final_settle_with_three_two_two_is_red_no_consensus(self):
         harness = DebateHarness(self)
-        stances = ["bullish"] * 3 + ["bearish"] * 2 + ["neutral"] * 2
-        harness.complete_round(stances)
-        harness.advance_to(FORCE_STOP_MS)
-
+        harness.positions(["bullish"] * 3 + ["bearish"] * 2 + ["neutral"] * 2)
+        harness.advance_to(FINAL_SETTLE_MS)
         harness.machine.tick()
 
         summary = harness.machine.summary()
-        self.assertEqual("no_consensus", summary["consensus_status"])
-        self.assertIsNone(summary["adopted_stance"])
-        self.assertFalse(summary["market_conclusion_allowed"])
         self.assertEqual("forced_stop_no_consensus", summary["stop_reason"])
-        self.assertEqual(7, len(summary["dissent"]))
-
-    def test_fewer_than_four_valid_votes_is_red_with_no_market_conclusion(self):
-        harness = DebateHarness(self)
-        stances = ["bullish"] * 3 + ["bearish"] * 2 + ["neutral"] * 2
-        harness.complete_round(stances, count=3)
-        harness.advance_to(FORCE_STOP_MS)
-
-        harness.machine.tick()
-
-        summary = harness.machine.summary()
-        self.assertEqual("failed_insufficient_valid_votes", summary["consensus_status"])
+        self.assertEqual("no_consensus", summary["consensus_status"])
         self.assertTrue(summary["red_no_conclusion"])
         self.assertFalse(summary["market_conclusion_allowed"])
-        self.assertIsNone(summary["adopted_stance"])
-        self.assertEqual(7, len(summary["votes"]))
-        self.assertEqual(3, summary["valid_vote_count"])
+        self.assertEqual(7, len(summary["dissent"]))
 
-    def test_thresholds_are_absolute_not_a_fraction_of_available_seats(self):
-        self.assertEqual(6, required_votes_at(THRESHOLD_FIVE_FROM_MS - 1))
-        self.assertEqual(5, required_votes_at(THRESHOLD_FIVE_FROM_MS))
-        self.assertEqual(4, required_votes_at(FORCE_STOP_MS))
-        self.assertEqual("final_round", phase_at(FINAL_ROUND_START_MS))
-        self.assertEqual("after_final_round", phase_at(FINAL_ROUND_END_MS + 1))
-
-    def test_exact_t7_settles_existing_five_before_rejecting_incoming_vote_change(self):
+    def test_final_settle_with_only_three_votes_is_an_insufficient_vote_failure(self):
         harness = DebateHarness(self)
-        stances = ["bullish"] * 5 + ["bearish"] * 2
-        harness.complete_round(stances, count=5)
-        harness.advance_to(THRESHOLD_FIVE_FROM_MS)
+        harness.positions(["bullish"] * 3)
+        harness.advance_to(FINAL_SETTLE_MS)
+        harness.machine.tick()
+
+        summary = harness.machine.summary()
+        self.assertEqual(
+            "forced_stop_insufficient_valid_votes", summary["stop_reason"]
+        )
+        self.assertEqual(
+            "failed_insufficient_valid_votes", summary["consensus_status"]
+        )
+        self.assertEqual(3, summary["valid_vote_count"])
+        self.assertTrue(summary["red_no_conclusion"])
+
+    def test_exact_round_wall_settles_before_an_incoming_vote_change(self):
+        harness = DebateHarness(self)
+        harness.positions(["bullish"] * 5 + ["bearish"] * 2)
+        harness.advance_to(SINGLE_WALLS[2])
         incoming = harness.message(
             SEAT_IDS[0],
             "final_vote",
-            "t7-change",
+            "on-wall-change",
             round=2,
             stance="bearish",
-            stance_change_reason="late counterclaim",
+            stance_change_reason="too late for this opening",
         )
 
         with self.assertRaises(LateMessageError):
@@ -154,33 +212,60 @@ class VoteThresholdTest(unittest.TestCase):
         )
         self.assertEqual("consensus_5_votes", persisted["stop_reason"])
         self.assertEqual(5, persisted["tally"]["bullish"])
-        self.assertEqual("bullish", persisted["votes"][0]["final_stance"])
         self.assertEqual("message_rejected", harness.machine.entries[-1]["event"])
 
-    def test_exact_t10_callback_force_stops_and_persists_before_incoming_change(self):
-        harness = DebateHarness(self)
-        stances = ["bullish"] * 4 + ["bearish"] * 3
-        harness.complete_round(stances)
-        harness.advance_to(FORCE_STOP_MS)
-        incoming = harness.message(
-            SEAT_IDS[0],
-            "final_vote",
-            "t10-change",
-            round=3,
-            stance="bearish",
-            stance_change_reason="too late",
+    def test_round_count_and_stop_reason_come_from_a_three_round_rule_array(self):
+        rules = replace(
+            RULES,
+            vote_rounds=(
+                VoteRound(open_offset_ms=10, threshold=7),
+                VoteRound(open_offset_ms=20, threshold=5),
+                VoteRound(open_offset_ms=30, threshold=3),
+            ),
+            final_settle_offset_ms=40,
         )
+        harness = DebateHarness(self, rules=rules)
+        harness.positions(["bullish"] * 3 + ["bearish"] * 2 + ["neutral"] * 2)
 
-        with self.assertRaises(LateMessageError):
-            harness.machine.relay(incoming)
+        harness.advance_to(harness.debate_start_ms + 30)
+        harness.machine.tick()
 
-        persisted = json.loads(
-            (harness.run.path / "votes.json").read_text(encoding="utf-8")
+        self.assertEqual("consensus_3_votes", harness.machine.stop_reason)
+        self.assertEqual(harness.debate_start_ms + 30, harness.machine.stop_elapsed_ms)
+
+    def test_a_single_round_rule_accepts_round_one_after_its_wall(self):
+        rules = replace(
+            RULES,
+            vote_rounds=(VoteRound(open_offset_ms=10, threshold=7),),
+            final_settle_offset_ms=20,
         )
-        self.assertEqual("forced_stop_4_votes", persisted["stop_reason"])
-        self.assertEqual("bullish", persisted["adopted_stance"])
-        self.assertEqual(4, persisted["tally"]["bullish"])
-        self.assertEqual("bullish", persisted["votes"][0]["final_stance"])
+        harness = DebateHarness(self, rules=rules)
+        harness.positions(["bullish"] * 6 + ["bearish"])
+        harness.advance_to(harness.debate_start_ms + 10)
+        harness.machine.tick()
+
+        entry = harness.machine.relay(
+            harness.message(
+                SEAT_IDS[6],
+                "final_vote",
+                "single-round-change",
+                round=1,
+                stance="bullish",
+                stance_change_reason="結算前的新證據",
+            )
+        )
+        self.assertEqual(1, entry["round"])
+
+        with self.assertRaisesRegex(DebateLifecycleError, "第 1 輪"):
+            harness.machine.relay(
+                harness.message(
+                    SEAT_IDS[5],
+                    "final_vote",
+                    "bad-single-round-number",
+                    round=2,
+                    stance="bullish",
+                )
+            )
 
 
 if __name__ == "__main__":

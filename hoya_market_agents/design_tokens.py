@@ -292,3 +292,18 @@ SCALE = {
     "motion_fast": ".18s",
     "dim": ".55",
 }
+
+
+def custom_properties(values):
+    """Serialize one token mapping as deterministic CSS custom properties."""
+    return "".join(
+        "--{}:{};".format(name.replace("_", "-"), value)
+        for name, value in sorted(values.items())
+    )
+
+
+def root_rule():
+    """Return the single shared ``:root`` rule for web and offline pages."""
+    return ":root{{{}{}}}".format(
+        custom_properties(PALETTE), custom_properties(SCALE)
+    )

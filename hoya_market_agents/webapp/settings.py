@@ -113,37 +113,18 @@ UNTRANSLATED_NOTE = "尚未翻譯"
 # are the same field, five times over. :func:`_generic` is what turns a real
 # path into this spelling, and it is the only difference between the two.
 FIELD_LABELS = {
-    "schema_version": ("規則檔版本", "規則檔的格式版本，目前僅支援 1，平常不需改動"),
-    "timeline_ms.debate_start": (
-        "證據封存時刻",
-        "開賽後多久結束研究、封存證據（毫秒），之後進入辯論",
+    "schema_version": ("規則檔版本", "規則檔的格式版本，目前僅支援 2，平常不需改動"),
+    "timeline.vote_rounds[].open_offset_ms": (
+        "開票時刻（封存後毫秒）",
+        "封存後過這麼多毫秒開這一輪票；單幣題封存在第 4 分鐘",
     ),
-    "timeline_ms.round_one_window": (
-        "第一輪挑戰時窗",
-        "證據封存後，留給第一輪反方挑戰的時間長度（毫秒）",
+    "timeline.vote_rounds[].threshold": (
+        "所需同立場票數",
+        "這一輪要幾席同立場才能結案寫報告",
     ),
-    "timeline_ms.reduced_threshold_from": (
-        "門檻下調時刻",
-        "從此時間點起，過關票數由「初始」降為「下調後」",
-    ),
-    "timeline_ms.final_round_start": ("最終輪開始", "最後一輪辯論的開始時間"),
-    "timeline_ms.final_round_end": ("最終輪結束", "最後一輪辯論的結束時間"),
-    "timeline_ms.force_stop": (
-        "強制結算時刻",
-        "時間到就強制結算：達強停票數採納立場，否則未達共識",
-    ),
-    "vote_thresholds.unanimous_blind_pass": (
-        "盲投直過票數",
-        "開場盲投全數同立場達此票數，直接產出藍燈報告、不進辯論",
-    ),
-    "vote_thresholds.initial": ("初始過關票數", "辯論開始時，達成共識所需的有效票數"),
-    "vote_thresholds.reduced": (
-        "下調後過關票數",
-        "門檻下調時刻後，達成共識所需的有效票數",
-    ),
-    "vote_thresholds.forced_stop": (
-        "強停採納票數",
-        "強制結算時至少要這麼多票才採納立場，否則未達共識",
+    "timeline.final_settle_offset_ms": (
+        "硬停結算時刻（封存後毫秒）",
+        "時間到直接停止辯論做最終結算；沒有立場達到末輪票數就亮紅燈",
     ),
     "confidence.light_scale[].min_votes": (
         "最低票數",
@@ -185,12 +166,17 @@ FIELD_LABELS = {
 # directly under it arrives with a Chinese title rather than with its path.
 SECTION_LABELS = {
     "": "基本",
-    "timeline_ms": "時間軸（毫秒）",
-    "vote_thresholds": "票數門檻",
+    "timeline": "時間軸",
+    "timeline.vote_rounds[]": "投票輪清單",
     "confidence": "燈號規則",
     "confidence.light_scale[]": "燈號階梯",
     "confidence.downgrades.few_independent_domains": "降級：獨立來源不足",
     "confidence.downgrades.low_trust_source": "降級：低可信來源",
+}
+
+SECTION_DESCRIPTIONS = {
+    "timeline": "辯論各輪開票時刻，全部從證據封存那一刻起算",
+    "timeline.vote_rounds[]": "一列一輪：何時開票、需要幾席同立場才結案",
 }
 
 LOCKED_MESSAGE = (
@@ -626,6 +612,7 @@ def _section_of(parent, document, grouped, errors):
         "path": parent,
         "label": title if title is not None else (parent or "（最外層）"),
         "untranslated": title is None,
+        "description": SECTION_DESCRIPTIONS.get(_generic(parent)),
         "about": _about_at(document, parent),
         "error": errors.get(parent),
         "fields": grouped[parent],
@@ -719,36 +706,27 @@ def _segments(path):
 
 
 def _timeline(document):
-    """Return one bar per ``timeline_ms`` number, longest scaled to full width.
+    """Return one readable row per schema-v2 vote round.
 
-    Each row is that field's own millisecond count drawn as a length from zero.
-    It does **not** say which of them are instants and which are windows: that
-    distinction lives in the loader and is not exposed, so drawing it would mean
-    keeping a second copy of it here. A value that is not a whole number gets no
-    bar and says so.
+    The document already owns the order and number of rounds. This projection
+    adds only presentation words and a clock conversion; it does not validate
+    the values or keep a second rule ladder.
     """
-    section = _at(document, "timeline_ms") if isinstance(document, dict) else None
-    if not isinstance(section, dict):
+    rounds = _at(document, "timeline.vote_rounds") if isinstance(document, dict) else None
+    if not isinstance(rounds, list):
         return []
-    numbers = [
-        (name, value)
-        for name, value in section.items()
-        if not name.startswith(COMMENT_PREFIX)
-    ]
-    widest = max(
-        [value for _, value in numbers if isinstance(value, int) and not isinstance(value, bool)],
-        default=0,
-    )
     rows = []
-    for name, value in numbers:
-        usable = isinstance(value, int) and not isinstance(value, bool) and widest > 0
+    for index, vote_round in enumerate(rounds, start=1):
+        if not isinstance(vote_round, dict):
+            continue
+        offset = vote_round.get("open_offset_ms")
         rows.append(
             {
-                "path": "timeline_ms.{}".format(name),
-                "label": name,
-                "value": value,
-                "percent": round(100.0 * value / widest, 2) if usable else 0.0,
-                "clock": _clock(value) if usable else "—",
+                "round": index,
+                "label": "第 {} 輪".format(index),
+                "open_offset_ms": offset,
+                "threshold": vote_round.get("threshold"),
+                "clock": _clock(offset) if type(offset) is int else "—",
             }
         )
     return rows

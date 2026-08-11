@@ -315,9 +315,10 @@ class OfflinePageNavigationTest(NavInjectionFixture, unittest.TestCase):
         response = self.open_artifact(REPORT_ARTIFACT)
 
         self.assertEqual(
-            server_module.CONTENT_SECURITY_POLICY,
+            server_module.ARTIFACT_CONTENT_SECURITY_POLICY,
             response.headers["Content-Security-Policy"],
         )
+        self.assertIn("style-src 'unsafe-inline'", response.headers["Content-Security-Policy"])
 
     def test_the_length_header_counts_the_bytes_that_were_actually_sent(self):
         """注入之後長度要跟著變，否則瀏覽器會讀到半頁。"""

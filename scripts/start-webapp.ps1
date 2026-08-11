@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    啟動 hoya-bit 辯論室（隱藏視窗），並開瀏覽器。
+    啟動 AI agnets debating chamber（隱藏視窗），並開瀏覽器。
 
 .DESCRIPTION
     工作區根目錄的「開啟辯論室」捷徑就是在跑這一支；捷徑只是薄殼，判斷全在這裡。
@@ -23,7 +23,7 @@
     監聽埠。省略時用 webapp-common.ps1 的預設值（8765）。
 
 .PARAMETER DataRoot
-    資料根目錄。省略時用專案自己的預設值（hoya-bit-market-agents_data）。
+    資料根目錄。省略時用專案自己的預設值（AI-agnets-debating-chamber_data）。
 
 .PARAMETER NoBrowser
     只啟動伺服器，不開瀏覽器。
@@ -87,12 +87,12 @@ if (-not (Wait-WebappPort -Port $Port -Listening $true -TimeoutSeconds 40)) {
 }
 
 Write-Host ""
-Write-Host "hoya-bit 辯論室已啟動（隱藏視窗）" -ForegroundColor Cyan
+Write-Host "AI agnets debating chamber 已啟動（隱藏視窗）" -ForegroundColor Cyan
 Write-Host "  網址    $url"
 if ($DataRoot -ne "") {
     Write-Host "  資料    $DataRoot"
 } else {
-    Write-Host "  資料    專案預設（hoya-bit-market-agents_data）"
+    Write-Host "  資料    專案預設（AI-agnets-debating-chamber_data）"
 }
 Write-Host "  程序    wsl.exe PID $($server.Id)"
 Write-Host "  停止    頁面右上角「關閉伺服器」，或工作區的「關閉辯論室」捷徑"

@@ -24,6 +24,7 @@ from .question_package import (
     OPEN_QUESTION_TYPE,
     OPEN_STANCES,
 )
+from .research_scheduler import research_deadlines
 from .run_store import RunStoreError
 from .seats import SEAT_IDS
 
@@ -110,14 +111,16 @@ def stances_for(question_type):
         raise DebateError("未知 question_type：{!r}".format(question_type)) from exc
 
 
-def required_votes_at(elapsed_ms, rules=None):
+def required_votes_at(elapsed_ms, rules=None, seal_ms=None):
     """Return the absolute vote threshold in force at an elapsed time."""
-    return (rules or debate_rules()).required_votes_at(elapsed_ms)
+    return (rules or debate_rules()).required_votes_at(elapsed_ms, seal_ms=seal_ms)
 
 
-def phase_at(elapsed_ms, challenge_deadline_ms=None, rules=None):
+def phase_at(elapsed_ms, challenge_deadline_ms=None, rules=None, seal_ms=None):
     """Name the deadline window an elapsed time falls in."""
-    return (rules or debate_rules()).phase_at(elapsed_ms, challenge_deadline_ms)
+    return (rules or debate_rules()).phase_at(
+        elapsed_ms, challenge_deadline_ms, seal_ms=seal_ms
+    )
 
 
 def content_sha256(content):
@@ -206,12 +209,27 @@ class DebateStateMachine:
         self.question_type = question_type
         self.rules = rules or debate_rules()
         self.debate_start_ms = (
-            self.rules.debate_start_ms if debate_start_ms is None else debate_start_ms
+            research_deadlines(question_type).seal_ms
+            if debate_start_ms is None
+            else debate_start_ms
         )
-        # 第一輪牆是相對制：以該 run 實際封存的時刻起算一整個 round_one_window。
-        self.challenge_deadline_ms = self.rules.challenge_deadline_ms(
-            self.debate_start_ms
+        self.vote_round_schedule = tuple(
+            (
+                index,
+                self.debate_start_ms + vote_round.open_offset_ms,
+                vote_round.threshold,
+            )
+            for index, vote_round in enumerate(self.rules.vote_rounds, start=1)
         )
+        self.first_vote_open_ms = self.vote_round_schedule[0][1]
+        self.final_settle_ms = (
+            self.debate_start_ms + self.rules.final_settle_offset_ms
+        )
+        # Ticket 03 尚未移除舊 challenge 訊息；過渡期間只保留格式驗證，票是否
+        # 有效已完全不再依賴 challenge/response。此牆由輪陣列推導，不再是規則。
+        self.challenge_deadline_ms = self.vote_round_schedule[
+            min(1, len(self.vote_round_schedule) - 1)
+        ][1]
         self.stances = stances_for(question_type)
         self.seat_ids = tuple(seat_ids)
         self.evidence_records = list(evidence_records)
@@ -266,6 +284,9 @@ class DebateStateMachine:
         self.stop_reason = None
         self.stop_elapsed_ms = None
         self.result = None
+        self._opened_vote_rounds = set()
+        self._round_votes = {}
+        self._counted_votes = None
         self._append_entry(
             "debate_opened",
             {
@@ -366,8 +387,7 @@ class DebateStateMachine:
 
         if (
             self.stopped
-            or elapsed >= self.rules.force_stop_ms
-            or elapsed > self.rules.final_round_end_ms
+            or elapsed >= self.final_settle_ms
         ):
             self._reject(content, "late_message", elapsed)
             raise LateMessageError(
@@ -413,35 +433,17 @@ class DebateStateMachine:
                 raise DebateLifecycleError(
                     "initial position 必須是該席唯一的 round 0 position。"
                 )
-        elif (
-            not isinstance(round_number, int)
-            or isinstance(round_number, bool)
-            or round_number not in (1, 2, 3)
-        ):
+            if elapsed > self.first_vote_open_ms:
+                self._reject(content, "opening_after_first_vote_wall", elapsed)
+                raise DebateLifecycleError("第一輪開票後不得補交 opening position。")
+        elif not isinstance(round_number, int) or isinstance(round_number, bool):
             self._reject(content, "invalid_round", elapsed)
-            raise DebateLifecycleError("debate round 必須為 1、2 或 3。")
-        elif elapsed <= self.challenge_deadline_ms and round_number != 1:
+            raise DebateLifecycleError("debate round 必須為整數。")
+        elif round_number != self._debate_round_at(elapsed):
             self._reject(content, "round_does_not_match_deadline", elapsed)
             raise DebateLifecycleError(
-                "第一輪牆（{}ms）前只能提交第一輪內容。".format(
-                    self.challenge_deadline_ms
-                )
-            )
-        elif (
-            self.challenge_deadline_ms < elapsed < self.rules.final_round_start_ms
-            and round_number != 2
-        ):
-            self._reject(content, "round_does_not_match_deadline", elapsed)
-            raise DebateLifecycleError(
-                "第一輪牆後、最後一輪（{}ms）開始前只能提交第二輪內容。".format(
-                    self.rules.final_round_start_ms
-                )
-            )
-        elif elapsed >= self.rules.final_round_start_ms and round_number != 3:
-            self._reject(content, "round_does_not_match_deadline", elapsed)
-            raise DebateLifecycleError(
-                "最後一輪（{}ms）開始後只能提交最後一輪內容。".format(
-                    self.rules.final_round_start_ms
+                "{}ms 應提交第 {} 輪內容。".format(
+                    elapsed, self._debate_round_at(elapsed)
                 )
             )
 
@@ -544,16 +546,9 @@ class DebateStateMachine:
                     "response 的 target_seat_id 必須是所引用 challenge 的作者。"
                 )
         elif kind == "final_vote":
-            completed_first_round = (
-                seat.initial is not None
-                and any(item.get("round") == 1 for item in seat.challenges)
-                and any(item.get("round") == 1 for item in seat.responses)
-            )
-            if not completed_first_round:
-                self._reject(content, "final_vote_before_required_debate", elapsed)
-                raise DebateLifecycleError(
-                    "final vote 前必須完成 initial position、反方 challenge 與 response。"
-                )
+            if seat.initial is None:
+                self._reject(content, "final_vote_before_opening", elapsed)
+                raise DebateLifecycleError("final vote 前必須先公開 opening position。")
             before = seat.final or seat.initial
             changed = before.get("stance") != content.get("stance")
             reason = content.get("stance_change_reason")
@@ -562,6 +557,19 @@ class DebateStateMachine:
                 raise DebateLifecycleError("改票必須保存非空 stance_change_reason。")
 
         return self._record(seat, content, elapsed, lineage, extra)
+
+    def _debate_round_at(self, elapsed):
+        """Return the inter-wall turn number from an arbitrary round array."""
+        if len(self.vote_round_schedule) < 2:
+            return 1
+        round_number = 1
+        # R1 後到 R2 是 turn 1；每多開一個中間票牆就進下一個 turn。末輪牆後
+        # 到 final_settle 仍屬最後一個 turn，讓牆前已派出的慢回覆可以落地。
+        for _, opened_at, _ in self.vote_round_schedule[1:-1]:
+            if elapsed < opened_at:
+                break
+            round_number += 1
+        return round_number
 
     def _seat_message(self, message_id):
         for entry in self.entries:
@@ -747,7 +755,9 @@ class DebateStateMachine:
             "event": event,
             "created_at_utc": self._utc_at(elapsed),
             "elapsed_ms": elapsed,
-            "deadline_phase": self.rules.phase_at(elapsed, self.challenge_deadline_ms),
+            "deadline_phase": self.rules.phase_at(
+                elapsed, seal_ms=self.debate_start_ms
+            ),
             **detail,
         }
         entry["entry_sha256"] = content_sha256(entry)
@@ -778,17 +788,32 @@ class DebateStateMachine:
 
     # -- stopping -----------------------------------------------------------
 
-    def valid_votes(self):
-        """Return the current valid vote per seat, keyed by seat id."""
-        return {
-            seat_id: seat.final
-            for seat_id, seat in self.seats.items()
-            if seat.state == "valid"
-        }
+    def _votes_at(self, elapsed):
+        """Return each seat's latest public stance at one ballot instant."""
+        votes = {}
+        for seat_id, seat in self.seats.items():
+            latest = None
+            for entry in seat.messages:
+                if entry["elapsed_ms"] > elapsed:
+                    break
+                if entry["kind"] in ("position", "final_vote"):
+                    latest = entry["content"]
+            if latest is not None and not seat.invalid_reason:
+                votes[seat_id] = latest
+        return votes
 
-    def tally(self):
+    def valid_votes(self):
+        """Return latest public stances once a discrete ballot has opened."""
+        if self._counted_votes is not None:
+            return deepcopy(self._counted_votes)
+        if not self._opened_vote_rounds:
+            return {}
+        latest_round = max(self._opened_vote_rounds)
+        return deepcopy(self._round_votes[latest_round])
+
+    def tally(self, votes=None):
         counts = {stance: 0 for stance in self.stances}
-        for vote in self.valid_votes().values():
+        for vote in (self.valid_votes() if votes is None else votes).values():
             counts[vote["stance"]] += 1
         return counts
 
@@ -796,20 +821,29 @@ class DebateStateMachine:
         if self.stopped:
             return None
         elapsed = self.elapsed_ms
-        if elapsed >= self.rules.force_stop_ms:
-            return self._force_stop()
-        # 直過與底下的票數階梯互斥，不必排順序：直過的前提是還沒有任何辯論訊
-        # 息，因此也還沒有任何有效票，而階梯數的正是有效票。
         blind_pass_stance = self._blind_pass_stance(elapsed)
         if blind_pass_stance is not None:
             return self._blind_pass(blind_pass_stance, elapsed)
-        threshold = self.rules.required_votes_at(elapsed)
-        counts = self.tally()
-        leader = max(counts, key=lambda stance: counts[stance])
-        if counts[leader] >= threshold:
-            return self._stop(
-                "consensus_{}_votes".format(threshold), elapsed, leader, threshold
-            )
+        for round_number, opened_at, threshold in self.vote_round_schedule:
+            if opened_at > elapsed:
+                break
+            if round_number in self._opened_vote_rounds:
+                continue
+            self._opened_vote_rounds.add(round_number)
+            votes = self._votes_at(opened_at)
+            self._round_votes[round_number] = deepcopy(votes)
+            counts = self.tally(votes)
+            leader = max(counts, key=lambda stance: counts[stance])
+            if counts[leader] >= threshold:
+                return self._stop(
+                    "consensus_{}_votes".format(threshold),
+                    opened_at,
+                    leader,
+                    threshold,
+                    votes,
+                )
+        if elapsed >= self.final_settle_ms:
+            return self._final_settle()
         return None
 
     def _blind_pass_stance(self, elapsed):
@@ -823,16 +857,16 @@ class DebateStateMachine:
         * **全席發布且達門檻**：七席的開場都已進公開紀錄，且同一立場的開場票
           數達到 ``vote_thresholds.unanimous_blind_pass``。
         """
-        if elapsed > self.challenge_deadline_ms:
+        if elapsed > self.first_vote_open_ms:
             return None
         if self.debate_rounds_started:
             return None
         if any(seat.initial is None for seat in self.seats.values()):
             return None
+        if len(self.opening_stances()) != 1:
+            return None
         counts = self.opening_tally()
         leader = max(counts, key=lambda stance: counts[stance])
-        if counts[leader] < self.rules.unanimous_blind_pass_votes:
-            return None
         return leader
 
     def _blind_pass(self, stance, elapsed):
@@ -848,17 +882,19 @@ class DebateStateMachine:
             UNANIMOUS_BLIND_PASS,
             elapsed,
             stance,
-            self.rules.unanimous_blind_pass_votes,
+            len(self.seat_ids),
+            self._votes_at(elapsed),
         )
 
-    def _force_stop(self):
+    def _final_settle(self):
         elapsed = self.elapsed_ms
-        if elapsed < self.rules.force_stop_ms:
+        if elapsed < self.final_settle_ms:
             return None
-        required = self.rules.forced_stop_votes
-        counts = self.tally()
+        required = self.rules.vote_rounds[-1].threshold
+        votes = self._votes_at(self.final_settle_ms)
+        counts = self.tally(votes)
         leader = max(counts, key=lambda stance: counts[stance])
-        valid_count = len(self.valid_votes())
+        valid_count = len(votes)
         adopted = (
             leader if valid_count >= required and counts[leader] >= required else None
         )
@@ -868,21 +904,22 @@ class DebateStateMachine:
             reason = "forced_stop_{}_votes".format(required)
         else:
             reason = "forced_stop_no_consensus"
-        return self._stop(reason, elapsed, adopted, required)
+        return self._stop(reason, self.final_settle_ms, adopted, required, votes)
 
-    def _stop(self, reason, elapsed, adopted_stance, threshold):
+    def _stop(self, reason, elapsed, adopted_stance, threshold, votes):
         self.stopped = True
         self.stop_reason = reason
         self.stop_elapsed_ms = elapsed
         self._stop_threshold = threshold
         self._adopted_stance = adopted_stance
+        self._counted_votes = deepcopy(votes)
         self._append_entry(
             "debate_stopped",
             {
                 "stop_reason": reason,
                 "threshold_required": threshold,
                 "adopted_stance": adopted_stance,
-                "tally": self.tally(),
+                "tally": self.tally(votes),
             },
             elapsed=elapsed,
         )
@@ -893,15 +930,24 @@ class DebateStateMachine:
     def vote_table(self):
         """Return the full seven-seat table, including missing/invalid seats."""
         table = []
+        valid_votes = self.valid_votes()
         for seat_id in self.seat_ids:
             seat = self.seats[seat_id]
             initial = seat.initial or {}
-            final = seat.final or {}
+            final = valid_votes.get(seat_id) or {}
             changed = bool(initial and final and initial.get("stance") != final.get("stance"))
+            if seat.invalid_reason:
+                state = "invalid"
+            elif seat_id in valid_votes:
+                state = "valid"
+            elif seat.initial is not None:
+                state = "provisional"
+            else:
+                state = "missing"
             table.append(
                 {
                     "seat_id": seat_id,
-                    "state": seat.state,
+                    "state": state,
                     "attempt_ids": list(seat.attempt_ids),
                     "invalid_reason": seat.invalid_reason,
                     "initial_stance": initial.get("stance"),
@@ -931,12 +977,11 @@ class DebateStateMachine:
         valid_count = len(votes)
         adopted = getattr(self, "_adopted_stance", None)
         threshold = getattr(self, "_stop_threshold", None)
-        quorum = self.rules.forced_stop_votes
-        red = self.stopped and valid_count < quorum
+        quorum = self.rules.vote_rounds[-1].threshold
         if not self.stopped:
             adopted = None
             status = "in_progress"
-        elif red:
+        elif valid_count < quorum:
             adopted = None
             status = "failed_insufficient_valid_votes"
         elif adopted is not None and counts.get(adopted, 0) >= (threshold or quorum):
@@ -944,6 +989,7 @@ class DebateStateMachine:
         else:
             adopted = None
             status = "no_consensus"
+        red = self.stopped and status != "consensus"
         return {
             "schema_version": CONTRACT_VERSION,
             "run_id": self.run.run_id,

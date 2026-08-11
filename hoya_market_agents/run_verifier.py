@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
 from .contract_validator import ContractViolationError, RUN_RULES_FIELD, load_run_rules
-from .debate_rules import DebateRulesError
+from .debate_rules import DebateRules, DebateRulesError
 from .debate_state_machine import UNANIMOUS_BLIND_PASS
 from .report_contract import (
     RULES_NOT_RECORDED,
@@ -572,34 +572,32 @@ def _verify_competition_timeline(run_dir, manifest, debate, votes, timeline, rul
     # 未知時只驗與規則無關的那一半：它得是個名字。
     if not isinstance(stop_reason, str) or not stop_reason.strip():
         raise RunVerificationError("辯論停止原因必須是非空字串。")
-    if rules is not None and stop_reason not in {
-        UNANIMOUS_BLIND_PASS,
-        "consensus_{}_votes".format(rules.initial_votes),
-        "consensus_{}_votes".format(rules.reduced_votes),
-        "forced_stop_{}_votes".format(rules.forced_stop_votes),
-        "forced_stop_no_consensus",
-        "forced_stop_insufficient_valid_votes",
-    }:
+    if rules is not None and stop_reason not in _legal_stop_reasons(rules):
         raise RunVerificationError("未知辯論停止原因。")
     stop_ms = timeline.get("debate_stop_at_ms")
-    # 下界（封存時刻）與規則無關；上界是 ``force_stop``，規則未知時就沒有上界，
-    # 不拿現行設定去補一個。
+    # 下界（封存時刻）與規則無關；上界是該版規則的最終結算時刻。
+    # 規則未知時就沒有上界，不拿現行設定去補一個。
     if type(stop_ms) is not int or stop_ms < deadlines.seal_ms:
         raise RunVerificationError("辯論停止時間早於證據封存。")
-    if rules is not None and stop_ms > rules.force_stop_ms:
-        raise RunVerificationError("辯論停止時間超出封存至 T+10。")
+    if rules is not None and stop_ms > _final_settle_ms(deadlines, rules):
+        raise RunVerificationError("辯論停止時間超出當次規則的最終結算時刻。")
     if votes.get("stop_reason") != stop_reason or votes.get("stop_elapsed_ms") != stop_ms:
         raise RunVerificationError("timeline 與 votes 停止紀錄不一致。")
     if manifest.get("tally") != votes.get("tally"):
         raise RunVerificationError("manifest 與 votes 票數不一致。")
     _verify_tally_enum(votes)
     _verify_message_timestamps(debate, deadlines.seal_ms, stop_ms)
+    if isinstance(rules, DebateRules):
+        _verify_v2_final_vote_timing(debate, deadlines, rules)
     _verify_attempt_lineage(debate, votes)
     if stop_reason == UNANIMOUS_BLIND_PASS:
         _verify_blind_pass_record(debate, votes)
-    else:
+    # v1 快照與無快照舊 run 保留當時的挑戰票生命週期；
+    # v2 已退役該關卡。
+    elif not isinstance(rules, DebateRules):
         _verify_first_round_lineage(debate, votes)
-    _verify_challenge_completed(debate, votes)
+    if not isinstance(rules, DebateRules):
+        _verify_challenge_completed(debate, votes)
     if rules is not None:
         _verify_stop_semantics(votes, stop_reason, stop_ms, deadlines, rules)
 
@@ -612,6 +610,32 @@ def _verify_competition_timeline(run_dir, manifest, debate, votes, timeline, rul
         raise RunVerificationError("report hard deadline 不是 T+13。")
     if manifest.get("elapsed_ms") != report_ms:
         raise RunVerificationError("manifest elapsed_ms 與 report timeline 不一致。")
+
+
+def _legal_stop_reasons(rules):
+    """Return stop names expressible by one recorded rule snapshot."""
+    if isinstance(rules, DebateRules):
+        return {
+            UNANIMOUS_BLIND_PASS,
+            *("consensus_{}_votes".format(item.threshold) for item in rules.vote_rounds),
+            "forced_stop_{}_votes".format(rules.vote_rounds[-1].threshold),
+            "forced_stop_no_consensus",
+            "forced_stop_insufficient_valid_votes",
+        }
+    return {
+        UNANIMOUS_BLIND_PASS,
+        "consensus_{}_votes".format(rules.initial_votes),
+        "consensus_{}_votes".format(rules.reduced_votes),
+        "forced_stop_{}_votes".format(rules.forced_stop_votes),
+        "forced_stop_no_consensus",
+        "forced_stop_insufficient_valid_votes",
+    }
+
+
+def _final_settle_ms(deadlines, rules):
+    if isinstance(rules, DebateRules):
+        return deadlines.seal_ms + rules.final_settle_offset_ms
+    return rules.force_stop_ms
 
 
 def _question_type(run_dir, manifest):
@@ -746,6 +770,55 @@ def _verify_message_timestamps(debate, seal_ms=None, stop_ms=None):
             raise RunVerificationError(
                 "{} 的公開訊息 elapsed_ms（{!r}）不在本場的辯論時間窗 [{}, {}] 內。".format(
                     entry.get("seat_id"), elapsed, seal_ms, stop_ms
+                )
+            )
+
+
+def _verify_v2_final_vote_timing(debate, deadlines, rules):
+    """Match every v2 final vote to the run snapshot's inter-wall turn."""
+    round_starts = [
+        vote_round.open_offset_ms for vote_round in rules.vote_rounds[:-1]
+    ]
+    if not round_starts:
+        round_starts = [rules.vote_rounds[0].open_offset_ms]
+    round_ends = round_starts[1:] + [rules.final_settle_offset_ms]
+
+    openings = {}
+    for entry in debate:
+        if entry.get("event") != "seat_message" or entry.get("kind") != "position":
+            continue
+        openings.setdefault(entry.get("seat_id"), entry.get("elapsed_ms"))
+
+    for entry in debate:
+        if entry.get("event") != "seat_message" or entry.get("kind") != "final_vote":
+            continue
+        seat_id = entry.get("seat_id")
+        round_number = entry.get("round")
+        if (
+            type(round_number) is not int
+            or round_number < 1
+            or round_number > len(round_starts)
+        ):
+            raise RunVerificationError(
+                "{} 的 final_vote round 必須是 1..{} 的整數。".format(
+                    seat_id, len(round_starts)
+                )
+            )
+
+        elapsed = entry["elapsed_ms"]
+        opening_elapsed = openings.get(seat_id)
+        if opening_elapsed is None or elapsed < opening_elapsed:
+            raise RunVerificationError(
+                "{} 的 final_vote 時間不得早於同席 opening。".format(seat_id)
+            )
+
+        index = round_number - 1
+        lower = deadlines.seal_ms + round_starts[index]
+        upper = deadlines.seal_ms + round_ends[index]
+        if not lower <= elapsed < upper:
+            raise RunVerificationError(
+                "{} 的 final_vote 時間不在 round {} 的 [{}, {}) 區間。".format(
+                    seat_id, round_number, lower, upper
                 )
             )
 
@@ -1055,6 +1128,11 @@ def _verify_stop_semantics(votes, stop_reason, stop_ms, deadlines, rules):
     呼叫端整個跳過這個檢查**，不是在這裡拿預設值頂替；真的傳 ``None`` 進來會當
     場炸開，不會靜靜換一套規則。
     """
+    if isinstance(rules, DebateRules):
+        return _verify_v2_stop_semantics(
+            votes, stop_reason, stop_ms, deadlines, rules
+        )
+
     initial, reduced, forced = (
         rules.initial_votes,
         rules.reduced_votes,
@@ -1134,6 +1212,94 @@ def _verify_stop_semantics(votes, stop_reason, stop_ms, deadlines, rules):
         return
     if not (valid and status == "consensus"):
         raise RunVerificationError("辯論門檻、停止時間或採用立場與票數不一致。")
+
+
+def _verify_v2_stop_semantics(votes, stop_reason, stop_ms, deadlines, rules):
+    """Check a schema-v2 stop against its discrete round or final-settle wall."""
+    tally = votes.get("tally")
+    adopted = votes.get("adopted_stance")
+    threshold = votes.get("threshold_required")
+    status = votes.get("consensus_status")
+    valid_count = votes.get("valid_vote_count")
+    if (
+        not isinstance(tally, dict)
+        or not tally
+        or any(type(count) is not int or count < 0 for count in tally.values())
+        or type(stop_ms) is not int
+        or type(threshold) is not int
+        or type(valid_count) is not int
+        or valid_count < 0
+    ):
+        raise RunVerificationError("v2 停止紀錄的票數與時間欄位必須是非負整數。")
+    leader_count = max(tally.values())
+    adopted_count = tally.get(adopted, 0)
+    first_round = rules.vote_rounds[0]
+
+    if stop_reason == UNANIMOUS_BLIND_PASS:
+        wall = deadlines.seal_ms + first_round.open_offset_ms
+        valid = (
+            deadlines.seal_ms <= stop_ms <= wall
+            and threshold == len(SEAT_IDS)
+            and adopted_count == len(SEAT_IDS)
+            and sum(tally.values()) == len(SEAT_IDS)
+            and valid_count == len(SEAT_IDS)
+            and status == "consensus"
+        )
+        if not valid:
+            raise RunVerificationError("盲投直過的停止語意與票數不一致。")
+        return
+
+    vote_round = next(
+        (
+            item
+            for item in rules.vote_rounds
+            if stop_reason == "consensus_{}_votes".format(item.threshold)
+        ),
+        None,
+    )
+    if vote_round is not None:
+        valid = (
+            stop_ms == deadlines.seal_ms + vote_round.open_offset_ms
+            and threshold == vote_round.threshold
+            and adopted_count >= vote_round.threshold
+            and status == "consensus"
+        )
+        if not valid:
+            raise RunVerificationError(
+                "辯論門檻、停止時間或採用立場與票數不一致。"
+            )
+        return
+
+    forced = rules.vote_rounds[-1].threshold
+    settle_ms = deadlines.seal_ms + rules.final_settle_offset_ms
+    if stop_reason == "forced_stop_{}_votes".format(forced):
+        valid = (
+            stop_ms == settle_ms
+            and threshold == forced
+            and adopted_count >= forced
+            and status == "consensus"
+        )
+    elif stop_reason == "forced_stop_no_consensus":
+        valid = (
+            stop_ms == settle_ms
+            and threshold == forced
+            and valid_count >= forced
+            and leader_count < forced
+            and adopted is None
+            and status == "no_consensus"
+        )
+    elif stop_reason == "forced_stop_insufficient_valid_votes":
+        valid = (
+            stop_ms == settle_ms
+            and threshold == forced
+            and valid_count < forced
+            and adopted is None
+            and status == "failed_insufficient_valid_votes"
+        )
+    else:
+        raise RunVerificationError("未知辯論停止原因。")
+    if not valid:
+        raise RunVerificationError("最終結算的停止語意與票數不一致。")
 
 
 def _verify_report_lineage(

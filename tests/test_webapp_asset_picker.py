@@ -63,7 +63,7 @@ from hoya_market_agents.run_index import (  # noqa: E402
     rebuild_index,
 )
 from hoya_market_agents.webapp import launch as launch_module  # noqa: E402
-from hoya_market_agents.webapp import pages, views  # noqa: E402
+from hoya_market_agents.webapp import live, pages, views  # noqa: E402
 from test_webapp import PageFixture, write_run  # noqa: E402
 
 # A question whose *wording* is about the crypto market. Every test that submits
@@ -227,7 +227,7 @@ class TheChildCommandReallyRunsTest(unittest.TestCase):
     """
 
     def test_the_command_reaches_the_launcher_and_refuses_with_no_certificate(self):
-        code_root = Path(pages.__file__).resolve().parent.parent.parent
+        code_root = Path(live.__file__).resolve().parents[2]
         request = launch_module.LaunchRequest(
             "2330 未來七天會不會漲", ASSET_CLASS_TW_STOCK, ("2330",)
         )
@@ -252,7 +252,7 @@ class TheChildCommandReallyRunsTest(unittest.TestCase):
         and nothing else touched — so this stays true however the command is
         spelled.
         """
-        code_root = Path(pages.__file__).resolve().parent.parent.parent
+        code_root = Path(live.__file__).resolve().parents[2]
         request = launch_module.LaunchRequest(
             "2330 未來七天會不會漲", ASSET_CLASS_TW_STOCK, ("2330",)
         )
@@ -422,10 +422,10 @@ class TheWebAppNeverReadsAWordingForATargetTest(unittest.TestCase):
         return found
 
     def package_calls(self):
-        root = Path(pages.__file__).resolve().parent
+        root = Path(live.__file__).resolve().parent
         return {
             path.name: self.calls(path.read_text(encoding="utf-8"))
-            for path in sorted(root.glob("*.py"))
+            for path in sorted(root.rglob("*.py"))
         }
 
     def test_every_intake_call_in_the_web_app_states_both_answers(self):
@@ -740,7 +740,7 @@ class TheMenuIsTheScopeFilesThreeMarketsTest(AskBarFixture, unittest.TestCase):
         the way a reader would read it rather than through the loader the page
         happens to use.
         """
-        code_root = Path(pages.__file__).resolve().parent.parent.parent
+        code_root = Path(live.__file__).resolve().parents[2]
         document = json.loads(
             (code_root / "config" / "market_scopes.json").read_text(encoding="utf-8")
         )
@@ -1116,8 +1116,8 @@ class TheWebAppHoldsNoSqlTest(unittest.TestCase):
     KEYWORDS = ("SELECT ", "INSERT ", "UPDATE ", "DELETE ", "CREATE TABLE", "sqlite3")
 
     def package_files(self):
-        root = Path(pages.__file__).resolve().parent
-        return sorted(path for path in root.glob("*.py"))
+        root = Path(live.__file__).resolve().parent
+        return sorted(path for path in root.rglob("*.py"))
 
     def statements(self, text):
         return [word for word in self.KEYWORDS if word in text]
@@ -1134,7 +1134,8 @@ class TheWebAppHoldsNoSqlTest(unittest.TestCase):
 
         self.assertIn("views.py", names)
         self.assertIn("launch.py", names)
-        self.assertIn("pages.py", names)
+        self.assertIn("components.py", names)
+        self.assertIn("live_page.py", names)
         self.assertGreater(len(names), 5)
 
     def test_the_scan_would_catch_a_query_written_by_hand(self):

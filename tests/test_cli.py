@@ -135,7 +135,7 @@ class CliTest(unittest.TestCase):
         self.assertFalse((self.data_root / "runs").exists())
 
     def test_default_data_root_is_the_sibling_data_directory(self):
-        self.assertEqual("hoya-bit-market-agents_data", DEFAULT_DATA_ROOT.name)
+        self.assertEqual("AI-agnets-debating-chamber_data", DEFAULT_DATA_ROOT.name)
         self.assertEqual(CODE_ROOT.parent, DEFAULT_DATA_ROOT.parent)
 
     def test_core_prepare_launch_requires_only_the_question_and_internal_data_root(self):

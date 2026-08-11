@@ -149,13 +149,13 @@ def render_debate_html(report, sources):
         "<head>",
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        "<title>完整辯論室 — Hoya Bit 可稽核市場研究</title>",
+        "<title>完整辯論室 — AI agnets debating chamber 可稽核市場研究</title>",
         "<style>{}</style>".format(stylesheet(_CSS)),
         "</head>",
         "<body>",
         "<main>",
         '<header class="page-header">',
-        '<div><p class="eyebrow">Hoya Bit 可稽核市場研究</p><h1>完整辯論室</h1></div>',
+        '<div><p class="eyebrow">AI agnets debating chamber 可稽核市場研究</p><h1>完整辯論室</h1></div>',
         # 只列這份 bundle 真的帶著的頁面；理由見模組 docstring。
         '<nav class="page-tabs" aria-label="主要頁面">'
         '<a href="report.html">市場報告</a>'

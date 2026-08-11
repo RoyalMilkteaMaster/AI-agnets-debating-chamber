@@ -226,8 +226,8 @@ class SystemPreflightManifestTest(unittest.TestCase):
             checks=checks or passing_checks(),
             mode=mode,
             generated_at_utc="2026-08-01T10:00:00Z",
-            code_root="/mnt/d/workstationD/hoya bit/hoya-bit-market-agents",
-            data_root="/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data",
+            code_root="/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber",
+            data_root="/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data",
         )
 
     def test_real_mode_is_ready_only_when_every_required_check_passes(self):

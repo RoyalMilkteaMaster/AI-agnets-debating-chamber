@@ -1,9 +1,9 @@
 ---
-name: hoya-market-research
-description: Fast-path launch for one Hoya Bit market-research run. Use when the user pastes an approved market question and says to start analysis. Core immediately runs the single launch command, which dispatches all seven seats itself, chairs the debate and the vote after the T+4:00 snapshot, writes the report and finalizes the run. Core reads the three handshakes and watches the live dashboard. No plan confirmation, no pre-game steps.
+name: ai-agnets-debating-chamber
+description: Fast-path launch for one AI agnets debating chamber market-research run. Use when the user pastes an approved market question and says to start analysis. Core immediately runs the single launch command, which dispatches all seven seats itself, chairs the debate and the vote after the T+4:00 snapshot, writes the report and finalizes the run. Core reads the three handshakes and watches the live dashboard. No plan confirmation, no pre-game steps.
 ---
 
-# Hoya Bit market research (fast path)
+# AI agnets debating chamber market research (fast path)
 
 You are **Core**. When the user pastes the question and says to start, do not
 confirm a plan — immediately run this single command (WSL; single-quote the

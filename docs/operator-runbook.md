@@ -1,12 +1,12 @@
-# Hoya Bit 操作 Runbook（快速路徑版）
+# AI agnets debating chamber 操作 Runbook（快速路徑版）
 
 本文件所有命令都在 **WSL Ubuntu 24.04** 執行。程式只使用 Python 3.12 標準函式庫；
 不建立 venv、不安裝套件、不接受 API key。Code Root 與 Data Root 必須分離。
 
 ```bash
 # WSL
-CODE_ROOT='/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final'
-DATA_ROOT='/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data'
+CODE_ROOT='/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber'
+DATA_ROOT='/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data'
 cd "$CODE_ROOT"
 ```
 
@@ -120,7 +120,7 @@ pgrep -af 'hoya_market_agents live'
 開 fresh Codex Task（從 `$CODE_ROOT`），貼上：
 
 ```text
-開始 Hoya Bit 真實七席分析。
+開始 AI agnets debating chamber 真實七席分析。
 題目：分析 BTC 過去 14 日市場狀態
 ```
 

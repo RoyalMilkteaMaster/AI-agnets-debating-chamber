@@ -41,6 +41,7 @@ about to record.
 """
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -83,6 +84,57 @@ SUGGESTION_RUN_LIMIT = 200
 # attempt is nearly always clean; by the third, "this Data Root is being
 # rewritten right now" is a better explanation than bad luck.
 INDEX_READ_ATTEMPTS = 3
+
+_QUESTION_TYPE_LABELS = {
+    # Current question packages.
+    "single_asset_market_state": "單一資產市場狀態",
+    "two_asset_comparison": "兩資產比較",
+    "overall_market_state": "整體市場狀態",
+    "event_impact": "事件影響",
+    "open_proposition": "開放命題",
+    # Stored compatibility values from earlier run contracts and webapp fixtures.
+    "single_asset": "單一資產",
+    "comparison": "兩資產比較",
+    "market": "整體市場",
+    "event": "事件影響",
+    "market_direction": "市場方向",
+}
+
+_STOP_REASON_LABELS = {
+    "threshold_met": "達到票數門檻",
+    "unanimous_blind_pass": "七席一致，提前結案",
+    "forced_stop_no_consensus": "硬停結算（未達共識）",
+    "forced_stop_insufficient_valid_votes": "硬停結算（有效票不足）",
+}
+
+_UNTRANSLATED_VALUE_NOTE = "尚未翻譯"
+
+
+def question_type_label(value):
+    """Name a stored question type without changing or guessing its value."""
+    return _label_or_untranslated(value, _QUESTION_TYPE_LABELS)
+
+
+def stop_reason_label(value):
+    """Name every current stop reason, including rule-derived vote counts."""
+    if not value:
+        return None
+    for pattern, template in (
+        (r"consensus_([1-9]\d*)_votes", "達成共識（{} 票）"),
+        (r"forced_stop_([1-9]\d*)_votes", "硬停結算（{} 票採納）"),
+    ):
+        matched = re.fullmatch(pattern, value)
+        if matched:
+            return template.format(matched.group(1))
+    return _label_or_untranslated(value, _STOP_REASON_LABELS)
+
+
+def _label_or_untranslated(value, labels):
+    if not value:
+        return None
+    return labels.get(
+        value, "{}（{}）".format(value, _UNTRANSLATED_VALUE_NOTE)
+    )
 
 # What the page says when every attempt was interleaved with a commit. It is a
 # caveat and not an error: the index reads fine, and the numbers are as true as
@@ -512,13 +564,15 @@ def run_data(data_root, run_id):
     report = records["report.json"] or {}
     assets = _string_list(manifest.get("assets") or question.get("assets"))
     confidence = report.get("confidence")
+    question_type = manifest.get("question_type") or question.get("question_type")
     return {
         "run_id": run_id,
         "run_date": run_dir.parent.name,
         "question": manifest.get("question") or question.get("question") or run_id,
         "assets": assets,
         "asset_class": question.get("asset_class"),
-        "question_type": manifest.get("question_type") or question.get("question_type"),
+        "question_type": question_type,
+        "question_type_label": question_type_label(question_type),
         "confidence": confidence if isinstance(confidence, dict) else None,
         "consensus": _consensus_view(votes, assets),
         "seats": _seat_views(votes, assets, question.get("asset_class")),
@@ -611,6 +665,7 @@ def _report_available(runs_root, report_path):
 
 def _consensus_view(votes, assets):
     status = votes.get("consensus_status")
+    stop_reason = votes.get("stop_reason")
     stances = _string_list(votes.get("stances")) or sorted(votes.get("tally") or {})
     labels = stance_labels_for(stances, assets)
     tally = votes.get("tally") if isinstance(votes.get("tally"), dict) else {}
@@ -620,7 +675,8 @@ def _consensus_view(votes, assets):
         "adopted": votes.get("adopted_stance"),
         "adopted_label": labels.get(votes.get("adopted_stance")),
         "threshold_required": votes.get("threshold_required"),
-        "stop_reason": votes.get("stop_reason"),
+        "stop_reason": stop_reason,
+        "stop_reason_label": stop_reason_label(stop_reason),
         "tally_view": [
             {
                 "stance": stance,

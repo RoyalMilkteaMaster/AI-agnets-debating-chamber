@@ -1,88 +1,14 @@
-"""Everything after the T+4:00 seal: debate, votes, Core report, finalize.
+"""Drive the sealed evidence snapshot through discrete ballots and reporting.
 
-``run_after_seal`` is the one entry point. It owns the main-thread loop from the
-sealed evidence snapshot to the ``FINALIZED`` handshake, and it never invents a
-market stance: every stance, public reason and change reason is a provider's
-verbatim words relayed into :class:`DebateStateMachine`, which alone decides
-thresholds, stopping and the vote table.
-
-Threading contract
-------------------
-Every ``DebateStateMachine``, ``RunStore`` and report call happens on this one
-thread. Providers are reached only through ``RealSeatRunner.start_debate``,
-which dispatches into the same worker pool and the same terminable process
-registry the research phase used, and answers only through ``results_queue``::
-
-    ("debate_result",   dispatch_id, raw_text)
-    ("debate_failure",  dispatch_id, failure_kind, message)
-    ("provider_lineage", seat_id, {provider, actual_model, elapsed_ms, ...})
-
-``dispatch_id`` is ``"<seat_id>-<turn slug>"`` (``opening``/``r1``/``r2``/
-``r3``); it can never collide with a research ``attempt_id``
-(``"<seat_id>-a<n>"``), so leftover research messages are recognisable and
-dropped. Once a turn's deadline passes the driver cancels the dispatch — which
-terminates the child process — and never dispatches that turn again.
-
-Turn structure (architecture §5.3, revised 2026-08-02)
------------------------------------------------------
-``T+4:00``  opening call per seat  -> initial position (round 0)
-``T+7:30``  round 1 wall           -> challenge(s) + response + first real vote
-``T+8:00``  vote threshold drops from six to five
-``T+8:45``  round 2 wall           -> re-vote only (silence keeps the last vote)
-``T+9:45``  round 3 wall           -> re-vote only
-``T+10:00`` forced stop; four votes adopt, otherwise ``no_consensus``
-
-Those windows are enforced in exactly one place: :class:`DebateStateMachine`
-rejects any round relayed outside its own window. The driver holds no second
-copy of that rule — its per-turn ``collect_until_ms`` is only a budget for how
-long it waits for replies, deliberately earlier than the window it feeds.
-
-The round 1 call is not one wave. A seat is called the instant its own opening
-is on the record and the room already holds a second stance, because that is
-the instant it has an opponent to challenge. Waiting for the slowest opening is
-what left run 20260802T022316Z with 24 seconds for seven first-round calls and
-therefore zero valid votes.
-
-Relaying as it happens
-----------------------
-A message is relayed the moment its content is complete and the machine's
-window is open, so ``events.jsonl`` — the only thing the live page reads —
-grows sentence by sentence instead of in one burst per wave. Round 0 positions
-and re-votes that land inside their own window go straight through as they are
-parsed. The first round does not: a response has to quote a challenge that is
-already on the record, and the votes are relayed smallest stance group first so
-a threshold met mid-flush cannot erase the dissent from ``votes.json``.
-
-Every call is a fresh invocation carrying the complete public context: the
-sealed evidence snapshot, the whole public transcript so far, and the seat's own
-previous stance and vote. No hidden reasoning is passed or requested.
-
-Chairing versus authoring
--------------------------
-The machine requires a first-round challenge to name an *opposing* seat and a
-response to quote a challenge addressed to that seat, so somebody must decide
-who challenges whom. Core does that scheduling — and only that. The pairing is
-derived deterministically from the seats' own published positions (least-loaded
-opposing seat, ties in roster order), published to all seven in the round 1
-prompt, and re-derived after the round in case an assigned partner never
-answered. Addressing fields (``target_seat_id``, ``target_claim``,
-``responds_to``, ``message_id``, ``round``) come from that schedule; every
-content field comes from the seat.
-
-Seats that go quiet
--------------------
-Every opening position a seat actually published is relayed, whether or not
-that seat goes on to answer its round 1 call. The machine files such a seat as
-``provisional``: it earns no valid vote, and because it counts as a
-participant, ``challenge_completed`` honestly reports ``False`` for the whole
-room. Dropping the position instead buys no verifiability — ``run_verifier``
-refuses either run — it only makes ``votes.json`` and ``report.json`` claim the
-seat never took a stance, which is untrue and unauditable.
+``run_after_seal`` is the single entry point.  The driver derives its opening
+and between-ballot turns from the run's ``vote_rounds`` array, relays provider
+words unchanged, and leaves all ballot snapshots and stop decisions to
+``DebateStateMachine``.  A turn reply is optional: at each ballot wall the
+state machine counts that seat's latest public stance.
 """
 
 import json
 import queue
-from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -128,12 +54,6 @@ REPORT_ATTEMPTS_NAME = "diagnostics/report-attempts.json"
 # 回合視窗由 DebateStateMachine 唯一強制；driver 不再複述一份。下列只是收集
 # 預算：每一個都停在自己那道牆前 5 秒，剩下的 5 秒留給 relay 七席與計票。
 RELAY_MARGIN_MS = 5_000
-
-# 開場沒有自己的牆，它的成本是排擠第一輪。從封存起算收 120 秒：實測最慢一席
-# 59 秒交卷，而任何一席只要交了卷、場上又已有第二種立場，它的 r1 立刻就派出
-# 去，所以等待一席慢的，不再讓其他六席跟著空等。封存晚 30 秒的比較題，這段
-# 預算跟著平移，r1 之後的絕對牆一律不動。
-OPENING_COLLECT_BUDGET_MS = 120_000
 
 # 主迴圈最多晚一個 poll 才看到 T+10；停在 600_137ms 會讓這次強制停止對不上它自己
 # 執行的規則，也過不了 run_verifier 的 stop 語意檢查。
@@ -197,59 +117,8 @@ def opening_schema(stances):
     }
 
 
-def round_one_schema(stances):
-    """Schema for one seat's whole first round: challenges, response and vote."""
-    vote_properties = _vote_properties(stances)
-    return {
-        "type": "object",
-        "properties": {
-            "seat_id": {"type": "string"},
-            "challenges": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "target_seat_id": {"type": "string"},
-                        "public_reason": {"type": "string"},
-                        "evidence_ids": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {"type": "string"},
-                        },
-                    },
-                    "required": ["target_seat_id", "public_reason", "evidence_ids"],
-                    "additionalProperties": False,
-                },
-            },
-            "response": {
-                "type": "object",
-                "properties": {
-                    "public_reason": {"type": "string"},
-                    "evidence_ids": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {"type": "string"},
-                    },
-                    "responds_to": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": ["public_reason", "evidence_ids", "responds_to"],
-                "additionalProperties": False,
-            },
-            "final_vote": {
-                "type": "object",
-                "properties": vote_properties,
-                "required": sorted(vote_properties),
-                "additionalProperties": False,
-            },
-        },
-        "required": ["seat_id", "challenges", "response", "final_vote"],
-        "additionalProperties": False,
-    }
-
-
 def revote_schema(stances):
-    """Schema for a later round: the seat confirms or changes its vote."""
+    """Schema for one optional between-ballot public stance update."""
     properties = {"seat_id": {"type": "string"}}
     properties.update(_vote_properties(stances))
     return {
@@ -266,23 +135,6 @@ def validate_opening_shape(value):
     _require_text(value, "stance")
     _require_text(value, "public_reason")
     _require_id_list(value, "evidence_ids")
-    return value
-
-
-def validate_round_one_shape(value):
-    _require_object(value, "第一輪內容")
-    challenges = value.get("challenges")
-    if not isinstance(challenges, list) or not challenges:
-        raise ValueError("challenges 必須為至少一則挑戰的陣列")
-    for challenge in challenges:
-        _require_object(challenge, "challenge")
-        _require_text(challenge, "public_reason")
-        _require_id_list(challenge, "evidence_ids")
-    response = value.get("response")
-    _require_object(response, "response")
-    _require_text(response, "public_reason")
-    _require_id_list(response, "evidence_ids")
-    validate_revote_shape(value.get("final_vote"))
     return value
 
 
@@ -353,49 +205,38 @@ class DebateTurn:
 
 
 def build_turns(stances, debate_start_ms=None, rules=None):
-    """Return the four turns of one debate, keyed by slug."""
+    """Return opening plus one free-debate turn between adjacent ballots."""
     rules = rules or debate_rules()
     if debate_start_ms is None:
         debate_start_ms = rules.debate_start_ms
-    round_one_window_ms = rules.round_one_window_ms
-    return {
+    first_wall_ms = debate_start_ms + rules.vote_rounds[0].open_offset_ms
+    turns = {
         "opening": DebateTurn(
             slug="opening",
             round_number=0,
             label="初始立場",
             schema=opening_schema(stances),
             validator=validate_opening_shape,
-            collect_until_ms=debate_start_ms + OPENING_COLLECT_BUDGET_MS,
+            collect_until_ms=first_wall_ms - RELAY_MARGIN_MS,
             relay_from_ms=debate_start_ms,
-        ),
-        "r1": DebateTurn(
-            slug="r1",
-            round_number=1,
-            label="第一輪反方挑戰與首次投票",
-            schema=round_one_schema(stances),
-            validator=validate_round_one_shape,
-            collect_until_ms=debate_start_ms + round_one_window_ms - RELAY_MARGIN_MS,
-            relay_from_ms=debate_start_ms,
-        ),
-        "r2": DebateTurn(
-            slug="r2",
-            round_number=2,
-            label="第二輪投票",
-            schema=revote_schema(stances),
-            validator=validate_revote_shape,
-            collect_until_ms=rules.final_round_start_ms - RELAY_MARGIN_MS,
-            relay_from_ms=debate_start_ms + round_one_window_ms + 1,
-        ),
-        "r3": DebateTurn(
-            slug="r3",
-            round_number=3,
-            label="最後一輪投票",
-            schema=revote_schema(stances),
-            validator=validate_revote_shape,
-            collect_until_ms=rules.final_round_end_ms - RELAY_MARGIN_MS,
-            relay_from_ms=rules.final_round_start_ms,
-        ),
+        )
     }
+    for index, (opened, next_round) in enumerate(
+        zip(rules.vote_rounds, rules.vote_rounds[1:]), start=1
+    ):
+        slug = "r{}".format(index)
+        turns[slug] = DebateTurn(
+            slug=slug,
+            round_number=index,
+            label="第 {} 輪開票後自由辯論".format(index),
+            schema=revote_schema(stances),
+            validator=validate_revote_shape,
+            collect_until_ms=(
+                debate_start_ms + next_round.open_offset_ms - RELAY_MARGIN_MS
+            ),
+            relay_from_ms=debate_start_ms + opened.open_offset_ms,
+        )
+    return turns
 
 
 class DeadlineAlignedClock:
@@ -408,13 +249,11 @@ class DeadlineAlignedClock:
     worth of lateness — a driver that really was late stays visibly late.
     """
 
-    def __init__(
-        self, clock, start_monotonic_ms, snap_ms=FORCE_STOP_SNAP_MS, rules=None
-    ):
+    def __init__(self, clock, start_monotonic_ms, force_stop_ms, snap_ms=FORCE_STOP_SNAP_MS):
         self.clock = clock
         self.start_monotonic_ms = start_monotonic_ms
         self.snap_ms = snap_ms
-        self.force_stop_ms = (rules or debate_rules()).force_stop_ms
+        self.force_stop_ms = force_stop_ms
 
     def utc_now(self):
         return self.clock.utc_now()
@@ -425,78 +264,6 @@ class DeadlineAlignedClock:
         if self.force_stop_ms <= elapsed <= self.force_stop_ms + self.snap_ms:
             return self.start_monotonic_ms + self.force_stop_ms
         return raw
-
-
-# -- challenge scheduling ---------------------------------------------------
-
-
-def viable_seats(stance_by_seat):
-    """Keep every seat only while the room holds an opponent for each of them.
-
-    With two or more distinct stances every seat has at least one opponent, so
-    there is nothing to iterate. A room agreeing on one stance has no opposing
-    pair at all: it is paired by :func:`rotation_pairs` for the scrutiny round
-    instead, which is the only first-round shape the machine accepts there.
-    """
-    if len(set(stance_by_seat.values())) > 1:
-        return dict(stance_by_seat)
-    return {}
-
-
-def rotation_pairs(seat_ids):
-    """Pair a unanimous room in roster order: each seat scrutinises the next.
-
-    A room that opened unanimously has no opposing seat to name, so the
-    devil's-advocate round rotates instead — the last seat challenges the
-    first. One challenge issued and one received per seat is exactly what the
-    machine requires before a vote becomes valid. Fewer than two seats can form
-    no pair at all, and a seat may never challenge itself.
-    """
-    ordered = list(seat_ids)
-    if len(ordered) < 2:
-        return {}, {}
-    targets = {}
-    incoming = {seat_id: [] for seat_id in ordered}
-    for index, seat_id in enumerate(ordered):
-        target = ordered[(index + 1) % len(ordered)]
-        targets[seat_id] = [target]
-        incoming[target].append(seat_id)
-    return targets, incoming
-
-
-def assign_challenges(stance_by_seat):
-    """Pair opposing seats so every seat both issues and receives a challenge."""
-    seats = [seat_id for seat_id in SEAT_IDS if seat_id in stance_by_seat]
-    targets = {seat_id: [] for seat_id in seats}
-    incoming = {seat_id: [] for seat_id in seats}
-
-    def opponents(seat_id):
-        return [
-            other
-            for other in seats
-            if stance_by_seat[other] != stance_by_seat[seat_id]
-        ]
-
-    for seat_id in seats:
-        target = min(
-            opponents(seat_id),
-            key=lambda item: (len(incoming[item]), seats.index(item)),
-        )
-        targets[seat_id].append(target)
-        incoming[target].append(seat_id)
-    for seat_id in seats:
-        if incoming[seat_id]:
-            continue
-        author = min(
-            opponents(seat_id), key=lambda item: (len(targets[item]), seats.index(item))
-        )
-        targets[author].append(seat_id)
-        incoming[seat_id].append(author)
-    return targets, incoming
-
-
-def challenge_message_id(author, target):
-    return "{}-r1-challenge-to-{}".format(author, target)
 
 
 def position_message_id(seat_id):
@@ -529,7 +296,13 @@ class DebateDriver:
         # 規則物件由呼叫端注入或取自唯一權威；driver 的時鐘、狀態機與回合表
         # 必須是同一份，否則「門檻降階」在三處會各走各的。
         self.rules = rules or debate_rules()
-        self.clock = DeadlineAlignedClock(clock, start_monotonic_ms, rules=self.rules)
+        self.deadlines = research_deadlines(package.question_type)
+        self.final_settle_ms = (
+            self.deadlines.seal_ms + self.rules.final_settle_offset_ms
+        )
+        self.clock = DeadlineAlignedClock(
+            clock, start_monotonic_ms, self.final_settle_ms
+        )
         self.runner = runner
         self.results_queue = results_queue
         self.package = package
@@ -538,7 +311,6 @@ class DebateDriver:
         self.err = err
         # 這一場的封存時刻由題型決定，唯一權威是 research_deadlines；
         # 狀態機再拿它跟該 run 真正的 seal 對帳，對不上就 fail closed。
-        self.deadlines = research_deadlines(package.question_type)
         self.machine = DebateStateMachine(
             run=run,
             clock=self.clock,
@@ -563,20 +335,12 @@ class DebateDriver:
             getattr(package, "assets", ()) or (),
             getattr(package, "stance_labels", None),
         )
-        self.evidence_ids = [
-            record["evidence_id"] for record in self.evidence_records
-        ]
         self.seats = {seat.seat_id: seat for seat in load_roster()}
         self.research_snapshot = load_research_snapshot()
         self.positions = {}
-        self.round_one = {}
         self.pending = {}
-        self.first_round_dispatch_ids = []
-        self.first_round_called = set()
         self.published = ()
-        self.viable = ()
-        self.assignment = {}
-        self.incoming = {}
+        self.completed_turns = {}
         self.lineage = {}
         self.notes = []
         self.dispatched = []
@@ -586,17 +350,11 @@ class DebateDriver:
     def run_debate(self):
         """Return the persisted ``votes.json`` content for this run."""
         self._opening_wave()
-        # 開場收齊時房間就可能已經定案——盲投直過（architecture §11.3）是唯一
-        # 會這樣結束的正常路徑。已經停止就不再派任何辯論輪：那些呼叫的內容一
-        # 律會被狀態機當成 late message 丟掉，派出去只是白花一次 provider 呼叫
-        # 與一段等待。判準寫成「停了就不派」而不是「直過就不派」，因為強制停
-        # 止若在開場期間發生，該做的事情是同一件。
-        if not self.machine.stopped:
-            self._first_round()
-            for round_number in (2, 3):
-                if self.machine.stopped:
-                    break
-                self._revote(self.turns["r{}".format(round_number)])
+        for turn in tuple(self.turns.values())[1:]:
+            self._wait_until(turn.relay_from_ms)
+            if self.machine.stopped:
+                break
+            self._free_debate(turn)
         return self._settle()
 
     @property
@@ -616,137 +374,28 @@ class DebateDriver:
         )
         self._await(dispatch_ids, turn)
 
-    def _first_round(self):
-        if not self.positions:
-            self._note(None, "r1", "no_initial_position_from_any_seat")
-            return
-        # 開場期間就派過的席位不再重派；這裡只補上最後一刻才發言的那幾席。
-        self._call_first_round()
-        if not self.first_round_called and self.unanimous:
-            # 全場一致沒有反方，但那是最強的共識，不是流局：改跑魔鬼代言人輪。
-            self._call_scrutiny_round()
-        if not self.first_round_called:
-            # 連兩席公開立場都湊不出來，沒有任何配對可言。
-            self._note(None, "r1", "skipped_r1_wave_no_opposing_pair")
-        self._await(self.first_round_dispatch_ids, self.turns["r1"])
-        self._settle_first_round()
-
-    @property
-    def unanimous(self):
-        """True when the machine's own record holds exactly one opening stance."""
-        return len(self.machine.opening_stances()) == 1
-
-    def _pair(self, stance_by_seat):
-        """Pair the seats that finished the round, by this room's own standard.
-
-        Which standard applies is decided by the whole public record, not by
-        who happened to answer: the machine accepts a scrutiny challenge only
-        while every published opening agrees, so a mixed room whose answers all
-        happen to share one stance still has to find an opponent — and honestly
-        reports that it could not.
-        """
-        if self.unanimous:
-            return rotation_pairs(self._ordered(stance_by_seat))
-        return assign_challenges(viable_seats(stance_by_seat))
-
-    def _settle_first_round(self):
-        """Re-derive the pairing from who actually answered, then relay it."""
-        complete = {
-            seat_id: payload
-            for seat_id, payload in self.round_one.items()
-            if seat_id in self.positions
-        }
-        assignment, incoming = self._pair(self._stances(complete))
-        for seat_id in self._ordered(complete):
-            if seat_id not in assignment:
-                self._note(seat_id, "r1", "no_opposing_seat_left_to_challenge")
-        for seat_id in self.published:
-            if seat_id not in complete:
-                self._note(seat_id, "r1", "position_published_without_first_round")
-        if not assignment:
-            return
-        self.assignment, self.incoming = assignment, incoming
-        self.viable = tuple(self._ordered(assignment))
-        self._relay_first_round()
-
-    def _call_first_round(self):
-        """Send the round 1 call to every seat that can already be paired.
-
-        A seat can be paired the moment the public record holds two different
-        stances, and that moment does not wait for the last opening to land.
-        Holding the whole first round until then is what cost run
-        20260802T022316Z all seven of its first-round calls: the slow openings
-        ate the wave's budget and every call timed out.
-        """
-        # 先過 viable_seats：全場同一立場時沒有反方可配對，assign_challenges
-        # 會對空的對手清單取 min。誠實退化的規則只有一條，而且它在 viable_seats。
-        pairing = viable_seats(self._stances(self.positions))
-        fresh = [
-            seat_id
-            for seat_id in self._ordered(pairing)
-            if seat_id not in self.first_round_called
-        ]
-        if not fresh:
-            return
-        self._send_first_round(fresh, *assign_challenges(pairing))
-
-    def _call_scrutiny_round(self):
-        """Call the whole unanimous room once its openings are all in.
-
-        Unlike the opposing round this cannot be dispatched seat by seat: a
-        room is only known to be unanimous after the opening wave closes, since
-        one late dissenter turns it back into an ordinary room.
-        """
-        seats = self._ordered(self.positions)
-        targets, incoming = rotation_pairs(seats)
-        if not targets:
-            return
-        self._send_first_round(seats, targets, incoming)
-
-    def _send_first_round(self, seats, assignment, incoming):
-        """Dispatch one first-round call per seat against a published pairing."""
-        self.first_round_called.update(seats)
-        self.first_round_dispatch_ids += self._dispatch(
-            seats,
-            self.turns["r1"],
-            lambda seat_id: self._round_one_prompt(seat_id, assignment, incoming),
-            self.round_one,
-        )
-
-    def _revote(self, turn):
-        seats = [
-            seat_id
-            for seat_id in self.viable
-            if self.machine.seats[seat_id].final is not None
-        ]
+    def _free_debate(self, turn):
+        seats = [seat_id for seat_id in self.published if self.machine.seats[seat_id].initial]
         if not seats:
+            self._note(None, turn.slug, "no_public_position_to_debate")
             return
-        held = {}
+        replies = {}
 
         def publish(seat_id, payload):
-            # 視窗還沒開的先留著；狀態機會拒收，留到 _wait_until 之後才 relay。
-            if self.elapsed_ms < turn.relay_from_ms:
-                held[seat_id] = payload
-            elif self.machine.stopped:
+            if self.machine.stopped:
                 self._note(seat_id, turn.slug, "arrived_after_stop")
-            else:
-                self._relay(self._vote_message(seat_id, payload, turn.round_number))
+                return
+            if self._relay(self._vote_message(seat_id, payload, turn.round_number)):
+                self.completed_turns.setdefault(turn.slug, []).append(seat_id)
 
         dispatch_ids = self._dispatch(
             seats,
             turn,
-            lambda seat_id: self._revote_prompt(seat_id, turn),
-            {},
+            lambda seat_id: self._free_debate_prompt(seat_id, turn),
+            replies,
             publish,
         )
         self._await(dispatch_ids, turn)
-        self._wait_until(turn.relay_from_ms)
-        if self.machine.stopped:
-            return
-        for seat_id in self._vote_order(held, lambda payload: payload["stance"]):
-            self._relay(self._vote_message(seat_id, held[seat_id], turn.round_number))
-            if self.machine.stopped:
-                return
 
     def _dispatch(self, seat_ids, turn, prompt_for, replies, on_reply=None):
         """Start one turn's calls; return the dispatch ids that really left."""
@@ -867,50 +516,9 @@ class DebateDriver:
     # -- relaying -----------------------------------------------------------
 
     def _publish_position(self, seat_id, payload):
-        """Publish one opening position the instant that seat published it.
-
-        Relaying the whole wave at once would hold every seat's first words
-        back until the slowest one answered — the live page would then show
-        seven positions in the same instant, which is not when they were said.
-        Round 0 has no window to wait for and cannot meet a vote threshold, so
-        there is nothing to gain by batching it.
-
-        A seat that opens and then goes quiet still said something on the
-        record. The machine files it as ``provisional`` — no valid vote, and
-        ``challenge_completed`` turns False because it counts as a participant
-        that never challenged. Suppressing it would only delete the truth.
-
-        Publishing is also what unlocks this seat's first-round call: with a
-        second stance on the record it now has an opponent, so it is called
-        straight away instead of waiting for the slowest seat in the room.
-        """
+        """Publish an opening immediately; it is already eligible at a wall."""
         if self._relay(self._position_message(seat_id)) is not None:
             self.published += (seat_id,)
-        # 停止就發生在上面那一則 relay 裡：盲投直過在「最後一則開場進入公開
-        # 紀錄」的那一刻成立，而這裡正是那一刻。``run_debate`` 的守衛要等整個
-        # 開場波收完才輪到，對這一層來說太晚——r1 早就派出去了。門檻可設定，
-        # 所以觸發它的不一定是第七席：把 unanimous_blind_pass 設成 6，6/1 的
-        # 房間會在第六則開場就停，後面兩席仍會各自走到這一行。
-        if self.machine.stopped:
-            return
-        self._call_first_round()
-
-    def _relay_first_round(self):
-        for author in self.viable:
-            for target in self.assignment[author]:
-                self._relay(self._challenge_message(author, target))
-        for seat_id in self.viable:
-            self._relay(self._response_message(seat_id))
-        order = self._vote_order(
-            {seat_id: self.round_one[seat_id] for seat_id in self.viable},
-            lambda payload: payload["final_vote"]["stance"],
-        )
-        for seat_id in order:
-            self._relay(
-                self._vote_message(seat_id, self.round_one[seat_id]["final_vote"], 1)
-            )
-            if self.machine.stopped:
-                return
 
     def _relay(self, content):
         """Return the recorded entry, or None when the machine refused it."""
@@ -922,17 +530,6 @@ class DebateDriver:
             self._note(content["seat_id"], content["kind"], "rejected:{}".format(exc))
         return None
 
-    def _vote_order(self, payloads, stance_of):
-        """Relay the smallest stance groups first so dissent survives an early stop."""
-        counts = Counter(stance_of(payload) for payload in payloads.values())
-        return sorted(
-            payloads,
-            key=lambda seat_id: (
-                counts[stance_of(payloads[seat_id])],
-                SEAT_IDS.index(seat_id),
-            ),
-        )
-
     def _position_message(self, seat_id):
         payload = self.positions[seat_id]
         return self._message(
@@ -943,65 +540,6 @@ class DebateDriver:
             payload,
             stance_change_reason=None,
         )
-
-    def _challenge_message(self, author, target):
-        payload = self._challenge_payload(author, target)
-        content = self._message(
-            author,
-            challenge_message_id(author, target),
-            "challenge",
-            1,
-            payload,
-            stance=self.positions[author]["stance"],
-            stance_change_reason=None,
-        )
-        content["target_seat_id"] = target
-        content["target_claim"] = position_message_id(target)
-        return content
-
-    def _challenge_payload(self, author, target):
-        challenges = self.round_one[author]["challenges"]
-        for challenge in challenges:
-            if challenge.get("target_seat_id") == target:
-                return challenge
-        self._note(author, "r1", "challenge_reassigned_to:{}".format(target))
-        return challenges[0]
-
-    def _response_message(self, seat_id):
-        payload = self.round_one[seat_id]["response"]
-        cited = self._responds_to(seat_id, payload)
-        content = self._message(
-            seat_id,
-            "{}-r1-response".format(seat_id),
-            "response",
-            1,
-            payload,
-            stance=self.positions[seat_id]["stance"],
-            stance_change_reason=None,
-        )
-        content["responds_to"] = cited
-        # 回應的對象必須是它真正引用的那則挑戰的作者，不是排程表上的第一位。
-        content["target_seat_id"] = self._challenge_author(seat_id, cited[0])
-        return content
-
-    def _responds_to(self, seat_id, payload):
-        """Keep the seat's own citation when it matches the published schedule."""
-        scheduled = self._incoming_ids(seat_id)
-        cited = payload.get("responds_to")
-        if isinstance(cited, list) and cited and set(cited) <= set(scheduled):
-            return list(cited)
-        return scheduled[:1]
-
-    def _incoming_ids(self, seat_id):
-        return [
-            challenge_message_id(author, seat_id) for author in self.incoming[seat_id]
-        ]
-
-    def _challenge_author(self, seat_id, message_id):
-        for author in self.incoming[seat_id]:
-            if challenge_message_id(author, seat_id) == message_id:
-                return author
-        return self.incoming[seat_id][0]
 
     def _vote_message(self, seat_id, payload, round_number):
         return self._message(
@@ -1049,9 +587,13 @@ class DebateDriver:
             if self.machine.stopped or self.elapsed_ms >= target_ms:
                 return
             self.sleeper(POLL_SECONDS)
+        # The loop condition becomes false exactly on the wall.  Evaluate that
+        # wall before the caller can dispatch the following turn.
+        if not self.machine.stopped:
+            self.machine.tick()
 
     def _settle(self):
-        self._wait_until(self.rules.force_stop_ms)
+        self._wait_until(self.final_settle_ms)
         self.machine.tick()
         votes = self.machine.persist()
         for dispatch_id in self.dispatched:
@@ -1062,11 +604,11 @@ class DebateDriver:
                 "schema_version": CONTRACT_VERSION,
                 "run_id": self.run.run_id,
                 "phase": "debate",
-                "challenge_assignment": {
-                    author: list(targets) for author, targets in self.assignment.items()
-                },
                 "seats_in_public_record": list(self.published),
-                "seats_completing_first_round": list(self.viable),
+                "completed_free_debate_turns": {
+                    slug: list(seat_ids)
+                    for slug, seat_ids in self.completed_turns.items()
+                },
                 "provider_lineage": self.lineage,
                 "notes": self.notes,
             },
@@ -1083,15 +625,9 @@ class DebateDriver:
         "- public_reason 的第一句必須是 30-60 字的核心結論（先立場與理由），之後才展開論據。"
     )
 
-    # architecture §11.3：辯論輪存在的目的要講明白——用證據移動票數，不是各說
-    # 各話等時間到。門檻是設定驅動的當下值，不是寫死的六票；一致的房間沒有對
-    # 立席位，同一條紀律就轉向自己，所以這句話一句到底，不分岔。
-    #
-    # 開場不掛這句：那一輪是互不可見的盲投，場上還沒有任何立場可以被說服。
     PERSUASION_RULE = (
-        "- 你的目標是以證據說服對立席位改票，使己方達到當前門檻（{votes} 票）；"
-        "場上沒有對立席位時，同一條紀律轉向自己：找得出足以推翻己方的證據就誠實"
-        "改票。被說服時必須改票並寫出改票原因。"
+        "- 用證據說服對方，也重新檢查自己的判斷；不盲從，也不死守。"
+        "被說服時必須改票並寫出改票原因，目標是達到下一輪門檻（{votes} 票）。"
     )
 
     def _opening_prompt(self, seat_id):
@@ -1100,80 +636,32 @@ class DebateDriver:
             "## 本回合：{}（round 0，{}）".format(
                 turn.label, elapsed_label(self.deadlines.seal_ms)
             ),
-            "- 讀完上方已 sealed 的證據快照後，公開你這一席的初始立場。",
+            "- 讀完上方僅屬於本席的 sealed 證據視圖後，公開你這一席的初始立場。",
             "- 輸出欄位：seat_id、stance、public_reason、evidence_ids、"
             "conflicting_evidence_ids、uncertainty_reason、change_trigger。",
-            "- 這是暫定票；要成為有效票，你還必須完成第一輪反方挑戰與回應。",
+            "- 第一輪開票會採用開票當下這一席最新公開立場；本回合後不必另交票才有效。",
             self.CONCLUSION_FIRST_RULE,
         ]
-        return self._prompt(seat_id, lines, ())
-
-    def _round_one_prompt(self, seat_id, assignment, incoming):
-        turn = self.turns["r1"]
-        stance = self.positions[seat_id]["stance"]
-        lines = self._proposition_lines() + [
-            "## 本回合：{}（round 1，最晚 {}）".format(
-                turn.label,
-                elapsed_label(self.machine.challenge_deadline_ms),
-            ),
-            "- 你目前的公開立場是 {}。".format(self._stance_text(stance)),
-            *self._challenge_instruction(seat_id, assignment),
-            "- 下列席位會挑戰你：{}；你的 response 必須回應它們。".format(
-                "、".join(incoming.get(seat_id, ())) or "（無）"
-            ),
-            "- 你可以引用的挑戰 message ID：{}。".format(
-                "、".join(
-                    challenge_message_id(author, seat_id)
-                    for author in incoming.get(seat_id, ())
-                )
-                or "（無）"
-            ),
-            "- challenges[] 每一則必須填 target_seat_id、public_reason、evidence_ids，"
-            "並針對該席公開立場的具體內容。",
-            "- challenge 與 response 只能重申你現在的立場 {}，改票只能寫在 final_vote。".format(
-                self._stance_text(stance)
-            ),
-            "- final_vote 是本次第一張正式有效票；維持立場時 stance_change_reason 填 null，"
-            "改票時必須寫非空的繁體中文原因。",
-            "- 主席排定的挑戰對象由七席自己公布的立場推導，內容全部由你自己撰寫。",
-            self._persuasion_rule(turn),
-            self.CONCLUSION_FIRST_RULE,
-        ]
-        return self._prompt(seat_id, lines, self._public_positions())
+        return self._prompt(seat_id, lines, (), private_evidence=True)
 
     def _persuasion_rule(self, turn):
-        """State the round's purpose against the threshold its votes will face.
-
-        用的是「這一輪的票真正被計入時」的門檻，不是派工那一刻的門檻：改票輪
-        要等自己的視窗打開才 relay（``relay_from_ms``），最後一輪固定落在門檻
-        降階之後。告訴席位一個它的票永遠碰不到的數字，等於要它去湊一個不存在
-        的目標。
-        """
-        counted_at_ms = max(self.elapsed_ms, turn.relay_from_ms)
+        """State the purpose against the next ballot wall's threshold."""
+        counted_at_ms = turn.collect_until_ms + RELAY_MARGIN_MS
         return self.PERSUASION_RULE.format(
-            votes=self.rules.required_votes_at(counted_at_ms)
+            votes=self.rules.required_votes_at(
+                counted_at_ms, seal_ms=self.deadlines.seal_ms
+            )
         )
 
-    def _challenge_instruction(self, seat_id, assignment):
-        """Name this seat's targets and the standard it must challenge them by."""
-        targets = "、".join(assignment.get(seat_id, ())) or "（無）"
-        if not self.unanimous:
-            return ["- 你必須挑戰下列持相反立場的席位：{}。".format(targets)]
-        return [
-            "- 你必須挑戰下列席位：{}。".format(targets),
-            "- 全場立場一致；本輪為壓力測試：請針對目標席位的證據品質提出質疑，"
-            "或從快照中找出最強反證；若審視後仍維持立場，照實說明理由。",
-        ]
-
-    def _revote_prompt(self, seat_id, turn):
+    def _free_debate_prompt(self, seat_id, turn):
         record = self.machine.seats[seat_id]
         stance = (record.final or record.initial or {}).get("stance")
-        lines = [
+        lines = self._proposition_lines() + [
             "## 本回合：{}（round {}）".format(turn.label, turn.round_number),
-            "- 你目前的有效票是 {}。".format(self._stance_text(stance)),
-            "- 讀完上方完整公開辯論原文後，確認或改變這一票。",
+            "- 你目前的公開立場是 {}。".format(self._stance_text(stance)),
+            "- 讀完完整證據快照與公開辯論原文後，自由回應最值得處理的證據或觀點。",
             "- 維持立場時 stance_change_reason 填 null；改票必須寫非空的繁體中文原因。",
-            "- 不再開放新的挑戰；本回合只輸出你的投票內容。",
+            "- 輸出這一席最新的公開立場；沒有回覆時，上一張公開立場仍會留到下個開票牆。",
             self._persuasion_rule(turn),
             self.CONCLUSION_FIRST_RULE,
         ]
@@ -1199,18 +687,30 @@ class DebateDriver:
             "",
         ]
 
-    def _prompt(self, seat_id, turn_lines, transcript):
+    def _prompt(self, seat_id, turn_lines, transcript, *, private_evidence=False):
+        visible_evidence = (
+            [
+                record
+                for record in self.evidence_records
+                if record.get("seat_id") == seat_id
+            ]
+            if private_evidence
+            else self.evidence_records
+        )
         prompt = build_seat_prompt(
             self.package,
             self.seats[seat_id],
             "debate",
-            evidence_snapshot=self.evidence_records,
+            evidence_snapshot=() if private_evidence else visible_evidence,
             debate_snapshot=transcript,
             research_snapshot=self.research_snapshot,
+            evidence_view=visible_evidence if private_evidence else (),
         )
-        return prompt.text + "\n".join(turn_lines + self._shared_rules(seat_id))
+        return prompt.text + "\n".join(
+            turn_lines + self._shared_rules(seat_id, visible_evidence)
+        )
 
-    def _shared_rules(self, seat_id):
+    def _shared_rules(self, seat_id, visible_evidence):
         return [
             "",
             "## 本回合輸出規則（七席共用）",
@@ -1223,7 +723,8 @@ class DebateDriver:
             ),
             "- public_reason 與 stance_change_reason 必須使用繁體中文。",
             "- evidence_ids 只能引用下列已 sealed 的 evidence ID：{}。".format(
-                "、".join(self.evidence_ids) or "（無）"
+                "、".join(record["evidence_id"] for record in visible_evidence)
+                or "（無）"
             ),
             "- 中性立場必須同時提供至少兩筆衝突證據 ID、無法判斷原因與改票條件；"
             "非中性時這三個欄位填 null。",
@@ -1232,20 +733,6 @@ class DebateDriver:
             ),
             "- 只交換可稽核的公開理由、證據與反駁，不交換也不索取思考過程。",
             "",
-        ]
-
-    def _public_positions(self):
-        return [
-            {
-                "message_id": position_message_id(seat_id),
-                "seat_id": seat_id,
-                "kind": "position",
-                "round": 0,
-                "stance": self.positions[seat_id]["stance"],
-                "public_reason": self.positions[seat_id]["public_reason"],
-                "evidence_ids": list(self.positions[seat_id]["evidence_ids"]),
-            }
-            for seat_id in self._ordered(self.positions)
         ]
 
     def _public_transcript(self):
@@ -1270,16 +757,6 @@ class DebateDriver:
         ]
 
     # -- bookkeeping --------------------------------------------------------
-
-    def _stances(self, payloads):
-        return {
-            seat_id: self.positions[seat_id]["stance"]
-            for seat_id in payloads
-            if seat_id in self.positions
-        }
-
-    def _ordered(self, payloads):
-        return [seat_id for seat_id in SEAT_IDS if seat_id in payloads]
 
     def _note(self, seat_id, turn_slug, reason):
         note = {
@@ -1484,7 +961,7 @@ class CodexCoreAuthor:
     def _prompt(self, errors):
         votes = self.sources["votes"]
         lines = [
-            "# Hoya Bit Core：撰寫本次 run 的市場報告初稿",
+            "# AI agnets debating chamber Core：撰寫本次 run 的市場報告初稿",
             "",
             "你是 Core。分析、判斷與文字全部由你產生；票數、席位身分與 evidence ID",
             "由系統從正式 artifacts 填入，你不需要也不得改寫它們。",

@@ -1,10 +1,10 @@
-# 🏁 Hoya Bit 比賽操作卡（2026-08-02）
+# 🏁 AI agnets debating chamber 比賽操作卡（2026-08-02）
 
 ## 賽前 60 秒檢查（WSL）
 
 ```bash
 pgrep -af 'hoya_market_agents live'   # 應有一個；沒有就用下方「直播復活」那行
-test -f '/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data/preflight/latest-ready.json' && echo READY
+test -f '/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data/preflight/latest-ready.json' && echo READY
 ```
 
 ## 正式啟動（首選：貼給 Claude Code 新 session）
@@ -14,9 +14,9 @@ test -f '/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data/preflight/late
 ```text
 立即執行，不用計畫、不用確認、不要讀其他文件。
 
-用 Bash 執行這條命令啟動 Hoya Bit 七席市場分析：
+用 Bash 執行這條命令啟動 AI agnets debating chamber 七席市場分析：
 
-MSYS_NO_PATHCONV=1 wsl -e bash -lc 'cd "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final" && setsid nohup python3 -m hoya_market_agents launch --question "〈抽到的題目原文貼這裡〉" --data-root "/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data" --handshake-file /tmp/hoya-comp.json >/tmp/hoya-comp.log 2>&1 & sleep 3; cat /tmp/hoya-comp.json'
+MSYS_NO_PATHCONV=1 wsl -e bash -lc 'cd "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber" && setsid nohup python3 -m hoya_market_agents launch --question "〈抽到的題目原文貼這裡〉" --data-root "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data" --handshake-file /tmp/hoya-comp.json >/tmp/hoya-comp.log 2>&1 & sleep 3; cat /tmp/hoya-comp.json'
 
 看到 LAUNCHED JSON 後，持續監看 /tmp/hoya-comp.log（wsl tail），
 在 SEALED 與 FINALIZED 出現時各回報一次重點（run_id、七席採納狀況、
@@ -27,9 +27,9 @@ MSYS_NO_PATHCONV=1 wsl -e bash -lc 'cd "/mnt/d/workstationD/hoya bit/hoya-bit-ma
 ## 後備：自己在 WSL 終端機直接跑
 
 ```bash
-cd '/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final' && setsid nohup python3 -m hoya_market_agents launch \
+cd '/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber' && setsid nohup python3 -m hoya_market_agents launch \
   --question '〈抽到的題目原文〉' \
-  --data-root '/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data' \
+  --data-root '/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data' \
   --handshake-file /tmp/hoya-comp.json >/tmp/hoya-comp.log 2>&1 & \
 sleep 3; cat /tmp/hoya-comp.json
 tail -f /tmp/hoya-comp.log   # LAUNCHED → SEALED → FINALIZED
@@ -43,7 +43,7 @@ tail -f /tmp/hoya-comp.log   # LAUNCHED → SEALED → FINALIZED
 直播復活（萬一 server 死了）：
 
 ```bash
-cd '/mnt/d/workstationD/hoya bit/hoya-bit-market-agents-final' && setsid nohup python3 -m hoya_market_agents live --data-root '/mnt/d/workstationD/hoya bit/hoya-bit-market-agents_data' --host 127.0.0.1 --port 8765 >/tmp/hoya-live.log 2>&1 &
+cd '/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber' && setsid nohup python3 -m hoya_market_agents live --data-root '/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data' --host 127.0.0.1 --port 8765 >/tmp/hoya-live.log 2>&1 &
 ```
 
 ## 時間軸與判讀

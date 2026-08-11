@@ -25,28 +25,27 @@ from hoya_market_agents.debate_rules import (
 
 
 class ShippedRulesTest(unittest.TestCase):
-    """預設設定檔＝2026-08-02 核准時間表的等價搬移，行為零變化。"""
+    """出貨設定檔就是已核准的 schema-v2 四輪時間表。"""
 
     def test_the_shipped_file_carries_the_approved_schedule(self):
         rules = debate_rules()
 
-        self.assertEqual(240_000, rules.debate_start_ms)
-        self.assertEqual(180_000, rules.round_one_window_ms)
-        self.assertEqual(420_000, rules.challenge_deadline_ms())
-        self.assertEqual(480_000, rules.reduced_threshold_from_ms)
-        self.assertEqual(525_000, rules.final_round_start_ms)
-        self.assertEqual(585_000, rules.final_round_end_ms)
-        self.assertEqual(600_000, rules.force_stop_ms)
+        self.assertEqual(
+            ((60_000, 7), (150_000, 6), (240_000, 5), (330_000, 4)),
+            tuple(
+                (vote_round.open_offset_ms, vote_round.threshold)
+                for vote_round in rules.vote_rounds
+            ),
+        )
+        self.assertEqual(360_000, rules.final_settle_offset_ms)
 
     def test_the_shipped_file_carries_the_approved_vote_ladder(self):
         rules = debate_rules()
 
-        self.assertEqual(6, rules.initial_votes)
-        self.assertEqual(5, rules.reduced_votes)
-        self.assertEqual(4, rules.forced_stop_votes)
+        self.assertEqual((7, 6, 5, 4), tuple(r.threshold for r in rules.vote_rounds))
 
     def test_the_shipped_file_carries_the_blind_pass_threshold(self):
-        # Ticket 03：7/7 盲投直過的門檻是設定值，不是程式裡的 len(SEAT_IDS)。
+        # 盲投直過語意併入第一輪，因此門檻來自第一輪資料。
         rules = debate_rules()
 
         self.assertEqual(7, rules.unanimous_blind_pass_votes)
@@ -93,20 +92,15 @@ class ShippedRulesTest(unittest.TestCase):
 def valid_document():
     """A minimal legal document tests mutate one field at a time."""
     return {
-        "schema_version": 1,
-        "timeline_ms": {
-            "debate_start": 240_000,
-            "round_one_window": 180_000,
-            "reduced_threshold_from": 480_000,
-            "final_round_start": 525_000,
-            "final_round_end": 585_000,
-            "force_stop": 600_000,
-        },
-        "vote_thresholds": {
-            "unanimous_blind_pass": 7,
-            "initial": 6,
-            "reduced": 5,
-            "forced_stop": 4,
+        "schema_version": 2,
+        "timeline": {
+            "vote_rounds": [
+                {"open_offset_ms": 60_000, "threshold": 7},
+                {"open_offset_ms": 150_000, "threshold": 6},
+                {"open_offset_ms": 240_000, "threshold": 5},
+                {"open_offset_ms": 330_000, "threshold": 4},
+            ],
+            "final_settle_offset_ms": 360_000,
         },
         "confidence": {"light_scale": [], "downgrades": {}},
     }
@@ -162,32 +156,32 @@ class MissingFieldTest(RulesVariantTestCase):
     def test_a_legal_document_loads(self):
         rules = self.load(valid_document())
 
-        self.assertEqual(600_000, rules.force_stop_ms)
-        self.assertEqual(4, rules.forced_stop_votes)
+        self.assertEqual(360_000, rules.final_settle_offset_ms)
+        self.assertEqual(4, rules.vote_rounds[-1].threshold)
 
     def test_comment_keys_are_allowed_beside_the_real_fields(self):
         document = valid_document()
-        document["timeline_ms"]["_about"] = "JSON 沒有註解，底線鍵當註解用。"
+        document["timeline"]["_about"] = "JSON 沒有註解，底線鍵當註解用。"
 
-        self.assertEqual(600_000, self.load(document).force_stop_ms)
+        self.assertEqual(360_000, self.load(document).final_settle_offset_ms)
 
     def test_a_missing_section_is_named(self):
         document = valid_document()
-        del document["vote_thresholds"]
+        del document["timeline"]
 
-        self.assertIn("vote_thresholds", self.refuse(document))
+        self.assertIn("timeline", self.refuse(document))
 
     def test_a_missing_deadline_is_named(self):
         document = valid_document()
-        del document["timeline_ms"]["force_stop"]
+        del document["timeline"]["final_settle_offset_ms"]
 
-        self.assertIn("timeline_ms.force_stop", self.refuse(document))
+        self.assertIn("timeline.final_settle_offset_ms", self.refuse(document))
 
     def test_a_missing_vote_step_is_named(self):
         document = valid_document()
-        del document["vote_thresholds"]["reduced"]
+        del document["timeline"]["vote_rounds"][1]["threshold"]
 
-        self.assertIn("vote_thresholds.reduced", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[1].threshold", self.refuse(document))
 
     def test_the_reserved_confidence_slots_must_be_present(self):
         document = valid_document()
@@ -197,7 +191,7 @@ class MissingFieldTest(RulesVariantTestCase):
 
     def test_an_unknown_field_is_named_instead_of_silently_ignored(self):
         document = valid_document()
-        document["timeline_ms"]["forceStop"] = 600_000
+        document["timeline"]["forceStop"] = 360_000
 
         message = self.refuse(document)
         self.assertIn("forceStop", message)
@@ -205,9 +199,9 @@ class MissingFieldTest(RulesVariantTestCase):
     def test_an_unknown_top_level_field_is_named_too(self):
         # 最外層與 section 套用同一條規則，否則改錯鍵名的人以為自己改到了。
         document = valid_document()
-        document["time_line_ms"] = {"force_stop": 1}
+        document["time_line"] = {"final_settle_offset_ms": 1}
 
-        self.assertIn("time_line_ms", self.refuse(document))
+        self.assertIn("time_line", self.refuse(document))
 
     def test_a_missing_schema_version_is_named(self):
         document = valid_document()
@@ -221,27 +215,27 @@ class MissingFieldTest(RulesVariantTestCase):
 
         self.assertIn("schema_version", self.refuse(document))
 
-    def test_a_json_true_cannot_impersonate_schema_version_one(self):
-        # Python 的 bool 是 int 的子型別，True == 1；只比值的話 true 會過關。
+    def test_a_json_true_cannot_impersonate_schema_version_two(self):
+        # Python 的 bool 是 int 的子型別；只檢查 int 會讓它冒充版本號。
         document = valid_document()
         document["schema_version"] = True
 
         self.assertIn("schema_version", self.refuse(document))
 
-    def test_a_float_cannot_impersonate_schema_version_one(self):
+    def test_a_float_cannot_impersonate_schema_version_two(self):
         document = valid_document()
-        document["schema_version"] = 1.0
+        document["schema_version"] = 2.0
 
         self.assertIn("schema_version", self.refuse(document))
 
     def test_a_section_that_is_not_an_object_is_refused(self):
-        # 斷言必須指名「形狀」錯誤：只檢查訊息含 vote_thresholds 的話，缺欄位
+        # 斷言必須指名「形狀」錯誤：只檢查訊息含 timeline 的話，缺欄位
         # 的訊息也會誤綠，型別校驗被拿掉時測試不會紅。
         document = valid_document()
-        document["vote_thresholds"] = [6, 5, 4]
+        document["timeline"] = [6, 5, 4]
 
         message = self.refuse(document)
-        self.assertIn("vote_thresholds", message)
+        self.assertIn("timeline", message)
         self.assertIn("必須是 object", message)
 
     def test_a_document_that_is_not_an_object_is_refused(self):
@@ -272,53 +266,53 @@ class MissingFieldTest(RulesVariantTestCase):
 class TimelineOrderTest(RulesVariantTestCase):
     """時間非遞增必須拒絕啟動，並指名互相矛盾的那一對欄位。"""
 
-    def test_a_final_round_that_ends_before_it_starts_is_refused(self):
+    def test_a_round_that_opens_before_the_previous_round_is_refused(self):
         document = valid_document()
-        document["timeline_ms"]["final_round_end"] = 500_000
+        document["timeline"]["vote_rounds"][2]["open_offset_ms"] = 100_000
 
         message = self.refuse(document)
-        self.assertIn("timeline_ms.final_round_end", message)
-        self.assertIn("timeline_ms.final_round_start", message)
+        self.assertIn("timeline.vote_rounds[2].open_offset_ms", message)
+        self.assertIn("timeline.vote_rounds[1].open_offset_ms", message)
 
-    def test_a_forced_stop_before_the_final_round_is_refused(self):
+    def test_a_final_settle_before_the_last_round_is_refused(self):
         document = valid_document()
-        document["timeline_ms"]["force_stop"] = 500_000
+        document["timeline"]["final_settle_offset_ms"] = 300_000
 
         message = self.refuse(document)
-        self.assertIn("timeline_ms.force_stop", message)
-        self.assertIn("timeline_ms.final_round_end", message)
+        self.assertIn("timeline.final_settle_offset_ms", message)
+        self.assertIn("timeline.vote_rounds[3].open_offset_ms", message)
 
-    def test_a_threshold_drop_before_the_debate_starts_is_refused(self):
+    def test_the_first_round_cannot_open_after_the_second(self):
         document = valid_document()
-        document["timeline_ms"]["reduced_threshold_from"] = 100_000
+        document["timeline"]["vote_rounds"][0]["open_offset_ms"] = 200_000
 
         message = self.refuse(document)
-        self.assertIn("timeline_ms.reduced_threshold_from", message)
-        self.assertIn("timeline_ms.debate_start", message)
+        self.assertIn("timeline.vote_rounds[1].open_offset_ms", message)
+        self.assertIn("timeline.vote_rounds[0].open_offset_ms", message)
 
     def test_two_walls_at_the_same_instant_are_refused(self):
         document = valid_document()
-        document["timeline_ms"]["final_round_start"] = 585_000
+        document["timeline"]["vote_rounds"][2]["open_offset_ms"] = 150_000
 
-        self.assertIn("timeline_ms.final_round_start", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[2].open_offset_ms", self.refuse(document))
 
-    def test_a_zero_length_first_round_window_is_refused(self):
+    def test_a_zero_length_gap_between_rounds_is_refused(self):
         document = valid_document()
-        document["timeline_ms"]["round_one_window"] = 0
+        document["timeline"]["vote_rounds"][1]["open_offset_ms"] = 60_000
 
-        self.assertIn("timeline_ms.round_one_window", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[1].open_offset_ms", self.refuse(document))
 
     def test_a_negative_deadline_is_refused(self):
         document = valid_document()
-        document["timeline_ms"]["debate_start"] = -1
+        document["timeline"]["vote_rounds"][0]["open_offset_ms"] = -1
 
-        self.assertIn("timeline_ms.debate_start", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[0].open_offset_ms", self.refuse(document))
 
     def test_a_deadline_that_is_not_a_whole_millisecond_is_refused(self):
         document = valid_document()
-        document["timeline_ms"]["force_stop"] = 600_000.5
+        document["timeline"]["final_settle_offset_ms"] = 360_000.5
 
-        self.assertIn("timeline_ms.force_stop", self.refuse(document))
+        self.assertIn("timeline.final_settle_offset_ms", self.refuse(document))
 
 
 class VoteLadderTest(RulesVariantTestCase):
@@ -326,58 +320,56 @@ class VoteLadderTest(RulesVariantTestCase):
 
     def test_a_zero_vote_threshold_is_refused(self):
         document = valid_document()
-        document["vote_thresholds"]["forced_stop"] = 0
+        document["timeline"]["vote_rounds"][-1]["threshold"] = 0
 
-        self.assertIn("vote_thresholds.forced_stop", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[3].threshold", self.refuse(document))
 
     def test_a_threshold_larger_than_the_seven_seats_is_refused(self):
         document = valid_document()
-        document["vote_thresholds"]["initial"] = 8
+        document["timeline"]["vote_rounds"][0]["threshold"] = 8
 
-        self.assertIn("vote_thresholds.initial", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[0].threshold", self.refuse(document))
 
     def test_a_boolean_is_not_a_vote_count(self):
-        # 刻意選階梯最底層：True 等於 1，階梯校驗（6>5>1）照樣過得去，所以這
+        # 刻意選階梯最底層：True 等於 1，階梯校驗照樣過得去，所以這
         # 個案例只可能被型別校驗擋下來，拿掉型別校驗它就會紅。
         document = valid_document()
-        document["vote_thresholds"]["forced_stop"] = True
+        document["timeline"]["vote_rounds"][-1]["threshold"] = True
 
         message = self.refuse(document)
-        self.assertIn("vote_thresholds.forced_stop", message)
+        self.assertIn("timeline.vote_rounds[3].threshold", message)
         self.assertIn("整數票數", message)
 
     def test_a_ladder_that_rises_over_time_is_refused(self):
         document = valid_document()
-        document["vote_thresholds"]["reduced"] = 7
+        document["timeline"]["vote_rounds"][1]["threshold"] = 7
 
         message = self.refuse(document)
-        self.assertIn("vote_thresholds.reduced", message)
-        self.assertIn("vote_thresholds.initial", message)
+        self.assertIn("timeline.vote_rounds[1].threshold", message)
+        self.assertIn("timeline.vote_rounds[0].threshold", message)
 
     def test_two_equal_steps_are_refused(self):
-        # consensus_<n>_votes 這個停止原因必須只有一種讀法。
         document = valid_document()
-        document["vote_thresholds"]["forced_stop"] = 5
+        document["timeline"]["vote_rounds"][-1]["threshold"] = 5
 
-        self.assertIn("vote_thresholds.forced_stop", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[3].threshold", self.refuse(document))
 
-    def test_an_illegal_blind_pass_threshold_is_named(self):
-        # 直過門檻不在遞減階梯上，所以它只剩票數校驗這一道；三種形狀都要擋。
+    def test_an_illegal_first_round_threshold_is_named(self):
         for value in (0, len(SEAT_IDS) + 1, True):
-            with self.subTest(unanimous_blind_pass=value):
+            with self.subTest(first_round_threshold=value):
                 document = valid_document()
-                document["vote_thresholds"]["unanimous_blind_pass"] = value
+                document["timeline"]["vote_rounds"][0]["threshold"] = value
 
                 message = self.refuse(document)
-                self.assertIn("vote_thresholds.unanimous_blind_pass", message)
+                self.assertIn("timeline.vote_rounds[0].threshold", message)
                 self.assertIn("整數票數", message)
 
-    def test_a_missing_blind_pass_threshold_is_named(self):
+    def test_a_missing_round_threshold_is_named(self):
         document = valid_document()
-        del document["vote_thresholds"]["unanimous_blind_pass"]
+        del document["timeline"]["vote_rounds"][0]["threshold"]
 
         self.assertIn(
-            "vote_thresholds.unanimous_blind_pass", self.refuse(document)
+            "timeline.vote_rounds[0].threshold", self.refuse(document)
         )
 
 
@@ -386,37 +378,36 @@ class RulesDriveBehaviourTest(RulesVariantTestCase):
 
     def moved_rules(self):
         document = valid_document()
-        document["timeline_ms"]["reduced_threshold_from"] = 450_000
-        document["vote_thresholds"]["reduced"] = 5
+        document["timeline"]["vote_rounds"][1]["open_offset_ms"] = 210_000
         return self.load(document)
 
     def test_moving_the_threshold_drop_moves_the_vote_requirement(self):
         rules = self.moved_rules()
 
-        self.assertEqual(6, rules.required_votes_at(449_999))
-        self.assertEqual(5, rules.required_votes_at(450_000))
+        self.assertEqual(7, rules.required_votes_at(449_999))
+        self.assertEqual(6, rules.required_votes_at(450_000))
         self.assertEqual(4, rules.required_votes_at(600_000))
 
     def test_moving_the_threshold_drop_moves_the_named_phase(self):
         rules = self.moved_rules()
 
-        self.assertEqual("first_round_closed", rules.phase_at(449_999))
-        self.assertEqual("five_vote_threshold", rules.phase_at(450_000))
+        self.assertEqual("vote_round_1", rules.phase_at(449_999))
+        self.assertEqual("vote_round_2", rules.phase_at(450_000))
 
-    def test_the_first_round_wall_follows_the_run_s_own_seal(self):
+    def test_the_round_schedule_follows_the_run_s_own_seal(self):
         rules = self.load(valid_document())
 
-        self.assertEqual(420_000, rules.challenge_deadline_ms())
-        self.assertEqual(450_000, rules.challenge_deadline_ms(270_000))
+        self.assertEqual(6, rules.required_votes_at(390_000, seal_ms=240_000))
+        self.assertEqual(6, rules.required_votes_at(420_000, seal_ms=270_000))
 
     def test_the_state_machine_helpers_read_the_injected_rules(self):
         from hoya_market_agents.debate_state_machine import phase_at, required_votes_at
 
         rules = self.moved_rules()
 
-        self.assertEqual(6, required_votes_at(449_999, rules=rules))
-        self.assertEqual(5, required_votes_at(450_000, rules=rules))
-        self.assertEqual("five_vote_threshold", phase_at(450_000, rules=rules))
+        self.assertEqual(7, required_votes_at(449_999, rules=rules))
+        self.assertEqual(6, required_votes_at(450_000, rules=rules))
+        self.assertEqual("vote_round_2", phase_at(450_000, rules=rules))
 
 
 class ConfidencePlaceholderTest(RulesVariantTestCase):
@@ -715,70 +706,67 @@ class LegalBoundaryTest(RulesVariantTestCase):
     件裡是全綠的。下面每個案例都對應一個「把界收緊」的 mutant。
     """
 
-    def test_a_debate_that_starts_at_zero_is_accepted(self):
-        # 時間下界是 0，不是 1：T+0 起跑的設定合法。
+    def test_a_first_round_offset_of_zero_is_accepted(self):
+        # offset 下界是 0，不是 1：封存當下開第一輪仍是合法資料。
         document = valid_document()
-        document["timeline_ms"]["debate_start"] = 0
+        document["timeline"]["vote_rounds"][0]["open_offset_ms"] = 0
 
-        self.assertEqual(0, self.load(document).debate_start_ms)
+        self.assertEqual(0, self.load(document).vote_rounds[0].open_offset_ms)
 
-    def test_a_one_millisecond_first_round_window_is_accepted(self):
+    def test_a_one_millisecond_first_round_offset_is_accepted(self):
         document = valid_document()
-        document["timeline_ms"]["round_one_window"] = 1
+        document["timeline"]["vote_rounds"][0]["open_offset_ms"] = 1
 
         rules = self.load(document)
-        self.assertEqual(1, rules.round_one_window_ms)
-        self.assertEqual(240_001, rules.challenge_deadline_ms())
+        self.assertEqual(1, rules.vote_rounds[0].open_offset_ms)
 
     def test_walls_one_millisecond_apart_are_accepted(self):
         # 「嚴格遞增」的下限就是差 1ms；差 1ms 仍然是遞增。
         document = valid_document()
-        document["timeline_ms"].update(
-            debate_start=240_000,
-            reduced_threshold_from=240_001,
-            final_round_start=240_002,
-            final_round_end=240_003,
-            force_stop=240_004,
-        )
+        for index, vote_round in enumerate(document["timeline"]["vote_rounds"]):
+            vote_round["open_offset_ms"] = index
+        document["timeline"]["final_settle_offset_ms"] = 4
 
         rules = self.load(document)
-        self.assertEqual(240_001, rules.reduced_threshold_from_ms)
-        self.assertEqual(240_004, rules.force_stop_ms)
+        self.assertEqual((0, 1, 2, 3), tuple(r.open_offset_ms for r in rules.vote_rounds))
+        self.assertEqual(4, rules.final_settle_offset_ms)
 
     def test_the_widest_legal_vote_ladder_is_accepted(self):
         # 兩個端點一次驗完：上界＝席位數 7，下界＝1；順便驗 6/5/4 以外的階梯。
         document = valid_document()
-        document["vote_thresholds"] = {
-            "unanimous_blind_pass": 7,
-            "initial": 7,
-            "reduced": 4,
-            "forced_stop": 1,
-        }
+        document["timeline"]["vote_rounds"] = [
+            {"open_offset_ms": 1, "threshold": 7},
+            {"open_offset_ms": 2, "threshold": 4},
+            {"open_offset_ms": 3, "threshold": 1},
+        ]
+        document["timeline"]["final_settle_offset_ms"] = 4
 
         rules = self.load(document)
-        self.assertEqual(7, rules.initial_votes)
-        self.assertEqual(1, rules.forced_stop_votes)
-        self.assertEqual(7, rules.required_votes_at(0))
-        self.assertEqual(1, rules.required_votes_at(600_000))
+        self.assertEqual((7, 4, 1), tuple(r.threshold for r in rules.vote_rounds))
+        self.assertEqual(7, rules.required_votes_at(240_000))
+        self.assertEqual(1, rules.required_votes_at(240_003))
 
-    def test_both_ends_of_the_blind_pass_threshold_are_accepted(self):
-        # 直過門檻不在遞減階梯上，所以它自己的兩個端點要單獨驗：1 與席位數 7。
+    def test_both_ends_of_the_round_threshold_range_are_accepted(self):
         for value in (1, len(SEAT_IDS)):
-            with self.subTest(unanimous_blind_pass=value):
+            with self.subTest(threshold=value):
                 document = valid_document()
-                document["vote_thresholds"]["unanimous_blind_pass"] = value
+                document["timeline"]["vote_rounds"] = [
+                    {"open_offset_ms": 1, "threshold": value}
+                ]
+                document["timeline"]["final_settle_offset_ms"] = 2
 
-                self.assertEqual(value, self.load(document).unanimous_blind_pass_votes)
+                self.assertEqual(value, self.load(document).vote_rounds[0].threshold)
 
-    def test_a_blind_pass_threshold_below_the_debate_ladder_is_accepted(self):
-        # 直過門檻與 6/5/4 階梯量的是兩種票（開場票 vs 有效票），刻意不互相
-        # 約束。設得比 initial 低是合法設定，載入器不得越權替使用者否決。
+    def test_a_two_round_non_default_ladder_is_accepted(self):
         document = valid_document()
-        document["vote_thresholds"]["unanimous_blind_pass"] = 4
+        document["timeline"]["vote_rounds"] = [
+            {"open_offset_ms": 10, "threshold": 4},
+            {"open_offset_ms": 20, "threshold": 3},
+        ]
+        document["timeline"]["final_settle_offset_ms"] = 30
 
         rules = self.load(document)
-        self.assertEqual(4, rules.unanimous_blind_pass_votes)
-        self.assertEqual(6, rules.initial_votes)
+        self.assertEqual((4, 3), tuple(r.threshold for r in rules.vote_rounds))
 
     def test_the_smallest_legal_light_scale_is_accepted(self):
         # 一級的階梯就是全函式：所有票數都對到同一個燈號。
@@ -941,36 +929,30 @@ class SetMembershipTest(RulesVariantTestCase):
                 self.assertIn(name, self.refuse(document))
         self.assertEqual(set(_TOP_LEVEL_FIELDS), set(valid_document()))
 
-    def test_every_allowed_vote_threshold_key_is_also_a_required_one(self):
-        """inventory：票數 allowlist 恰好等於載入器真的會讀的鍵。
+    def test_every_allowed_round_key_is_also_a_required_one(self):
+        """inventory：每輪 allowlist 恰好等於載入器真的會讀的鍵。
 
         和最外層同一個理由：多允許一個沒人讀的票數鍵不會讓任何「拒絕」案例
         變紅，只有把集合與一份最小合法文件對齊才擋得住。
         """
-        from hoya_market_agents.debate_rules import _VOTE_FIELDS
+        from hoya_market_agents.debate_rules import _ROUND_FIELDS
 
-        for name in _VOTE_FIELDS:
+        for name in _ROUND_FIELDS:
             with self.subTest(field=name):
                 document = valid_document()
-                del document["vote_thresholds"][name]
+                del document["timeline"]["vote_rounds"][0][name]
                 self.assertIn(
-                    "vote_thresholds.{}".format(name), self.refuse(document)
+                    "timeline.vote_rounds[0].{}".format(name), self.refuse(document)
                 )
         self.assertEqual(
-            set(_VOTE_FIELDS), set(valid_document()["vote_thresholds"])
+            set(_ROUND_FIELDS), set(valid_document()["timeline"]["vote_rounds"][0])
         )
 
-    def test_only_the_debate_ladder_is_bound_by_the_decreasing_rule(self):
-        """inventory：遞減檢查的成員恰好是三階梯，直過門檻不在其中。"""
-        from hoya_market_agents.debate_rules import (
-            _VOTE_FIELDS,
-            _VOTE_LADDER_FIELDS,
-        )
+    def test_the_round_array_owns_both_time_and_threshold(self):
+        """inventory：offset 與門檻同住每輪資料，不另留 v1 階梯。"""
+        from hoya_market_agents.debate_rules import _ROUND_FIELDS
 
-        self.assertEqual(("initial", "reduced", "forced_stop"), _VOTE_LADDER_FIELDS)
-        self.assertEqual(
-            ("unanimous_blind_pass",) + _VOTE_LADDER_FIELDS, _VOTE_FIELDS
-        )
+        self.assertEqual(("open_offset_ms", "threshold"), _ROUND_FIELDS)
 
     def test_the_downgrade_rule_names_are_exactly_the_two_from_adr_0003(self):
         """inventory：認得的降級規則只有 ADR 0003 那兩條。"""
@@ -995,9 +977,9 @@ class SetMembershipTest(RulesVariantTestCase):
         )
 
     def test_the_next_schema_version_is_not_silently_accepted(self):
-        # 支援版本是一個單元素集合；相鄰成員（2）必須被拒，否則「外擴成 {1,2}」
+        # 支援版本是一個單元素集合；相鄰版本必須被拒。
         # 這種退化沒人擋。
-        for version in (0, 2):
+        for version in (0, 1, 3):
             with self.subTest(version=version):
                 document = valid_document()
                 document["schema_version"] = version
@@ -1006,40 +988,43 @@ class SetMembershipTest(RulesVariantTestCase):
 
 
 class LateFirstRoundWallTest(RulesVariantTestCase):
-    """牆落在門檻降低之後是合法設定，行為必須是定義好的、不是意外。
-
-    第一輪牆是相對的（該 run 封存時刻＋窗），比較題晚 30 秒封存，所以牆的落點
-    載入時根本算不出來。載入器只驗窗為正；重疊時的語意由 phase_at 定義。
-    """
+    """輪 offset 必須跟著每個 run 的實際封存時刻平移。"""
 
     COMPARISON_SEAL_MS = 270_000
 
     def late_wall_rules(self):
         document = valid_document()
-        document["timeline_ms"]["round_one_window"] = 220_000
+        document["timeline"]["vote_rounds"][0]["open_offset_ms"] = 90_000
         return self.load(document)
 
-    def test_a_window_whose_wall_passes_the_threshold_drop_still_loads(self):
+    def test_a_non_default_first_round_offset_still_loads(self):
         rules = self.late_wall_rules()
 
-        wall = rules.challenge_deadline_ms(self.COMPARISON_SEAL_MS)
-        self.assertEqual(490_000, wall)
-        self.assertGreater(wall, rules.reduced_threshold_from_ms)
+        self.assertEqual(90_000, rules.vote_rounds[0].open_offset_ms)
 
-    def test_the_later_absolute_wall_wins_when_the_two_overlap(self):
-        rules = self.late_wall_rules()
-        wall = rules.challenge_deadline_ms(self.COMPARISON_SEAL_MS)
-
-        self.assertEqual("first_round", rules.phase_at(479_999, wall))
-        self.assertEqual("five_vote_threshold", rules.phase_at(480_000, wall))
-        self.assertEqual("five_vote_threshold", rules.phase_at(wall, wall))
-
-    def test_the_vote_threshold_still_drops_on_its_own_schedule(self):
-        # 牆晚到不代表門檻跟著晚：票數階梯只看絕對時刻。
+    def test_the_comparison_seal_moves_the_same_round_by_thirty_seconds(self):
         rules = self.late_wall_rules()
 
-        self.assertEqual(6, rules.required_votes_at(479_999))
-        self.assertEqual(5, rules.required_votes_at(480_000))
+        self.assertEqual(
+            "before_vote_round_1",
+            rules.phase_at(359_999, seal_ms=self.COMPARISON_SEAL_MS),
+        )
+        self.assertEqual(
+            "vote_round_1",
+            rules.phase_at(360_000, seal_ms=self.COMPARISON_SEAL_MS),
+        )
+
+    def test_the_threshold_changes_at_the_shifted_second_round(self):
+        rules = self.late_wall_rules()
+
+        self.assertEqual(
+            7,
+            rules.required_votes_at(419_999, seal_ms=self.COMPARISON_SEAL_MS),
+        )
+        self.assertEqual(
+            6,
+            rules.required_votes_at(420_000, seal_ms=self.COMPARISON_SEAL_MS),
+        )
 
 
 class SingleSourceTest(unittest.TestCase):
@@ -3359,10 +3344,11 @@ class ReloadTestCase(RulesVariantTestCase):
     def lower_ladder(self):
         """A legal variant whose every published number differs from shipped."""
         document = valid_document()
-        document["vote_thresholds"]["initial"] = 5
-        document["vote_thresholds"]["reduced"] = 4
-        document["vote_thresholds"]["forced_stop"] = 3
-        document["timeline_ms"]["force_stop"] = 660_000
+        for vote_round, threshold in zip(
+            document["timeline"]["vote_rounds"], (6, 5, 4, 3)
+        ):
+            vote_round["threshold"] = threshold
+        document["timeline"]["final_settle_offset_ms"] = 420_000
         return document
 
 
@@ -3373,9 +3359,8 @@ class ReloadPublishesTest(ReloadTestCase):
         self.publish(self.lower_ladder())
 
         rules = debate_rules()
-        self.assertEqual(5, rules.initial_votes)
-        self.assertEqual(4, rules.reduced_votes)
-        self.assertEqual(3, rules.forced_stop_votes)
+        self.assertEqual((6, 5, 4, 3), tuple(r.threshold for r in rules.vote_rounds))
+        self.assertEqual(420_000, rules.final_settle_offset_ms)
         self.assertEqual(660_000, rules.force_stop_ms)
 
     def test_the_reload_returns_exactly_the_object_it_published(self):
@@ -3442,25 +3427,25 @@ class ReloadIsFailClosedTest(ReloadTestCase):
 
     def test_a_missing_field_keeps_the_old_rules(self):
         document = valid_document()
-        del document["vote_thresholds"]["initial"]
+        del document["timeline"]["vote_rounds"][0]["threshold"]
 
-        self.assertIn("vote_thresholds.initial", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[0].threshold", self.refuse(document))
 
     def test_an_out_of_range_value_keeps_the_old_rules(self):
         document = valid_document()
-        document["vote_thresholds"]["initial"] = 99
+        document["timeline"]["vote_rounds"][0]["threshold"] = 99
 
-        self.assertIn("vote_thresholds.initial", self.refuse(document))
+        self.assertIn("timeline.vote_rounds[0].threshold", self.refuse(document))
 
     def test_an_out_of_order_timeline_keeps_the_old_rules(self):
         document = valid_document()
-        document["timeline_ms"]["final_round_end"] = 1
+        document["timeline"]["vote_rounds"][2]["open_offset_ms"] = 1
 
         self.assertIn("嚴格遞增", self.refuse(document))
 
     def test_an_unknown_key_keeps_the_old_rules(self):
         document = valid_document()
-        document["timeline_ms"]["force_stopp"] = 600_000
+        document["timeline"]["force_stopp"] = 360_000
 
         self.assertIn("force_stopp", self.refuse(document))
 
@@ -3495,7 +3480,7 @@ class ReloadIsFailClosedTest(ReloadTestCase):
     def test_a_legal_variant_is_still_published(self):
         """FP 方向：fail-closed 不得退化成「什麼都不換」。"""
         document = valid_document()
-        document["timeline_ms"]["force_stop"] = 660_000
+        document["timeline"]["final_settle_offset_ms"] = 420_000
 
         self.assertEqual(660_000, self.publish(document).force_stop_ms)
 

@@ -29,7 +29,7 @@ from .seats import CODE_ROOT
 SCHEMA_VERSION = "1.0.0"
 INBOX_DIRECTORY = "inbox"
 CHANNELS = ("prompts", "requests", "results")
-DEFAULT_DATA_ROOT = CODE_ROOT.parent / "hoya-bit-market-agents_data"
+DEFAULT_DATA_ROOT = CODE_ROOT.parent / "AI-agnets-debating-chamber_data"
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -195,7 +195,7 @@ def _submit_seat_parser():
     parser.add_argument(
         "--data-root",
         default=str(DEFAULT_DATA_ROOT),
-        help="Data Root 路徑（預設為 Code Root 旁的 hoya-bit-market-agents_data）",
+        help="Data Root 路徑（預設為 Code Root 旁的 AI-agnets-debating-chamber_data）",
     )
     return parser
 

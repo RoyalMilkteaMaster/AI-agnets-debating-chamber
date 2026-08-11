@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .debate_rules import (
     _DOWNGRADE_FIELDS,
+    _load_legacy_debate_rules_document,
     SUPPORTED_SCHEMA_VERSION,
     load_debate_rules,
 )
@@ -251,42 +252,37 @@ def _rules_document(rules):
     正規化是刻意的：註解鍵（``_about``）、鍵序與空白都不影響輸出，所以只改註解
     的設定檔會得到同一個 ``sha256``——摘要認的是規則，不是檔案。
     """
-    confidence = rules.confidence
     return {
         "schema_version": SUPPORTED_SCHEMA_VERSION,
-        "timeline_ms": {
-            "debate_start": rules.debate_start_ms,
-            "round_one_window": rules.round_one_window_ms,
-            "reduced_threshold_from": rules.reduced_threshold_from_ms,
-            "final_round_start": rules.final_round_start_ms,
-            "final_round_end": rules.final_round_end_ms,
-            "force_stop": rules.force_stop_ms,
-        },
-        "vote_thresholds": {
-            "unanimous_blind_pass": rules.unanimous_blind_pass_votes,
-            "initial": rules.initial_votes,
-            "reduced": rules.reduced_votes,
-            "forced_stop": rules.forced_stop_votes,
-        },
-        "confidence": {
-            "light_scale": [
-                {"min_votes": step.min_votes, "level": step.level}
-                for step in confidence.light_scale
-            ],
-            # 每條降級規則只擁有自己的參數欄位，而那張對照表的權威是
-            # ``debate_rules._DOWNGRADE_FIELDS``。在這裡抄一份等於多一個會各自
-            # 漂移的來源；直接讀它，新增第三條降級時這裡不必跟著改。抄錯或漂移
-            # 也不會靜靜過去——多寫或少寫一個欄位，讀回來時載入器就會拒絕。
-            "downgrades": {
-                rule.rule: {
-                    "levels": rule.levels,
-                    **{
-                        name: _json_plain(getattr(rule, name))
-                        for name in _DOWNGRADE_FIELDS[rule.rule]
-                    },
+        "timeline": {
+            "vote_rounds": [
+                {
+                    "open_offset_ms": vote_round.open_offset_ms,
+                    "threshold": vote_round.threshold,
                 }
-                for rule in confidence.downgrades
-            },
+                for vote_round in rules.vote_rounds
+            ],
+            "final_settle_offset_ms": rules.final_settle_offset_ms,
+        },
+        "confidence": _confidence_document(rules.confidence),
+    }
+
+
+def _confidence_document(confidence):
+    return {
+        "light_scale": [
+            {"min_votes": step.min_votes, "level": step.level}
+            for step in confidence.light_scale
+        ],
+        "downgrades": {
+            rule.rule: {
+                "levels": rule.levels,
+                **{
+                    name: _json_plain(getattr(rule, name))
+                    for name in _DOWNGRADE_FIELDS[rule.rule]
+                },
+            }
+            for rule in confidence.downgrades
         },
     }
 
@@ -305,17 +301,19 @@ def _rules_document_digest(document):
 
 
 def _load_rules_document(document):
-    """Validate one snapshot through the loader that owns rule validation.
+    """Validate one snapshot through its version's rule validator.
 
-    快照是一份設定文件，所以驗證它的權威就是 :func:`~.debate_rules.
-    load_debate_rules`——本模組不重寫一遍階梯、時間軸與燈號的檢查。載入器只吃路
-    徑，因此文件先落到一個暫存檔再交出去；用完即刪。
+    v2 快照走正式 :func:`~.debate_rules.load_debate_rules`；v1 快照只走
+    ``debate_rules`` 的舊 manifest 相容分支。本模組不重寫時間軸、票數或燈號
+    驗證。正式載入器只吃路徑，因此 v2 文件先落到暫存檔再交出去；用完即刪。
 
     這也是「規則結構日後改變時，舊快照怎麼讀」的答案：快照帶著自己的
     ``schema_version``，載入器支援到哪個版本，舊快照就讀到哪個版本；不支援時它
     會逐字指名版本並拒絕，不會拿新結構去猜舊資料。要延長舊快照的壽命，就在那個
-    載入器裡加相容分支——只有一個地方要改。
+    ``debate_rules`` 的快照相容分支延長，不放寬正式設定檔載入器。
     """
+    if document.get("schema_version") == 1:
+        return _load_legacy_debate_rules_document(document)
     handle = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", encoding="utf-8", delete=False
     )

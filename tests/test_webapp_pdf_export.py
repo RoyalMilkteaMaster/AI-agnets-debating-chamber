@@ -877,7 +877,7 @@ class EdgeDiscoveryTest(unittest.TestCase):
 class HostPathTest(unittest.TestCase):
     """WSL 下的路徑轉換，以及它失敗時說什麼。"""
 
-    PATH = Path("/mnt/d/workstationD/hoya bit/runs/report.html")
+    PATH = Path("/mnt/d/workstationD/AI agnets debating chamber/runs/report.html")
 
     def test_without_wslpath_the_path_is_its_own_translation(self):
         runner = FakeRunner()
@@ -890,13 +890,13 @@ class HostPathTest(unittest.TestCase):
         self.assertEqual([], runner.commands)
 
     def test_with_wslpath_its_answer_is_the_translation(self):
-        runner = FakeRunner(stdout="D:\\workstationD\\hoya bit\\runs\\report.html\n")
+        runner = FakeRunner(stdout="D:\\workstationD\\AI agnets debating chamber\\runs\\report.html\n")
 
         translated = pdf_export.host_path(
             self.PATH, run=runner, which=lambda _name: "/usr/bin/wslpath"
         )
 
-        self.assertEqual("D:\\workstationD\\hoya bit\\runs\\report.html", translated)
+        self.assertEqual("D:\\workstationD\\AI agnets debating chamber\\runs\\report.html", translated)
         self.assertIn(str(self.PATH), runner.commands[0])
 
     def test_a_refused_translation_is_a_failure_naming_the_path_and_the_reason(self):
@@ -1314,7 +1314,13 @@ class ExportButtonTest(ExportEndpointFixture, unittest.TestCase):
             self.detail("20260805T020000Z-btc-eeee55"),
             self.export().body,
         ):
-            for pattern in (r"<script", r"<link\b", r"\bsrc\s*=\s*[\"']https?://", r"@import"):
+            self.assertIn('<link rel="stylesheet" href="/static/site.css">', body)
+            for pattern in (
+                r"<script",
+                r"<link[^>]+href=[\"'](?:https?:)?//",
+                r"\bsrc\s*=\s*[\"']https?://",
+                r"@import",
+            ):
                 self.assertIsNone(re.search(pattern, body, re.IGNORECASE), pattern)
 
     def test_the_export_notice_is_absent_until_something_was_exported(self):

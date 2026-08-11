@@ -88,6 +88,16 @@ NO_STANCE_LABEL = "尚未表態"
 NO_REASON_LABEL = "未提供公開理由"
 WAITING_LABEL = "等待派工"
 
+# A public reason opens with its own conclusion: ``debate_driver`` requires the
+# first sentence of every ``public_reason`` to be a 30-60 字 核心結論, so the
+# brief a message shows before it is opened is that first sentence and the cut
+# is a sentence end rather than a character count. The cap below is the answer
+# for a reason that never ends a sentence at all, and only for that.
+FULL_STOPS = "。！？"
+ASCII_STOPS = ".!?"
+BRIEF_LIMIT = 60
+BRIEF_ELLIPSIS = "…"
+
 # Not ``#``: a cursor also travels in a query string, and a fragment marker
 # would be cut off there by every URL parser including this server's.
 CURSOR_SEPARATOR = "@"
@@ -227,9 +237,14 @@ class ChatRoom:
         ``evidence_ids``, ``elapsed_ms`` and ``stance_change_reason``. Nothing
         else in the record is copied into the view, so nothing else can be
         rendered from it.
+
+        ``public_brief`` is not read from the record but derived here from the
+        reason, which is what keeps the first page and every later frame of the
+        stream showing one and the same brief.
         """
         seat_id = record["seat_id"]
         stance = record.get("stance")
+        reason = record.get("public_reason") or NO_REASON_LABEL
         known = stance in self.stance_labels
         before = self.stances.get(seat_id)
         changed = known and before is not None and before != stance
@@ -241,7 +256,8 @@ class ChatRoom:
             "stance": stance if known else None,
             "stance_label": self.stance_labels.get(stance, NO_STANCE_LABEL),
             "stance_class": self.stance_classes.get(stance, UNKNOWN_STANCE_CLASS),
-            "public_reason": record.get("public_reason") or NO_REASON_LABEL,
+            "public_reason": reason,
+            "public_brief": first_sentence(reason),
             "evidence_ids": _string_list(record.get("evidence_ids")),
             "elapsed_ms": _integer(record.get("elapsed_ms")) or 0,
             "changed": changed,
@@ -263,9 +279,7 @@ class ChatRoom:
                         stance, UNKNOWN_STANCE_CLASS
                     ),
                     "changed": changed,
-                    "reason": record.get("stance_change_reason")
-                    or record.get("public_reason")
-                    or NO_REASON_LABEL,
+                    "reason": record.get("stance_change_reason") or reason,
                     "elapsed_ms": _integer(record.get("elapsed_ms")) or 0,
                 }
             )
@@ -567,13 +581,12 @@ def rule_timeline(question_type=None):
     frozen at import — which is the one thing the old dashboard's
     ``RULES = rules_for()`` got wrong and ``tests/test_debate_rules.py`` guards.
 
-    The seal is the one milestone that moves with the question type: a two-asset
-    comparison seals thirty seconds later than a single-asset run. Its instant
-    comes from :func:`~hoya_market_agents.research_scheduler.research_deadlines`
-    — the sole authority for it (``research_scheduler`` line 44), so the literal
-    270_000 is nowhere here — while the vote count on it is still the rule file's
-    ``initial_votes``. The debate walls after it (``reduced_threshold_from`` and
-    ``force_stop``) are absolute and do not move with the seal.
+    The seal and every vote wall move with the question type: a two-asset
+    comparison seals thirty seconds later than a single-asset run, and schema
+    v2 expresses every wall as an offset from that seal. The seal instant comes
+    from :func:`~hoya_market_agents.research_scheduler.research_deadlines` — the
+    sole authority for it — while the offsets and thresholds come from the
+    reload-aware rule object read above.
 
     The opening milestone is T+0; the switch to trusted secondary sources is
     :data:`research_scheduler.PRIMARY_ONLY_END_MS`; and the two closing
@@ -581,27 +594,35 @@ def rule_timeline(question_type=None):
     :data:`TOTAL_WINDOW_MS`.
     """
     rules = debate_rules()
-    return [
+    seal_ms = research_deadlines(question_type).seal_ms
+    milestones = [
         {"at_ms": 0, "label": "開始多方蒐證", "required_votes": None},
         {"at_ms": PRIMARY_ONLY_END_MS, "label": "允許可信二手來源", "required_votes": None},
         {
-            "at_ms": research_deadlines(question_type).seal_ms,
-            "label": "封存證據並開始辯論",
-            "required_votes": rules.initial_votes,
-        },
-        {
-            "at_ms": rules.reduced_threshold_from_ms,
-            "label": "共識門檻降為 {} 票".format(rules.reduced_votes),
-            "required_votes": rules.reduced_votes,
-        },
-        {
-            "at_ms": rules.force_stop_ms,
-            "label": "強制結算並以 {} 票定案".format(rules.forced_stop_votes),
-            "required_votes": rules.forced_stop_votes,
+            "at_ms": seal_ms,
+            "label": "封存證據並整理開場票",
+            "required_votes": None,
         },
         {"at_ms": REPORT_DEADLINE_MS, "label": "正式報告期限", "required_votes": None},
         {"at_ms": TOTAL_WINDOW_MS, "label": "人工閱讀準備結束", "required_votes": None},
     ]
+    milestones += [
+        {
+            "at_ms": seal_ms + vote_round.open_offset_ms,
+            "label": "第 {} 輪開票".format(index),
+            "required_votes": vote_round.threshold,
+            "round": index,
+        }
+        for index, vote_round in enumerate(rules.vote_rounds, start=1)
+    ]
+    milestones.append(
+        {
+            "at_ms": seal_ms + rules.final_settle_offset_ms,
+            "label": "硬停結算",
+            "required_votes": rules.vote_rounds[-1].threshold,
+        }
+    )
+    return sorted(milestones, key=lambda entry: entry["at_ms"])
 
 
 def threshold_label(elapsed_ms, question_type=None):
@@ -615,9 +636,12 @@ def threshold_label(elapsed_ms, question_type=None):
     comparison run that seals at 4:30 does not read as voting at 4:05 while its
     timeline still says the evidence is not sealed.
     """
-    if elapsed_ms < research_deadlines(question_type).seal_ms:
+    seal_ms = research_deadlines(question_type).seal_ms
+    if elapsed_ms < seal_ms:
         return "尚未進入投票"
-    return "{} 票".format(debate_rules().required_votes_at(elapsed_ms))
+    return "{} 票".format(
+        debate_rules().required_votes_at(elapsed_ms, seal_ms=seal_ms)
+    )
 
 
 def phase_label(elapsed_ms, timeline, state):
@@ -830,6 +854,40 @@ def _read_json(path):
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def first_sentence(text):
+    """Return the sentence ``text`` opens with, or a capped opening of it.
+
+    A full-width ``。``, ``！`` or ``？`` always ends a sentence. An ASCII
+    ``.``, ``!`` or ``?`` ends one only when a space, a newline or the end of
+    the text follows it, so a figure like ``3.5%`` is one number and not two
+    sentences — cutting a brief in half there would show a conclusion the
+    reason does not hold. Text that ends no sentence is cut at
+    :data:`BRIEF_LIMIT` characters with an ellipsis, and text no longer than
+    that is its own opening.
+
+    這是唯一的斷句處：頁面與 SSE 走同一份訊息 view，所以兩邊看到的概述一定
+    相同，瀏覽器端不必也不該再算一次。
+    """
+    for index in range(len(text)):
+        if _is_sentence_end(text, index):
+            return text[: index + 1]
+    if len(text) > BRIEF_LIMIT:
+        return text[:BRIEF_LIMIT] + BRIEF_ELLIPSIS
+    return text
+
+
+def _is_sentence_end(text, index):
+    mark = text[index]
+    if mark in FULL_STOPS:
+        return True
+    if mark not in ASCII_STOPS:
+        return False
+    # A slice rather than an index: past the last character it is ``""``, which
+    # is the end of the text and so is a sentence end.
+    next_character = text[index + 1 : index + 2]
+    return not next_character or next_character.isspace()
 
 
 def _integer(value):
