@@ -6,6 +6,91 @@
 - 2026-08-09 增補：〈前端重設計與七席換套〉一節；與 2026-08-01 版衝突處（例如資產範圍已擴至台股／美股）以該節與 post-competition-refit 各票為準。
 - 2026-08-10 增補：〈四輪投票制、概述摺疊與前端分層〉一節；與 2026-08-01 版〈時間規則〉〈投票與辯論〉衝突處（連續門檻階梯、反方挑戰必經）以該節為準。
 - 2026-08-11 增補：研究延長兩分鐘；下列〈時間規則〉及四輪投票表已更新，取代所有較早的絕對時刻。投票 offset 與門檻不變，仍錨定題型封存時刻。
+- 2026-08-11 增補：〈發布、原生 Windows 與執行可靠性〉一節；與舊版手動 Codex handoff、WSL-only、寫死 CLI 路徑及網頁 preflight 指引衝突處，以本節為準。
+
+## 發布、原生 Windows 與執行可靠性（2026-08-11 核准，最小版）
+
+### 目標與優先順序
+
+本輪 P0 必須讓一般使用者在任意 Windows 使用者名稱、磁碟與含空格的專案路徑下，只貼上一條 PowerShell 或 WSL 指令，即可啟動網站並執行真實七席分析。同一輪只修正已重現的倒數倒退、啟動後未跟到新 run、席位看似未派出、備選 Agent 未實際接手及完成後缺乏明確入口；不另建完整環境檢查系統。
+
+### R1：原生 Windows 與 WSL 統一啟動
+
+- 原生 Windows PowerShell 必須能完整執行真實七席流程，不得要求安裝或呼叫 WSL。
+- 既有 WSL 使用方式必須保留，避免破壞既有使用者。
+- PowerShell 與 WSL 各提供一條獨立、可直接複製貼上的統一啟動指令，不把兩種 shell 語法混在同一段。
+- 啟動器從目前 shell 的 `PATH` 尋找可用 Python，啟動網站後開啟瀏覽器；不得以持久 READY 憑證作為入口。
+- Codex、Claude、Antigravity 由一個小型共用 resolver 使用 `shutil.which()` 從 `PATH` 尋找；本輪不新增環境變數覆寫，也不得寫死 `/home/leslie/...`、`C:\Users\...`、特定磁碟或特定安裝目錄。
+- Code Root 與 Data Root 必須由啟動位置、專案結構或明確參數解析；任意使用者名稱、磁碟與含空格路徑均須成立。
+- 找不到 Python 或三個 Provider CLI 全都不在 `PATH` 時，終端機必須指出缺少的命令；單一 Provider 不可用時由正式 attempt 回報並交由跨 Provider 備援。
+
+### R2：解除 Codex Task 與 READY 憑證門檻
+
+- 使用者不得被要求開啟 fresh Codex Task、建立 persistent Codex threads、手動執行 handoff，或複製 `run_id`、challenge、token、cookie、密碼及其他憑證內容。
+- `latest-ready.json` 與 system preflight 不再是啟動或送出問題的門檻；系統不得要求、複製或產生新的 READY 憑證。既有檔案不主動刪除，但正式流程不再讀取它。
+- 舊 preflight CLI 與既有憑證檔案保留以免破壞舊工具；本輪只解除正式啟動與網頁送出的依賴，不重構或刪除整套 preflight。
+- 不新增完整 `environment_check`、Provider 能力矩陣、版本檢查、登入預檢、Data Root 暫存寫入測試或模型 smoke test。
+- Provider 的登入、模型、搜尋與輸出能力由正式 attempt 證明；失敗時顯示實際錯誤並進入跨 Provider 備援。
+
+### R3：17 分鐘權威計時
+
+- 執行中直接使用既有 `question.json.created_at_utc` 作為 17 分鐘總窗的權威時間來源，不新增第二套開始時間欄位。
+- 前端不得再以最後一則公開席位訊息推算經過時間。
+- 蒐集資料完成、SSE 重連、頁面重新整理或暫時沒有公開訊息時，倒數均不得增加或重設回 17:00。
+- 報告完成後使用既有 manifest `elapsed_ms` 停止該 run 的倒數顯示。
+
+### R4：送出後鎖定本次 run
+
+- 使用者按下「送出並啟動」後，頁面立即停用重複送出並顯示「正在建立分析」。
+- 後端必須把本次專屬 `run_id` 回傳給前端；前端只等待及開啟這個 run，不得依「最新 run」猜測，也不得跳到上一場分析。
+- 新 run 就緒後，頁面自動進入該 run 的實況，不要求使用者手動重新整理。
+- 啟動失敗時留在原頁，顯示實際錯誤與可重試入口。
+
+### R5：直接顯示既有 attempt 事件
+
+- 不建立新的六狀態席位狀態機；頁面直接由既有 `attempt_started`、`first_valid_result_adopted`、failure／recovery 事件顯示「正在研究、研究完成、本席未完成」。
+- 公開辯論階段沿用既有 `seat_message` 狀態顯示，不把公開發言當成研究是否派出的依據。
+- attempt 事件須顯示實際 Provider 與模型；備援啟動時顯示替代理由及備援 Provider／模型。
+
+### R6：跨 Provider 自動備援
+
+- `ResearchAttempt` 明確攜帶 Provider；主 Agent 啟動失敗、CLI 非零結束、證據無效、或 T+2:35 尚無有效結果時，自動讓不同 Provider 的備選 Agent 接手同一研究席職責。
+- 替補不得改變 `seat_id` 與席位研究範圍，但必須誠實記錄及顯示實際執行 Provider、模型與替代理由。
+- 每席最多一個主 attempt 與一個備援 attempt；採用第一份有效結果後停止另一個，其餘同席 attempt 不得產生第二張有效票。
+- 備援不得延長既有 17 分鐘總窗。
+- 研究結果只負責證據，不直接成為正式投票。每席研究結果一經採用，立即以該席自己的證據啟動獨立 opening 投票；opening 不得搜尋或讀取其他席證據，並須在第一輪開票牆前完成。
+- opening 沿用該席獲採用 attempt 的實際 Provider／模型；opening 失敗時依既有缺席規則處理並顯示本輪漏答，不另開第三個 Agent。
+- 所有備援仍失敗時，沿用現有降級行為：其他席位繼續，系統盡量完成報告；本輪不另行改造整場失敗政策。
+
+### R7：完成提示與市場報告入口
+
+- 只有本次 run 已產生並可開啟市場報告時，實況頁才顯示醒目的完成提示。
+- 完成提示必須提供直接連到本次 `run_id` 市場報告的「前往市場報告」主按鈕。
+- 若報告未產生，頁面不得因時間到或 Agent 停止而誤報完成，應顯示實際失敗狀態。
+- 本輪不新增瀏覽器背景通知；聲音不列入需求。
+
+### R8：README 與網頁首次使用引導
+
+- README 保留 `docs/assets/readme-hero.png`，並只保留必要的 PowerShell、WSL 使用入口及短篇 WSL 白話說明，不再放置 preflight 架構、憑證原理或舊版手動 handoff 長文。
+- README 的 PowerShell 與 WSL 指令必須分開呈現。
+- WSL 說明使用繁體中文白話交代：未安裝時如何安裝、第一次如何開啟、如何進入下載的專案資料夾、貼上哪條指令，以及缺少 CLI／未登入時如何依終端機提示處理。
+- 網頁不得再顯示 READY、real preflight、Codex Task 或 challenge 指引；啟動與 Provider 錯誤只提供繁體中文白話原因，不另做指令複製元件。
+
+### 本輪明確不做
+
+- 不新增完整即時環境檢查系統、正式 Log、資料庫或背景服務。
+- 不新增環境變數路徑覆寫、六狀態席位狀態機或 Provider 能力矩陣。
+- 不擴充格式修復；既有尾逗號容錯維持原狀，其他回答格式差異延後處理。
+- 不修改 `install-shortcuts.ps1`，也不刪除舊 preflight 實作。
+
+### 驗收情境
+
+1. 在沒有 WSL 的 Windows 電腦，從任意含空格路徑的 fresh checkout 以 PowerShell 貼上一條指令；系統從 `PATH` 找到 Python 與 Provider CLI、啟動網站並開啟瀏覽器。
+2. 在 WSL 的 fresh checkout 貼上 README 對應的一條指令，得到相同的啟動結果。
+3. 正式啟動與送出不讀取 `latest-ready.json`；Provider 未登入或執行失敗時，由正式 attempt 顯示錯誤並使用跨 Provider 備援。
+4. 按下送出後只跟隨本次 `run_id`；研究期間可見既有 attempt 事件，倒數依 `created_at_utc` 單調遞減且重新整理不倒退。
+5. 人為使主 Provider 失敗時，不同 Provider 的備援在原時限內接手，狀態與 artifact 均留下實際 Provider、模型和原因。
+6. 報告真正可開啟時顯示完成提示及「前往市場報告」按鈕；報告不存在時不得顯示成功完成。
 
 ## 問題與目標
 

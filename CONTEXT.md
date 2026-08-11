@@ -5,8 +5,8 @@
 - **Core Agent**：單一 GPT-5.6 Sol 協調者；負責派工、時間關卡、原文分發、計票與報告內容，不得擅自選邊。
 - **Research seat／研究席**：七個固定研究與投票角色之一。席位是邏輯身分，不等同某次模型程序。
 - **Attempt／嘗試**：某個研究席的一次實際模型或 CLI 呼叫。
-- **Replacement／替補**：原 attempt 失敗後，讀取該席公開歷史並接續工作的模型呼叫。
-- **Format Repair Agent**：不投票的輔助 Agent；只能整理既有內容格式，不能補造資料或立場。
+- **Replacement／替補**：原 attempt 啟動失敗、CLI 錯誤、結果無效或逾時後，由不同 Provider 接手同一 `seat_id` 與研究範圍的模型呼叫；必須保留實際 Provider、模型及替代理由。
+- **Format normalization／格式正規化**：既有程式只做尾逗號等確定不改內容的容錯；本輪不擴充為新的 Agent 或通用修復系統。
 - **Evidence card／證據卡**：具有來源、時間、方向、原始數值或短摘錄及可信度說明的最小可追溯證據單位。
 - **Evidence Store**：單次 run 的 `evidence.jsonl`；不是向量資料庫或 RAG。
 - **Evidence snapshot／證據快照**：一般題 `T+6:00`、兩標的比較題 `T+6:30` 產生，之後不得覆寫的正式證據集合。
@@ -19,7 +19,11 @@
 - **投票輪／Vote round**（2026-08-10 起）：錨定封存時刻的離散開票：封存+60s 門檻 7、+150s 門檻 6、+240s 門檻 5、+330s 門檻 4、+360s 硬停結算。一般題封存 6:00（即 7:00／8:30／10:00／11:30／12:00），兩標的比較題封存 6:30（整體後移 30 秒）。
 - **證據可見性閘門**（2026-08-10 起）：第一輪開票前各席只讀得到自己的證據；第一輪未過才分發全席證據，之後可自由互看與辯論。
 - **概述／Message brief**（2026-08-10 起）：直播訊息預設只顯示 `public_reason` 第一句（30–60 字核心結論），其餘摺疊展開；伺服器是唯一斷句處，頁面與 SSE 共用同一份概述。
-- **READY**：所有主要模型、搜尋、權限、路徑、Skill、資料寫入與報告能力均通過賽前 fail-closed 預檢。
+- **READY（退役）**：舊版 `latest-ready.json` 對過往 system preflight 結果的本機快取；不是登入憑證，也不能證明 Provider 現在可用。2026-08-11 起不再作為啟動或送出門檻，既有檔案不主動刪除但正式流程不讀取。
+- **Provider PATH resolver／Provider 路徑解析器**：Codex、Claude、Antigravity Adapter 共用的薄函式，只以 `shutil.which()` 從目前環境的 `PATH` 找命令；不宣稱 Provider 已登入或 READY。
+- **Unified launcher／統一啟動器**：PowerShell 與 WSL 各自的一行入口；從目前 shell 的 `PATH` 找 Python、啟動網站並開啟瀏覽器，不執行完整 preflight。
+- **Authoritative run clock／權威 run 時鐘**：以既有 `question.json.created_at_utc` 計算 17 分鐘總窗，完成後以 manifest `elapsed_ms` 凍結；公開訊息、SSE 重連或頁面重新整理不得改寫或重設它。
+- **Seat display status／席位顯示狀態**：頁面直接顯示既有 attempt 與公開訊息事件，不另建狀態機；研究是否派出不得由 `seat_message` 是否存在推測。
 - **Run**：從單一題目啟動至報告完成的一次完整分析，使用唯一 `run_id`。
 - **燈號／Light**（2026-08-05 起）：最終採納立場有效票數的直接映射——7 藍、6 綠、5 黃、4 橘、少於 4 紅；僅「獨立網域少於 2」與「引用低可信來源（輿情席豁免）」各降一級。
 - **盲投直過／Unanimous blind pass**（2026-08-05 起）：opening 盲投收齊即 7/7 同立場時直接停止產藍燈報告，不進辯論輪；2026-08-10 四輪投票制下保留，不必等第一輪牆。
