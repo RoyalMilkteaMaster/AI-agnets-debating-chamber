@@ -556,8 +556,9 @@ class BackupFirstAdoptionTest(unittest.TestCase):
     def backup_first(self, seat_id="news"):
         """Both attempts of one seat running, then the backup answers first.
 
-        T+2:35 是既有的 replacement 里程碑：primary 還沒交卷的席位會在那裡拿到
-        backup，所以兩個 attempt 同時在跑，不必假造任何狀態。
+        T+2:00 checkpoint 存檔後就是 replacement 里程碑（2026-08-13 起，原
+        T+2:35）：primary 還沒交卷的席位會在那裡拿到 backup，所以兩個 attempt
+        同時在跑，不必假造任何狀態。
         """
         self.scheduler.start()
         self.advance_to(REPLACEMENT_MS)

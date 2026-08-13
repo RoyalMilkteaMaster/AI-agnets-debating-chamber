@@ -175,13 +175,13 @@ class ResearchSchedulerTest(unittest.TestCase):
 
     def test_the_research_phase_reserves_thirty_seconds_for_delivery(self):
         self.assertEqual(
-            (0, 30_000, 90_000, 120_000, 155_000, 320_000, 350_000, 360_000),
+            (0, 30_000, 90_000, 120_000, 320_000, 350_000, 360_000),
             MILESTONES_MS,
         )
         self.assertEqual(30_000, START_RETRY_MS)
         self.assertEqual(90_000, PRIMARY_ONLY_END_MS)
         self.assertEqual(120_000, CHECKPOINT_MS)
-        self.assertEqual(155_000, REPLACEMENT_MS)
+        self.assertEqual(CHECKPOINT_MS, REPLACEMENT_MS)
         self.assertEqual(30_000, WRAP_UP_WINDOW_MS)
         self.assertEqual(350_000, ACCEPT_RESULTS_UNTIL_MS)
         self.assertEqual(360_000, SEAL_MS)
@@ -552,7 +552,7 @@ class ResearchDeadlinesTest(unittest.TestCase):
         comparison = research_deadlines("two_asset_comparison")
 
         self.assertEqual(
-            (0, 30_000, 90_000, 120_000, 155_000, 350_000, 380_000, 390_000),
+            (0, 30_000, 90_000, 120_000, 350_000, 380_000, 390_000),
             comparison.milestones_ms,
         )
         self.assertEqual(MILESTONES_MS, research_deadlines().milestones_ms)

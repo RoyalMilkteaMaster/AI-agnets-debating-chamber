@@ -22,20 +22,23 @@ from .seats import SEAT_IDS
 PRIMARY_ONLY_END_MS = 90_000
 START_RETRY_MS = 30_000
 CHECKPOINT_MS = 120_000
-REPLACEMENT_MS = 155_000
+# 2026-08-13 起替補與 checkpoint 同刻：T+2:00 存檔後立即替補。原 T+2:35 只留給
+# backup 195 秒（到 T+5:50 收件牆），實測（run 20260813T060845Z-3704-3ebeac 的
+# official-events 席）不足以完成一次完整研究。
+REPLACEMENT_MS = CHECKPOINT_MS
 # 2026-08-11 使用者核准：一般題可搜尋到 T+5:20，之後不得再發起新搜尋，
 # 必須用已取得資料交卷；T+5:50 停止收件，T+6:00 封存。
 WRAP_UP_WINDOW_MS = 30_000
 ACCEPT_RESULTS_UNTIL_MS = 350_000
 SEAL_MS = 360_000
 
-# 前五個里程碑四種題型共用；只有收件牆與封存隨題型移動。
+# 前四個里程碑四種題型共用；只有收件牆與封存隨題型移動。
+# 替補不再是獨立里程碑：T+2:00 的 checkpoint 分支存檔後立即執行替補。
 FIXED_MILESTONES_MS = (
     0,
     START_RETRY_MS,
     PRIMARY_ONLY_END_MS,
     CHECKPOINT_MS,
-    REPLACEMENT_MS,
 )
 
 
@@ -654,8 +657,8 @@ class ResearchScheduler:
         elif elapsed == PRIMARY_ONLY_END_MS:
             self._event("trusted_secondary_sources_enabled", elapsed)
         elif elapsed == CHECKPOINT_MS:
+            # 順序是契約：先存 checkpoint，替補才拿得到它接續研究。
             self._checkpoint_all(elapsed)
-        elif elapsed == REPLACEMENT_MS:
             self._replace_missing(elapsed)
         elif elapsed == self.deadlines.search_stop_ms:
             self._event("research_wrap_up_started", elapsed)
