@@ -134,6 +134,8 @@
   var jump = document.getElementById("feed-jump");
   var stream = null;
   var activeRun = feed.dataset.runId || null;
+  // 這個分頁是否經歷過換 run 重置：只有重置過的分頁，done 時才需要交還伺服器重畫。
+  var surfacesReset = false;
   var currentElapsed = Number(elapsedBox && elapsedBox.dataset.elapsedMs || 0);
   var currentDebateRemaining = debateRemaining && debateRemaining.dataset.remainingMs !== ""
     ? Number(debateRemaining.dataset.remainingMs) : null;
@@ -405,6 +407,7 @@
   function resetRun(runId) {
     activeRun = runId;
     resetMarkedSurfaces();
+    surfacesReset = true;
     currentElapsed = 0;
     currentDebateRemaining = null;
     debateStarted = false;
@@ -470,6 +473,11 @@
     tick(totalRemaining);
     if (stateBox) { stateBox.textContent = "已完成"; stateBox.dataset.state = "finished"; }
     source.close();
+    // 換 run 重置過的 run-bound surface（規則與時間線、票數變化、可驗證證據……）
+    // 沒有任何 frame 會補寫。定稿的這一刻交還伺服器重新投影 —— 與手動重新整理
+    // 同義，因此不在 client 建第二套渲染。沒重置過的分頁本來就是伺服器畫的，
+    // reload 只會變成無限重整迴圈，所以用 surfacesReset 擋住。
+    if (surfacesReset) { location.reload(); }
   });
   source.addEventListener("error", function () {
     if (!isCurrent(source, null)) { return; }

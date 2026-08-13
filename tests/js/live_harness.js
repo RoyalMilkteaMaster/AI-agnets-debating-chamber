@@ -159,6 +159,7 @@ function makeEnvironment(replies, initialRun = "run-a") {
   ids["live-connection"].textContent = "連線中斷，正在重連";
   ids["feed-jump"].hidden = false;
   const historyCalls = [];
+  const reloadCalls = [];
   const intervals = [];
   const intervalErrors = [];
   const document = {
@@ -197,7 +198,7 @@ function makeEnvironment(replies, initialRun = "run-a") {
       return typeof reply === "function" ? reply() : reply;
     },
     history: {replaceState: (_a, _b, url) => historyCalls.push(url)},
-    location: {search: ""},
+    location: {search: "", reload: () => reloadCalls.push(true)},
     window: {
       setTimeout: (fn) => { Promise.resolve().then(fn); return 1; },
       setInterval: (fn) => {
@@ -213,7 +214,7 @@ function makeEnvironment(replies, initialRun = "run-a") {
     Number,
   };
   vm.runInNewContext(source, context, {filename: "production-live.js"});
-  return {ids, calls, historyCalls, intervals, intervalErrors};
+  return {ids, calls, historyCalls, reloadCalls, intervals, intervalErrors};
 }
 
 function flush() {
@@ -289,6 +290,8 @@ async function launchedScenario() {
   assert.strictEqual(env.ids["live-debate-remaining"].textContent, "00:01");
   assert.strictEqual(env.ids["live-state"].dataset.state, "running");
   assert.strictEqual(env.ids["live-state"].textContent, "進行中");
+  // 進行中不准 reload：只有定稿那一刻才輪到伺服器重新投影。
+  assert.deepStrictEqual(env.reloadCalls, []);
   // 這一場只產出報告，沒有完整辯論記錄：completion 帶 report_href，debate_href 是
   // null。elapsed 是 manifest 凍結的權威值。
   stream.emit("done", {
@@ -314,6 +317,24 @@ async function launchedScenario() {
   assert.deepStrictEqual(env.intervalErrors, []);
   assert.strictEqual(env.ids["live-total-remaining"].textContent, "03:27");
   assert.strictEqual(env.ids["live-elapsed"].dataset.elapsedMs, "812345");
+  // done 之後：這個分頁經歷過換 run 重置，規則／票數變化／證據等 run-bound surface
+  // 只剩占位文字且不會再有任何 frame 補寫 —— 唯一不建第二套渲染的做法，是把整頁
+  // 交還伺服器重新投影（與手動重新整理同義）。
+  assert.deepStrictEqual(env.reloadCalls, [true]);
+}
+
+// 直接載入一個已完成 run 的頁面：伺服器已經畫好每一格，done 只是覆述定稿。這種
+// 分頁沒經歷過換 run 重置，reload 只會變成無限重整迴圈 —— 一次都不准。
+async function aFreshPageDoneNeverReloads() {
+  const env = makeEnvironment([]);
+  const stream = FakeEventSource.instances[0];
+  stream.emit("done", {
+    run_id: "run-a", messages: [], tally: [], seats: [], elapsed_ms: 500000,
+    debate_started: true, debate_start_remaining_ms: null,
+    completion: {report_href: "/run/run-a/report.html", debate_href: null}
+  });
+  assert.strictEqual(stream.closed, true);
+  assert.deepStrictEqual(env.reloadCalls, []);
 }
 
 // 換 run 時舊的 EventSource 會被 close，但瀏覽器仍可能把已經排隊的事件送進舊
@@ -573,5 +594,6 @@ Promise.resolve()
   .then(theStartedLatchNeverFallsBackToACountdown)
   .then(busyScenario)
   .then(multilineFailureIsRenderedAsOneLine)
-  .then(() => console.log("LIVE_JS_VM_EXECUTED: submit pending launched busy failed retry one-line-error status-transport-retry css-pending-animation started-latch-no-downgrade snapshot append done reconnect run-switch state-reset stale-source-gate run-local-reset frozen-total-remaining exact-artifact-links"))
+  .then(aFreshPageDoneNeverReloads)
+  .then(() => console.log("LIVE_JS_VM_EXECUTED: submit pending launched busy failed retry one-line-error status-transport-retry css-pending-animation started-latch-no-downgrade snapshot append done reconnect run-switch state-reset stale-source-gate run-local-reset frozen-total-remaining exact-artifact-links done-reload-after-run-switch fresh-page-done-no-reload"))
   .catch((error) => { console.error(error); process.exitCode = 1; });
