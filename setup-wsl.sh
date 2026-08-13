@@ -20,14 +20,17 @@ CODE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DATA_ROOT="$(dirname -- "$CODE_ROOT")/AI-agnets-debating-chamber_data"
 PYTHON="${HOYA_PYTHON:-python3}"
 
-# 測試接縫：改用哪一個 powershell.exe、把捷徑放到哪個資料夾、去哪裡清舊捷徑。
-# 平常三個都不要設。
+# 測試接縫：改用哪一個 powershell.exe、把捷徑放到哪個資料夾、去哪裡清舊捷徑、
+# 資料夾捷徑寫到哪。平常全部都不要設。
 #
 # HOYA_LEGACY_DIR 存在的理由是它會刪檔：舊捷徑預設清的是 Code Root 的上一層，
 # 而測試如果只換了桌面、沒換這一個，跑一次測試就會動到真的工作區。
+# HOYA_FOLDER_SHORTCUT_DIR 同理：資料夾捷徑預設寫進真的 scripts\，測試不換掉
+# 就會把 .lnk 寫進工作樹。
 POWERSHELL="${HOYA_POWERSHELL:-}"
 DESKTOP_OVERRIDE="${HOYA_DESKTOP:-}"
 LEGACY_OVERRIDE="${HOYA_LEGACY_DIR:-}"
+FOLDER_OVERRIDE="${HOYA_FOLDER_SHORTCUT_DIR:-}"
 
 fail() {
     echo "設定沒有完成：$1" >&2
@@ -120,6 +123,9 @@ installer_arguments=(
 )
 if [ -n "$DESKTOP_OVERRIDE" ]; then
     installer_arguments+=(-DesktopPath "$DESKTOP_OVERRIDE")
+fi
+if [ -n "$FOLDER_OVERRIDE" ]; then
+    installer_arguments+=(-FolderShortcutDir "$FOLDER_OVERRIDE")
 fi
 
 if ! "$POWERSHELL" "${installer_arguments[@]}"; then

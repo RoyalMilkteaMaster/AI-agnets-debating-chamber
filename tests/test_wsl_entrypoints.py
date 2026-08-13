@@ -119,6 +119,20 @@ class EntryPointFileTest(unittest.TestCase):
         for name in ("setup-wsl.sh", "START-HERE.sh"):
             self.assertIn("AI-agnets-debating-chamber_data", self.source(name), name)
 
+    def test_the_browser_fallback_chain_survives_a_machine_without_wslview(self):
+        """wslview 不一定有裝，而 explorer.exe 開 URL 在部分機器上會靜默失敗
+        （實例：2026-08-13，explorer 回 1 且瀏覽器沒開，Start-Process 正常）。
+        所以固定順序是 wslview → powershell.exe Start-Process → explorer.exe。"""
+        text = self.source("START-HERE.sh")
+
+        order = [
+            text.index("wslview"),
+            text.index("powershell.exe"),
+            text.index("explorer.exe"),
+        ]
+        self.assertEqual(sorted(order), order)
+        self.assertIn("Start-Process", text)
+
     def test_setup_never_runs_an_installer_itself(self):
         """It may *print* an install command. Running one is a different verb.
 
@@ -519,8 +533,12 @@ class ShortcutInstallerTest(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self.desktop = self.tmp / "Desktop"
         self.legacy = self.tmp / "OldWorkspace"
+        # 資料夾捷徑的暫存去處。installer 的預設值是 -ShortcutScript 旁邊 ——
+        # 也就是真的工作樹 —— 所以測試一定要把它換掉，不然跑一次測試就寫進 repo。
+        self.folder = self.tmp / "RepoScripts"
         self.desktop.mkdir()
         self.legacy.mkdir()
+        self.folder.mkdir()
         self.powershell = powershell()
 
     def windows(self, path):
@@ -539,6 +557,7 @@ class ShortcutInstallerTest(unittest.TestCase):
                 "-CodeRoot", code_root,
                 "-DesktopPath", self.windows(self.desktop),
                 "-LegacyShortcutDir", self.windows(self.legacy),
+                "-FolderShortcutDir", self.windows(self.folder),
             ],
             capture_output=True, text=True, errors="replace", timeout=180,
         )
@@ -666,6 +685,31 @@ class ShortcutInstallerTest(unittest.TestCase):
             self.assertIn('-CodeRoot "/home/somebody/project"', arguments)
             self.assertIn("-WindowStyle Hidden", arguments)
             self.assertEqual("7", window)
+
+    def test_the_folder_beside_the_wrapper_gets_the_same_two_shortcuts(self):
+        """clone 的人跑 setup 後，repo 的 scripts\\ 也要有可雙擊的入口。
+        內容與桌面那兩個完全相同——同一支安裝器寫的，不是第二套。"""
+        done = self.install()
+
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(
+            sorted(["開啟辯論室.lnk", "關閉辯論室.lnk"]), self.links(self.folder)
+        )
+        for name in ("開啟辯論室.lnk", "關閉辯論室.lnk"):
+            self.assertEqual(
+                self.read_link(self.desktop / name),
+                self.read_link(self.folder / name),
+            )
+
+    def test_an_unprovable_folder_shortcut_blocks_the_whole_install(self):
+        """fail closed 不只看桌面：資料夾那份證明不了是本專案的，整次就不做。"""
+        self.write_link(self.folder / "開啟辯論室.lnk", "/c echo theirs")
+
+        done = self.install()
+
+        self.assertEqual(3, done.returncode, done.stdout + done.stderr)
+        self.assertEqual([], self.links(self.desktop))
+        self.assertEqual(["開啟辯論室.lnk"], self.links(self.folder))
 
     def test_the_old_wsl_prefixed_shortcuts_are_removed_from_the_desktop(self):
         for name in ("WSL 開啟辯論室.lnk", "WSL 關閉辯論室.lnk"):
@@ -1097,6 +1141,9 @@ class SetupRunTest(unittest.TestCase):
         # its default is this repository's own parent directory.
         self.legacy = self.tmp / "OldWorkspace"
         self.legacy.mkdir()
+        # 資料夾捷徑的暫存去處：預設是真的 scripts\，測試一定要換掉。
+        self.folder = self.tmp / "RepoScripts"
+        self.folder.mkdir()
         self.shims = self.tmp / "bin"
         self.shims.mkdir()
         self.installer_log = self.tmp / "installers.txt"
@@ -1118,6 +1165,7 @@ class SetupRunTest(unittest.TestCase):
         environment = dict(os.environ)
         environment["HOYA_DESKTOP"] = self.windows(self.desktop)
         environment["HOYA_LEGACY_DIR"] = self.windows(self.legacy)
+        environment["HOYA_FOLDER_SHORTCUT_DIR"] = self.windows(self.folder)
         environment["PATH"] = "{}:{}".format(self.shims, environment.get("PATH", ""))
         return subprocess.run(
             ["bash", str(CODE_ROOT / "setup-wsl.sh")],
@@ -1130,14 +1178,30 @@ class SetupRunTest(unittest.TestCase):
                       if path.suffix == ".lnk")
 
     def test_running_it_twice_succeeds_and_leaves_exactly_two_shortcuts(self):
+        real_scripts_lnk = sorted(
+            path.name for path in (CODE_ROOT / "scripts").iterdir()
+            if path.suffix == ".lnk"
+        )
         first = self.run_setup()
         after_first = self.links()
+        folder_after_first = sorted(
+            path.name for path in self.folder.iterdir() if path.suffix == ".lnk"
+        )
         second = self.run_setup()
 
         self.assertEqual(0, first.returncode, first.stdout + first.stderr)
         self.assertEqual(0, second.returncode, second.stdout + second.stderr)
         self.assertEqual(sorted(["開啟辯論室.lnk", "關閉辯論室.lnk"]), after_first)
         self.assertEqual(after_first, self.links())
+        self.assertEqual(
+            sorted(["開啟辯論室.lnk", "關閉辯論室.lnk"]), folder_after_first
+        )
+        # 接縫有生效的證明：真的 scripts\ 在測試前後一個 .lnk 都沒有多或少。
+        self.assertEqual(
+            real_scripts_lnk,
+            sorted(path.name for path in (CODE_ROOT / "scripts").iterdir()
+                   if path.suffix == ".lnk"),
+        )
 
     def test_it_installs_nothing_and_logs_nobody_in(self):
         self.run_setup()

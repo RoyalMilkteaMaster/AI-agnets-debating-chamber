@@ -68,6 +68,12 @@ open_browser() {
         wslview "$address" >/dev/null 2>&1 || true
         return
     fi
+    if command -v powershell.exe >/dev/null 2>&1; then
+        # explorer.exe 開 URL 在部分機器上會靜默失敗（2026-08-13 實測回 1 且
+        # 瀏覽器沒開）；Start-Process 走預設瀏覽器，是沒有 wslview 時的穩定開法。
+        powershell.exe -NoProfile -Command "Start-Process '$address'" >/dev/null 2>&1 || true
+        return
+    fi
     if command -v explorer.exe >/dev/null 2>&1; then
         # explorer.exe 開得起來也會回非零，所以它的退出碼不能當成答案。
         explorer.exe "$address" >/dev/null 2>&1 || true

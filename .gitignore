@@ -1,2 +1,4 @@
 __pycache__/
 *.py[cod]
+# Windows 桌面捷徑的本機複本（使用者便利檔，不屬於程式碼）
+*.lnk

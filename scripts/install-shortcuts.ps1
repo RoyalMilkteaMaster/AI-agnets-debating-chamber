@@ -51,6 +51,11 @@
     另一個要精確清理舊同名捷徑的資料夾（例如舊版把捷徑放的工作區根目錄）。
     省略時只清理桌面。
 
+.PARAMETER FolderShortcutDir
+    除了桌面以外，同樣兩個捷徑也寫進這個資料夾——讓 clone 下來的人在檔案總管裡
+    就有可雙擊的入口。省略時是 -ShortcutScript 所在的資料夾（repo 的 scripts\）。
+    **預設值就是真的工作樹，所以測試一定要用這個參數換成暫存資料夾。**
+
 .EXAMPLE
     .\install-shortcuts.ps1 -ShortcutScript C:\proj\scripts\wsl-shortcut.ps1 -Distro Ubuntu -CodeRoot /home/me/proj
 #>
@@ -61,7 +66,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Distro,
     [Parameter(Mandatory = $true)][string]$CodeRoot,
     [string]$DesktopPath = "",
-    [string]$LegacyShortcutDir = ""
+    [string]$LegacyShortcutDir = "",
+    [string]$FolderShortcutDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -79,6 +85,12 @@ if ($DesktopPath -eq "") {
 }
 if (-not (Test-Path -LiteralPath $DesktopPath)) {
     throw "找不到要放捷徑的資料夾：$DesktopPath"
+}
+if ($FolderShortcutDir -eq "") {
+    $FolderShortcutDir = Split-Path -Parent $ShortcutScript
+}
+if (-not (Test-Path -LiteralPath $FolderShortcutDir)) {
+    throw "找不到要放資料夾捷徑的資料夾：$FolderShortcutDir"
 }
 
 # 寫絕對路徑的 powershell.exe：捷徑不該靠 PATH 找得到什麼。
@@ -179,6 +191,17 @@ foreach ($directory in $entryDirectories) {
 $canonicalShortcutScript = Get-CanonicalPath -Path $ShortcutScript
 if ($canonicalShortcutScript -ne "") { $ownedScripts += $canonicalShortcutScript }
 
+# 兩個要寫入捷徑的資料夾：桌面與 repo 的 scripts\（或 -FolderShortcutDir 指定處）。
+# 兩者其實是同一個資料夾時只寫一次，不然後寫的會把前面剛驗完的又覆蓋一遍。
+$shortcutDirectories = @($DesktopPath)
+$canonicalDesktop = Get-CanonicalPath -Path $DesktopPath
+$canonicalFolder = Get-CanonicalPath -Path $FolderShortcutDir
+if ($canonicalFolder -ne "" -and -not [System.String]::Equals(
+        $canonicalFolder, $canonicalDesktop,
+        [System.StringComparison]::OrdinalIgnoreCase)) {
+    $shortcutDirectories += $FolderShortcutDir
+}
+
 function Test-OwnedScriptPath {
     <#
     .SYNOPSIS
@@ -255,10 +278,12 @@ try {
     # 這一段在刪除與寫入之前，而且順序就是重點：任何一個固定名稱被證明不了是本專案
     # 的，這次執行就整個不做——不寫捷徑，也不清舊捷徑。做一半的安裝比不安裝難查。
     $blocked = @()
-    foreach ($wanted in $shortcuts) {
-        $linkPath = Join-Path $DesktopPath $wanted.Name
-        if ((Test-Path -LiteralPath $linkPath) -and -not (Test-OurShortcut -Path $linkPath)) {
-            $blocked += $linkPath
+    foreach ($directory in $shortcutDirectories) {
+        foreach ($wanted in $shortcuts) {
+            $linkPath = Join-Path $directory $wanted.Name
+            if ((Test-Path -LiteralPath $linkPath) -and -not (Test-OurShortcut -Path $linkPath)) {
+                $blocked += $linkPath
+            }
         }
     }
     if ($blocked.Count -gt 0) {
@@ -302,24 +327,26 @@ try {
         }
     }
 
-    foreach ($wanted in $shortcuts) {
-        $linkPath = Join-Path $DesktopPath $wanted.Name
-        $link = $shell.CreateShortcut($linkPath)
-        $link.TargetPath = $powershell
-        $link.Arguments = '-NoProfile -NonInteractive -WindowStyle Hidden ' +
-            '-ExecutionPolicy Bypass -File "' + $ShortcutScript + '"' +
-            ' -Action ' + $wanted.Action +
-            ' -Distro "' + $Distro + '"' +
-            ' -CodeRoot "' + $CodeRoot + '"'
-        # WorkingDirectory 留空是刻意的：Code Root 可能在 WSL 檔案系統裡，指定成
-        # UNC 路徑會讓 powershell 每次啟動都先抱怨一次，而這支腳本本來就不讀 cwd。
-        $link.WorkingDirectory = ""
-        $link.WindowStyle = $minimized
-        $link.Description = $wanted.Description
-        $link.Save()
-        Write-Host "已寫入捷徑：$linkPath"
-        Write-Host "  目標  $powershell"
-        Write-Host "  參數  $($link.Arguments)"
+    foreach ($directory in $shortcutDirectories) {
+        foreach ($wanted in $shortcuts) {
+            $linkPath = Join-Path $directory $wanted.Name
+            $link = $shell.CreateShortcut($linkPath)
+            $link.TargetPath = $powershell
+            $link.Arguments = '-NoProfile -NonInteractive -WindowStyle Hidden ' +
+                '-ExecutionPolicy Bypass -File "' + $ShortcutScript + '"' +
+                ' -Action ' + $wanted.Action +
+                ' -Distro "' + $Distro + '"' +
+                ' -CodeRoot "' + $CodeRoot + '"'
+            # WorkingDirectory 留空是刻意的：Code Root 可能在 WSL 檔案系統裡，指定成
+            # UNC 路徑會讓 powershell 每次啟動都先抱怨一次，而這支腳本本來就不讀 cwd。
+            $link.WorkingDirectory = ""
+            $link.WindowStyle = $minimized
+            $link.Description = $wanted.Description
+            $link.Save()
+            Write-Host "已寫入捷徑：$linkPath"
+            Write-Host "  目標  $powershell"
+            Write-Host "  參數  $($link.Arguments)"
+        }
     }
 } finally {
     [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell)
@@ -327,4 +354,5 @@ try {
 
 Write-Host ""
 Write-Host "桌面資料夾：$DesktopPath"
+Write-Host "資料夾捷徑：$FolderShortcutDir"
 exit 0
