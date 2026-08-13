@@ -9,6 +9,8 @@
 - 需要的環境：Windows 10 或 Windows 11。
 - 每段指令都標了要在哪裡貼：`[Windows]` 是 Windows 的 PowerShell 視窗，
   `[WSL／Ubuntu]` 是 Ubuntu 的黑底終端機。
+- 已經裝過 WSL2 Ubuntu 的人：跳過第 1、2 步，直接從第 3 步開始；
+  但第 4 步的設定**每台機器都要跑一次**，捷徑就是那一步建立的。
 
 ---
 
@@ -53,6 +55,9 @@ cd AI-agnets-debating-chamber
 執行結果會放在它旁邊的 `~/AI-agnets-debating-chamber_data`，兩者不會互相覆蓋。
 
 ## 4. 執行一次設定
+
+程式抓下來之後、第一次啟動之前，先跑這一次設定（每台機器跑一次；
+之後重跑也無害）：
 
 ```bash
 # [WSL／Ubuntu]
@@ -109,6 +114,9 @@ command -v codex claude agy
 > Antigravity 為 Google 官方文件（`https://antigravity.google/docs/cli/install`）。
 
 ## 6. 開始使用
+
+下面的兩個捷徑都是第 4 步 setup 建立的（桌面與 `scripts\` 各一份）；
+找不到捷徑就回去把第 4 步跑完。
 
 **用桌面捷徑（最簡單）**
 
