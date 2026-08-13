@@ -17,6 +17,7 @@ from hoya_market_agents.competition_drill import (
     FALLBACK_EVIDENCE_ASSET,
     run_fake_competition_drill,
 )
+from hoya_market_agents.contract_validator import validate_run_manifest
 from hoya_market_agents.debate_rules import debate_rules
 from hoya_market_agents.debate_state_machine import STANCES_BY_QUESTION_TYPE
 from hoya_market_agents.question import UnsupportedQuestionError
@@ -74,6 +75,25 @@ class CompetitionDrillTest(unittest.TestCase):
         self.assertLessEqual(
             timeline["report_completed_at_ms"] - timeline["debate_stop_at_ms"],
             180_000,
+        )
+
+    def test_fake_drill_manifest_is_canonical_and_binds_vote_attempt_ids(self):
+        result = run_fake_competition_drill(
+            data_root=self.data_root,
+            question="分析 BTC 過去 14 日市場狀態",
+            token="d11112",
+        )
+        manifest = json.loads(
+            (result.run_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        votes = json.loads(
+            (result.run_dir / "votes.json").read_text(encoding="utf-8")
+        )
+
+        self.assertIs(manifest, validate_run_manifest(manifest))
+        self.assertEqual(
+            {row["seat_id"]: row["attempt_ids"] for row in votes["votes"]},
+            {row["seat_id"]: row["attempt_ids"] for row in manifest["seats"]},
         )
 
     def test_drill_preserves_votes_dissent_and_two_page_audit_report(self):

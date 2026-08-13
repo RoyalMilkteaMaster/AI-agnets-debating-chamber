@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WSL-only Runtime 工作包完成報告</title>
+<style>
+  :root { --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; --muted:#57606a; --line:#d0d7de; }
+  body { font-family:"Microsoft JhengHei",system-ui,sans-serif; max-width:1000px; margin:2rem auto; padding:0 1rem; color:#1f2328; line-height:1.6; }
+  h1 { font-size:1.5rem; border-bottom:2px solid var(--line); padding-bottom:.5rem; }
+  h2 { font-size:1.15rem; margin-top:2rem; border-left:4px solid #0969da; padding-left:.5rem; }
+  table { border-collapse:collapse; width:100%; margin:.75rem 0; font-size:.92rem; }
+  th,td { border:1px solid var(--line); padding:.4rem .6rem; text-align:left; vertical-align:top; }
+  th { background:#f6f8fa; }
+  code { background:#f6f8fa; padding:.1rem .3rem; border-radius:4px; font-size:.88em; }
+  .ok { color:var(--ok); font-weight:bold; }
+  .warn { color:var(--warn); font-weight:bold; }
+  .muted { color:var(--muted); font-size:.88em; }
+  .badge { display:inline-block; padding:.05rem .5rem; border-radius:999px; font-size:.82em; font-weight:bold; }
+  .badge.ok { background:#dafbe1; color:var(--ok); }
+  .badge.warn { background:#fff8c5; color:var(--warn); }
+  ul { padding-left:1.4rem; }
+  .check { background:#f6f8fa; border:1px solid var(--line); border-radius:8px; padding:1rem 1.25rem; }
+</style>
+</head>
+<body>
+<h1>WSL-only Runtime、零經驗安裝與七席可靠性 — 完成報告</h1>
+<p class="muted">工作包：<code>docs/work/wsl-only-runtime-onboarding/</code>｜Spec 基準 commit：<code>e05bf493</code>｜branch：<code>agent/wsl-only-runtime-onboarding</code>（全部變更尚未 commit，等你指示）｜報告產生：2026-08-13</p>
+
+<h2>一、總結</h2>
+<p><span class="badge ok">全部 7 張 Tickets 完成</span>　最終真實驗收在<strong>修正後的最終程式版本</strong>上完成：三個 Provider canary 全 PASS、七席真實市場 run <strong>7/7 有效最終票</strong>、<code>verify-run</code>＝<strong>VERIFIED</strong>、reconcile <strong>PASS 零問題</strong>、Data Root 稽核 PASS、WSL／Windows 均無 Provider 殘留。</p>
+<p>本工作包由前一個 Codex Coordinator 執行到 Ticket 06 review-fix 中途斷線，由本 session（Claude Code）接手收尾。接手後三位 Developer 與兩位 Reviewer 共進行三輪審查，期間<strong>額外抓到並修正了兩個 Codex 時期遺留的重大缺陷</strong>（見第四節）。</p>
+
+<h2>二、執行環境與角色配置</h2>
+<p>執行環境：WSL2 Ubuntu-24.04（webapp、controller、全部 Provider CLI）；Coordinator 平台：Claude Code（Windows 側，經 <code>wsl.exe</code> 驅動 WSL）。設定檔 <code>.milktea/agent-settings.yaml</code> 不存在 → 全預設路由。</p>
+<table>
+<tr><th>工作</th><th>角色</th><th>Agent／CLI</th><th>模型</th><th>推理強度</th><th>難度判定</th></tr>
+<tr><td>Tickets 01–05、Ticket 06 初始實作、Ticket 07 harness 初版</td><td>前一 Coordinator（斷線）</td><td>Codex CLI session（遺失）</td><td>unknown</td><td>unknown</td><td>unknown（僅存工件證據）</td></tr>
+<tr><td>Ticket 06 Findings 修正</td><td>Developer①</td><td>claude（milktea-build）</td><td>claude-opus-5</td><td>依 session 設定（未另證）</td><td>高／不確定（error-path race＋mutation 測試設計）</td></tr>
+<tr><td>Ticket 07 對帳工具修正（兩輪）</td><td>Developer②</td><td>claude（milktea-build）</td><td>claude-opus-5</td><td>xhigh（transcript 佐證）</td><td>高（release 驗收權威邏輯）</td></tr>
+<tr><td>Ticket 07 gate 假綠燈修正</td><td>Developer③</td><td>claude（milktea-build）</td><td>claude-sonnet-5</td><td>依 session 設定（未另證）</td><td>低風險（缺陷已定位、修法明確）</td></tr>
+<tr><td>Spec Review（三輪）</td><td>Reviewer A</td><td>codex CLI 0.146.0（WSL <code>~/.local/bin</code>）</td><td>GPT-5（自報）</td><td>Codex 後端預設</td><td>不適用難度路由</td></tr>
+<tr><td>Standards Review（三輪）</td><td>Reviewer B</td><td>codex CLI 0.146.0（WSL <code>~/.local/bin</code>）</td><td>GPT-5（自報）</td><td>Codex 後端預設</td><td>不適用難度路由</td></tr>
+</table>
+
+<h2>三、原始需求逐項判定</h2>
+<table>
+<tr><th>需求</th><th>判定</th><th>依據（可重現）</th></tr>
+<tr><td>R-001 唯一正式 Runtime（WSL2 Ubuntu）</td><td class="ok">完成</td><td>全部驗證於 WSL 執行；驗收窗內 Windows 側 0 個新 Provider process（<code>windows-process-after-run.json</code>）</td></tr>
+<tr><td>R-002 零經驗 README</td><td class="ok">完成</td><td>README 重寫（hero＋八步教學）；offline gate 內 README／entrypoint 測試綠</td></tr>
+<tr><td>R-003 三個 Bash 入口與兩個捷徑</td><td class="ok">完成</td><td><code>setup-wsl.sh</code>／<code>START-HERE.sh</code>／<code>STOP-HERE.sh</code>＋<code>scripts/wsl-shortcut.ps1</code>；setup 兩次一致（<code>setup-first/second.log</code> 相同）；舊 PS1 啟停腳本已移除</td></tr>
+<tr><td>R-004 Runtime ownership 與安全關閉</td><td class="ok">完成</td><td><code>/health</code> ownership contract 實測；錯誤 instance claim → <strong>409 且 server 存活</strong>（<code>shutdown-precondition.json</code>）；owned/foreign/malformed 案例單元測試綠</td></tr>
+<tr><td>R-005 同頁 launch 與精確 run</td><td class="ok">完成</td><td>production JS harness 全情境；真實 run 的 token-bound handshake（<code>launch-status.json</code>，token 已依政策去識別）；未知 token → <code>404 unknown</code> 實測；SSE run-pinned 實測</td></tr>
+<tr><td>R-006 權威時間與開始辯論倒數</td><td class="ok">完成</td><td>真實 run SSE 實測 <code>elapsed 161501 ＋ remaining 198499 ＝ 360000（seal）</code>；seal−1ms＝00:01、sticky started latch 均有定向測試與 harness mutation 證據</td></tr>
+<tr><td>R-007 WSL Provider process group</td><td class="ok">完成</td><td>POSIX group 回收／race／generation 測試綠（offline gate 3169 tests）；run 後 WSL process 稽核零殘留</td></tr>
+<tr><td>R-008 主備、terminal outcome 與 lineage</td><td class="ok">完成</td><td>reconcile 對真實 run PASS；backup-adopted 正例＋損壞反例 mutation 測試；Live 席位卡投影實測（含 provider／model／attempt 標籤）</td></tr>
+<tr><td>R-009 per-attempt research schema</td><td class="ok">完成</td><td>deep-copy＋單值 enum 測試；14 並行不污染測試綠</td></tr>
+<tr><td>R-010 獨立 Early Opening</td><td class="ok">完成</td><td>opening lineage 事件與 sealed content 對帳（reconcile 檢查項）；DebateStateMachine 契約測試綠</td></tr>
+<tr><td>R-011 Codex proof 條件式修復</td><td class="ok">完成</td><td>真實 canary 先行、重現後修 parser seam、offline fixtures 驗證（<code>evidence/ticket05-codex-proof-canary.json</code>）</td></tr>
+<tr><td>R-012 資料、期限與真實驗收</td><td class="ok">完成</td><td>見第五節最終驗收</td></tr>
+</table>
+
+<h2>四、接手後實際修改（Codex 斷線點之後）</h2>
+<table>
+<tr><th>#</th><th>修改</th><th>使用者可感受的結果</th></tr>
+<tr><td>1</td><td><code>live.js</code>：status polling 暫時斷線改走「stalled」狀態——保住已核發 token、重試只續 poll 不重送</td><td>網路閃斷時不會再出現「run 明明在跑、頁面卻永遠綁不到」的死局；重試不會誤觸 409</td></tr>
+<tr><td>2</td><td><code>live.js</code>＋<code>site.css</code>：等待動畫改為 CSS class 驅動</td><td>動畫會正確停止、不再疊加；尊重系統「減少動態效果」設定</td></tr>
+<tr><td>3</td><td><code>tests/</code>＋<code>tests/js/live_harness.js</code>：補 wrong-token 拒絕、started-latch 不降級、transport-retry 等 mutation-killing 測試</td><td>核心防護從「實作存在」升級為「測試可防回歸」</td></tr>
+<tr><td>4</td><td><code>acceptance.py</code>：lineage 對帳修正——research 與辯論 attempt namespace 分離、summary 自身一致性檢查、opening lineage 改讀 <code>content</code> 內真實欄位</td><td>合法的備援採用 run 不再被誤判失敗；summary 損壞不再漏抓；（Codex 時期遺留缺陷 ①）</td></tr>
+<tr><td>5</td><td><code>run.sh</code>：offline gate 改陣列迭代＋模組數對帳防呆</td><td>修正「最後一個測試模組被靜默跳過、gate 仍報 PASS」的假綠燈（Codex 時期遺留缺陷 ②）；此後模組數不符會直接紅燈</td></tr>
+</table>
+
+<h2>五、最終驗收（全部在最終程式版本上重跑）</h2>
+<p class="muted">證據目錄：<code>docs/work/wsl-only-runtime-onboarding/acceptance/evidence/20260813T031929Z/</code></p>
+<table>
+<tr><th>閘門</th><th>結果</th><th>證據</th></tr>
+<tr><td>離線完整測試（修正後 gate）</td><td class="ok">PASS（51/51 模組、3169 tests、exit 0）</td><td>gate log＋<code>OFFLINE_ACCEPTANCE=PASS</code>；既有環境相依 skip 1 個（大小寫敏感檔案系統，如實不計 PASS）</td></tr>
+<tr><td>Provider canary（fail-fast 順序）</td><td class="ok">Codex→Claude→Antigravity 全 PASS</td><td><code>providers/*.json</code>＋各自 process 稽核</td></tr>
+<tr><td>七席真實市場 run</td><td class="ok">7/7 有效最終票</td><td>run <code>20260813T032513Z-btc-acca1e</code>（分析 BTC 過去 14 日市場狀態）；七席研究 56–328 秒完成、360 秒 seal、600 秒共識停辯（consensus_5_votes）、625 秒完成報告（&lt;900 秒硬期限）</td></tr>
+<tr><td>verify-run</td><td class="ok">VERIFIED、7 artifacts SHA-256 全相符</td><td><code>verify-run.json</code></td></tr>
+<tr><td>run reconciliation</td><td class="ok">PASS、problems=[]、7 票</td><td><code>run-reconciliation.json</code></td></tr>
+<tr><td>Data Root 前後稽核</td><td class="ok">PASS——差異全部屬於本 run 的 inbox／runs／logs</td><td><code>data-root-before/after/diff.json</code></td></tr>
+<tr><td>Process 稽核</td><td class="ok">WSL run 後零 Provider 殘留；Windows 驗收窗內 0 個新 Provider process</td><td><code>wsl-process-*.json</code>、<code>windows-process-*.json</code></td></tr>
+<tr><td>Runtime ownership 實測</td><td class="ok">錯誤 claim → 409、server 存活</td><td><code>shutdown-precondition.json</code></td></tr>
+</table>
+<p class="muted">誠實聲明：本次 run 經由 <code>POST /launch</code> 的瀏覽器表單路徑啟動（合法產品路徑）；啟動後約 40 秒 webapp server 曾被驗收腳本誤殺並隨即重啟，run child 為獨立行程全程不受影響（timeline 完整、verify 通過）。單次成功代表固定版本與當下環境通過 release gate，不宣稱外部 Provider 永久可用。</p>
+
+<h2>六、兩位 Reviewer 最終結論（Snapshot 3 三方共識）</h2>
+<ul>
+<li><strong>Reviewer A（Spec）三輪皆通過</strong>：Ticket 06 的 11 項交付成果與 8 項驗收條件全部成立；stalled 文案與 lineage namespace 修訂均判定符合 Spec 語意；零 Finding。</li>
+<li><strong>Reviewer B（Standards）</strong>：首輪 4 個重要 Findings（掉 token race、動畫、wrong-token 測試、latch 測試）→ 修正後全部<strong>關閉</strong>；第二輪對對帳工具提出 1 個重要 Finding（namespace 誤綁）→ 修正後<strong>關閉</strong>；run.sh gate 修正<strong>通過</strong>；最終零未關閉 Finding。</li>
+</ul>
+
+<h2>七、已知風險與範圍外事項</h2>
+<ul>
+<li><span class="warn">範圍外（建議另開 Ticket）</span>：辯論「替補發言」的 lineage 尾端目前沒有 artifact 來源可交叉對帳（launch-summary 只記 research attempts）——資料模型限制，非本次放寬。</li>
+<li>research backup（<code>seat-a2</code>）與辯論替補（<code>seat-a{n+1}</code>）共用命名模式，理論上可撞號；現行對帳已不跨 namespace 比較，故不影響判定。</li>
+<li>offline gate 有 1 個既有環境相依 skip（檔案系統大小寫敏感性）。</li>
+<li>CSS 動畫時長 <code>.65s</code> 為字面值（motion token 只有 <code>--motion-fast:.18s</code>）；Reviewer B 建議未來加語意 token，不阻擋。</li>
+<li>Windows 側仍有數個<strong>斷線前遺留的 codex TUI 視窗</strong>（閒置、非 Provider），可自行關閉。</li>
+<li><strong>全部變更未 commit</strong>（含 39 個修改檔＋57 個新檔）。回復方式：變更都在 worktree，可用 <code>git status</code>／<code>git diff</code> 檢視；不滿意可還原個別檔案。Data Root 僅新增本次 run 與正常 log，未動任何歷史 run。</li>
+</ul>
+
+<h2>八、請你做最終視覺確認</h2>
+<div class="check">
+<p>webapp 目前<strong>正在執行中</strong>（WSL，instance <code>80bcc8f4a23468b3</code>）。請在 Windows 瀏覽器開啟：</p>
+<ul>
+<li><strong>本次驗收 run 的 Live 頁</strong>：<a href="http://localhost:8765/live?run=20260813T032513Z-btc-acca1e">http://localhost:8765/live?run=20260813T032513Z-btc-acca1e</a><br>
+檢查：七張席位卡各有立場與「已採用」標籤；第二格顯示「辯論已開始」（不是 00:00）；頁尾單行「分析完成 [查看市場報告]」。</li>
+<li><strong>市場報告</strong>：<a href="http://localhost:8765/run/20260813T032513Z-btc-acca1e/report.html">http://localhost:8765/run/20260813T032513Z-btc-acca1e/report.html</a><br>
+檢查：報告能開啟、七席結論與投票 tally 存在。</li>
+<li>（可選）雙擊桌面「關閉辯論室」捷徑，確認能正常關閉；之後「開啟辯論室」能再啟動同一 WSL runtime。</li>
+</ul>
+</div>
+
+</body>
+</html>

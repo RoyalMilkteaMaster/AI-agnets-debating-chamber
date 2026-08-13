@@ -1,0 +1,23 @@
+WSL2：6.18.33.2-microsoft-standard-WSL2
+發行版：Ubuntu 24.04.4 LTS
+Python：Python 3.12.3
+
+Provider CLI（本腳本只檢查，不會替你安裝或登入）：
+已安裝：codex
+已安裝：claude
+已安裝：agy
+
+已寫入捷徑：C:\Users\leslie\Desktop\開啟辯論室.lnk
+  目標  C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+  參數  -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "D:\workstationD\AI agnets debating chamber\AI-agnets-debating-chamber-wsl-runtime\scripts\wsl-shortcut.ps1" -Action start -Distro "Ubuntu-24.04" -CodeRoot "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber-wsl-runtime"
+已寫入捷徑：C:\Users\leslie\Desktop\關閉辯論室.lnk
+  目標  C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+  參數  -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "D:\workstationD\AI agnets debating chamber\AI-agnets-debating-chamber-wsl-runtime\scripts\wsl-shortcut.ps1" -Action stop -Distro "Ubuntu-24.04" -CodeRoot "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber-wsl-runtime"
+
+桌面資料夾：C:\Users\leslie\Desktop
+
+設定完成。
+  程式  /mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber-wsl-runtime
+  資料  /mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data
+  啟動  ./START-HERE.sh 或桌面的「開啟辯論室」
+  關閉  ./STOP-HERE.sh 或桌面的「關閉辯論室」

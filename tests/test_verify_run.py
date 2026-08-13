@@ -69,6 +69,45 @@ class VerifyRunTest(unittest.TestCase):
         for digest in summary["required_artifacts"].values():
             self.assertRegex(digest, r"^[0-9a-f]{64}$")
 
+    def test_offline_fake_run_accepts_its_legacy_singular_vote_attempt_ids(self):
+        manifest = json.loads(
+            (self.result.run_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        votes = json.loads(
+            (self.result.run_dir / "votes.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual("fake", manifest["provider_mode"])
+        self.assertNotIn("competition_timeline", manifest)
+        self.assertIsNot(manifest.get("competition_ready"), True)
+        self.assertTrue(
+            all(
+                "attempt_ids" not in row
+                and isinstance(row.get("attempt_id"), str)
+                and row["attempt_id"].strip()
+                for row in votes["votes"]
+            )
+        )
+        self.assertEqual(
+            "VERIFIED", verify_run(self.data_root, self.result.run_id)["status"]
+        )
+
+    def test_no_timeline_bundle_cannot_hide_a_phantom_vote_attempt(self):
+        votes_path = self.result.run_dir / "votes.json"
+        manifest_path = self.result.run_dir / "manifest.json"
+        votes = json.loads(votes_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        votes["votes"][0]["attempt_id"] = "spot-technical-a2"
+        manifest["seats"][0]["attempt_ids"] = ["spot-technical-a2"]
+        votes_path.write_text(json.dumps(votes) + "\n", encoding="utf-8")
+        manifest["artifacts"]["votes.json"]["sha256"] = hashlib.sha256(
+            votes_path.read_bytes()
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(RunVerificationError, "legacy public attempt"):
+            verify_run(self.data_root, self.result.run_id)
+
     def test_tampered_artifact_fails_closed(self):
         (self.result.run_dir / "evidence.jsonl").write_text("tampered\n", encoding="utf-8")
 
@@ -2824,6 +2863,55 @@ class V2FinalVoteTimingTest(unittest.TestCase):
         self._publish(vote_elapsed=419_999)
 
         with self.assertRaisesRegex(RunVerificationError, "final_vote.*時間"):
+            self._verify()
+
+    def test_manifest_seats_without_attempt_ids_are_refused(self):
+        manifest_path = self.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for seat in manifest["seats"]:
+            seat.pop("attempt_ids", None)
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "attempt_ids"):
+            self._verify()
+
+    def test_manifest_attempt_ids_must_match_the_vote_table(self):
+        manifest_path = self.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["seats"][0]["attempt_ids"] = ["spot-technical-a999"]
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "manifest.*attempt"):
+            self._verify()
+
+    def test_fast_manifest_artifact_without_source_is_refused(self):
+        manifest_path = self.run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual("real-subscription-fast", manifest["provider_mode"])
+        manifest["artifacts"]["evidence.jsonl"].pop("source")
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(RunVerificationError, "canonical.*source"):
+            self._verify()
+
+    def test_timeline_run_may_not_downgrade_votes_to_singular_attempt_id(self):
+        def use_singular_attempt_ids(votes):
+            for row in votes["votes"]:
+                row["attempt_id"] = row["attempt_ids"][0]
+                row.pop("attempt_ids")
+
+        self.fixture._forge_votes(self.run_dir, use_singular_attempt_ids)
+
+        with self.assertRaisesRegex(RunVerificationError, "attempt"):
             self._verify()
 
     def test_round_window_boundaries_are_lower_inclusive_upper_exclusive(self):

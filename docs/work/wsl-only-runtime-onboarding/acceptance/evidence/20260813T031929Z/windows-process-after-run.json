@@ -1,0 +1,67 @@
+﻿{
+    "taken_at_utc":  "2026-08-13T03:37:41.6957009Z",
+    "providers":  [
+                      {
+                          "pid":  223328,
+                          "name":  "claude",
+                          "start_time":  "2026-08-13T09:07:03.1774355+08:00"
+                      },
+                      {
+                          "pid":  230520,
+                          "name":  "claude",
+                          "start_time":  "2026-08-13T09:36:03.3760774+08:00"
+                      },
+                      {
+                          "pid":  148504,
+                          "name":  "codex",
+                          "start_time":  "2026-08-04T09:00:22.8199306+08:00"
+                      },
+                      {
+                          "pid":  210248,
+                          "name":  "codex",
+                          "start_time":  "2026-08-13T00:24:19.1418752+08:00"
+                      },
+                      {
+                          "pid":  222256,
+                          "name":  "codex",
+                          "start_time":  "2026-08-12T17:59:08.3468494+08:00"
+                      },
+                      {
+                          "pid":  226280,
+                          "name":  "codex",
+                          "start_time":  "2026-08-13T06:56:25.7181587+08:00"
+                      },
+                      {
+                          "pid":  229816,
+                          "name":  "codex",
+                          "start_time":  "2026-08-13T08:05:16.5381406+08:00"
+                      },
+                      {
+                          "pid":  173528,
+                          "name":  "codex-code-mode-host",
+                          "start_time":  "2026-08-04T09:01:46.3384396+08:00"
+                      },
+                      {
+                          "pid":  191980,
+                          "name":  "codex-code-mode-host",
+                          "start_time":  "2026-08-13T00:29:39.1173752+08:00"
+                      },
+                      {
+                          "pid":  224328,
+                          "name":  "codex-code-mode-host",
+                          "start_time":  "2026-08-12T18:02:20.1597000+08:00"
+                      },
+                      {
+                          "pid":  187188,
+                          "name":  "codex-command-runner-0.146.0-alpha.9.2",
+                          "start_time":  "2026-08-09T09:32:53.1612811+08:00"
+                      },
+                      {
+                          "pid":  197548,
+                          "name":  "codex-command-runner-0.146.0-alpha.9.2",
+                          "start_time":  "2026-08-09T09:24:44.9927706+08:00"
+                      }
+                  ],
+    "note":  "pre-existing developer tool sessions only; start times all predate acceptance window 20260813T031929Z except claude sessions which are Claude Code coordinator/subagent sessions, not run providers",
+    "kind":  "windows-process-audit-after-run"
+}

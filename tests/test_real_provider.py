@@ -6,11 +6,14 @@ receives hand-built stream-json envelopes.
 """
 
 import json
+import os
 import queue
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -18,6 +21,7 @@ from hoya_market_agents import codex_bridge
 from hoya_market_agents.antigravity_adapter import AntigravityAdapter
 from hoya_market_agents.claude_adapter import (
     CLAUDE_SEAT_SESSIONS,
+    PROCESS_GROUP_RECLAIMED,
     TERMINATED_AT_DEADLINE,
     ClaudeAdapter,
     ProcessOutput,
@@ -25,37 +29,55 @@ from hoya_market_agents.claude_adapter import (
     TerminatingRunner,
 )
 from hoya_market_agents.codex_exec_adapter import (
+    CodexExecEmptyOutputError,
     CodexExecOutputError,
     CodexExecProcessError,
     CodexExecResult,
     CodexExecTimeout,
+    CodexExecTreeTerminationError,
 )
 from hoya_market_agents.contract_validator import MAX_EVIDENCE_CARDS_PER_SEAT
 from hoya_market_agents.question import inspect_question, normalize_asset
 from hoya_market_agents.question_package import build_question_package
 from hoya_market_agents.real_provider import (
+    PROVIDER_MODELS,
     ANTIGRAVITY_SEAT_IDS,
+    BACKUP_CANDIDATES,
     CLAUDE_SEAT_IDS,
     CLAUDE_TIMEOUT_SECONDS,
     CODEX_MODES,
     CODEX_SEAT_IDS,
     LOCAL_WORKER_COUNT,
+    SEAT_PROVIDERS,
     POST_SEAL_SEARCH,
     PRIMARY_MODELS,
     REPLACEMENT_MODELS,
     RESEARCH_ENVELOPE_SCHEMA,
+    RESEARCH_LINEAGE_MESSAGE,
     DebateDispatch,
     RealEvidenceGateway,
     RealProviderError,
     RealSeatRunner,
     TrailingCommaRepairer,
     build_attempt_prompt,
+    research_envelope_schema,
     validate_research_envelope_shape,
 )
 from hoya_market_agents.recovery_state_machine import ResearchAttempt, SeatRecoveryState
+from hoya_market_agents.research_scheduler import (
+    PROCESS_TREE_TERMINATION_FAILED,
+    PROVIDER_EMPTY_OUTPUT,
+    PROVIDER_MALFORMED_OUTPUT,
+    PROVIDER_OUTPUT_REJECTED,
+    PROVIDER_PROCESS_ERROR,
+    PROVIDER_START_FAILED,
+    PROVIDER_TIMEOUT,
+    RESEARCH_PROOF_MISSING,
+)
 from hoya_market_agents.run_store import RunStore
 from hoya_market_agents.seats import SEAT_IDS, load_roster
 from hoya_market_agents.system_preflight import load_frozen_roster
+from tests.test_claude_adapter import FakeKillpg, FakeProcessGroup, deaf_killpg
 
 QUESTION = "BTC 過去 14 日的市場狀態如何？"
 STAMP = "2026-08-01T02:00:00Z"
@@ -67,6 +89,82 @@ DEBATE_SCHEMA = {
 }
 SLEEP_ARGV = [sys.executable, "-c", "import time; time.sleep(30)"]
 JOIN_TIMEOUT_SECONDS = 10
+# 一棵真的 root→child→grandchild 樹：每一層先留下自己的 PID 記號再往下生，
+# 所以測試等到記號齊全就代表整棵樹已經存在，不必用 sleep 猜。
+PROCESS_TREE_SOURCE = """\
+import os, subprocess, sys, time
+from pathlib import Path
+
+depth = int(sys.argv[1])
+markers = Path(sys.argv[2])
+(markers / "{}.pid".format(depth)).write_text(str(os.getpid()), encoding="utf-8")
+if depth > 1:
+    subprocess.Popen(
+        [sys.executable, __file__, str(depth - 1), str(markers)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+time.sleep(600)
+"""
+# root 生完子代就退出：整個 group 只剩子代還活著。
+ROOT_EXITS_SOURCE = """\
+import subprocess, sys
+
+subprocess.Popen(
+    [sys.executable, sys.argv[1], "1", sys.argv[2]],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+"""
+
+
+def wait_until(predicate, timeout=JOIN_TIMEOUT_SECONDS):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return bool(predicate())
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def force_reap(process):
+    """Test cleanup only: a failing assertion must not leak a live tree."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=JOIN_TIMEOUT_SECONDS)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def spawn_process_tree(directory, depth):
+    """Spawn a real ``depth``-deep tree in its own session; return it with its PIDs."""
+    script = directory / "tree.py"
+    script.write_text(PROCESS_TREE_SOURCE, encoding="utf-8")
+    markers = directory / "markers"
+    markers.mkdir(exist_ok=True)
+    process = subprocess.Popen(
+        [sys.executable, str(script), str(depth), str(markers)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return process, markers
 
 
 def evidence_card(run_id, seat_id, attempt_id, index=1):
@@ -229,13 +327,26 @@ class FakeAgyRunner:
 class FakeCodexAdapter:
     """``codex exec`` seam: one scripted structured output or one scripted error."""
 
-    def __init__(self, structured_output=None, error=None, search_invocations=1):
+    def __init__(
+        self,
+        structured_output=None,
+        error=None,
+        search_invocations=1,
+        search_activity_count=None,
+        malformed_event_count=0,
+    ):
         self.structured_output = structured_output
         self.error = error
         self.search_invocations = search_invocations
+        self.search_activity_count = (
+            search_invocations
+            if search_activity_count is None
+            else search_activity_count
+        )
+        self.malformed_event_count = malformed_event_count
         self.calls = []
 
-    def invoke(self, prompt, schema, work_dir, allow_search=True):
+    def invoke(self, prompt, schema, work_dir, allow_search=True, timeout_seconds=None):
         work_dir = Path(work_dir)
         self.calls.append(
             {
@@ -243,6 +354,7 @@ class FakeCodexAdapter:
                 "schema": schema,
                 "work_dir": work_dir,
                 "allow_search": allow_search,
+                "timeout_seconds": timeout_seconds,
             }
         )
         if self.error is not None:
@@ -253,37 +365,14 @@ class FakeCodexAdapter:
             schema_path=work_dir / "codex-output-schema.json",
             last_message_path=work_dir / "codex-last-message.txt",
             search_invocations=self.search_invocations,
+            search_parse_status=(
+                "malformed"
+                if self.malformed_event_count
+                else "matched" if self.search_invocations else "no_search"
+            ),
+            malformed_event_count=self.malformed_event_count,
+            search_activity_count=self.search_activity_count,
         )
-
-
-class FakeProcess:
-    """``Popen`` duck type：terminate 讓等待中的 worker 立刻收工。"""
-
-    def __init__(self):
-        self.finished = threading.Event()
-        self.terminated = False
-        self.killed = False
-
-    def terminate(self):
-        self.terminated = True
-        self.finished.set()
-
-    def kill(self):
-        self.killed = True
-        self.finished.set()
-
-    def poll(self):
-        return 0 if self.finished.is_set() else None
-
-
-class UnstoppableProcess(FakeProcess):
-    """A provider process whose signals fail; cancellation must still not raise."""
-
-    def terminate(self):
-        raise OSError("no such process")
-
-    def kill(self):
-        raise OSError("no such process")
 
 
 class BlockingCodexAdapter:
@@ -302,7 +391,9 @@ class BlockingCodexAdapter:
         self.registry.track(key, self.process)
         self.started.set()
         try:
-            self.process.finished.wait(timeout=JOIN_TIMEOUT_SECONDS)
+            self.process.wait(timeout=JOIN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
         finally:
             self.registry.release(key, self.process)
         raise CodexExecProcessError(
@@ -425,7 +516,10 @@ class TerminatingRunnerTest(unittest.TestCase):
 
         self.assertTrue(output.timed_out)
         self.assertIsNone(output.returncode)
-        self.assertFalse(self.registry.terminate("seat-key"))
+        # 逾時已經回收整組；晚到的 terminate 只會讀回同一個終局。
+        self.assertEqual(PROCESS_GROUP_RECLAIMED, self.registry.outcome("seat-key"))
+        self.assertTrue(self.registry.terminate("seat-key"))
+        self.assertEqual(PROCESS_GROUP_RECLAIMED, self.registry.outcome("seat-key"))
 
     def test_a_missing_executable_reports_a_process_error_instead_of_raising(self):
         output = self.runner.run(
@@ -448,10 +542,126 @@ class TerminatingRunnerTest(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):
             self.runner.run_process(SLEEP_ARGV, cwd=self.cwd, timeout=0.5)
 
-    def test_terminating_an_unstoppable_process_never_raises(self):
-        self.registry.track("seat-key", UnstoppableProcess())
+    def test_terminating_a_group_that_cannot_be_signalled_never_raises(self):
+        registry = ProcessRegistry(killpg=deaf_killpg)
+        registry.track("seat-key", FakeProcessGroup(9001))
 
-        self.assertFalse(self.registry.terminate("seat-key"))
+        self.assertFalse(registry.terminate("seat-key", grace_seconds=0))
+
+
+class ProviderProcessGroupTest(unittest.TestCase):
+    """真實 POSIX 樹：截止之後不得留下任何還在燒訂閱的子孫。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.cwd = Path(self._tmp.name)
+        self.markers = self.cwd / "markers"
+        self.markers.mkdir()
+        self.script = self.cwd / "tree.py"
+        self.script.write_text(PROCESS_TREE_SOURCE, encoding="utf-8")
+        self.registry = ProcessRegistry()
+
+    def tree_argv(self, depth):
+        return [sys.executable, str(self.script), str(depth), str(self.markers)]
+
+    def spawn_tree(self, depth):
+        process, _ = spawn_process_tree(self.cwd, depth)
+        self.addCleanup(force_reap, process)
+        return process, self.tree_pids(depth)
+
+    def tree_pids(self, depth):
+        self.assertTrue(
+            wait_until(lambda: len(list(self.markers.glob("*.pid"))) == depth),
+            "整棵樹沒有在期限內建立起來",
+        )
+        return [
+            int(path.read_text(encoding="utf-8"))
+            for path in sorted(self.markers.glob("*.pid"))
+        ]
+
+    def assert_group_gone(self, pids):
+        for pid in pids:
+            self.assertTrue(
+                wait_until(lambda pid=pid: not pid_alive(pid)),
+                "PID {} 在回收後仍然存活".format(pid),
+            )
+
+    def test_a_provider_invocation_gets_its_own_session_and_process_group(self):
+        runner = TerminatingRunner(self.registry, key_source=lambda: "seat-key")
+
+        output = runner.run(
+            [
+                sys.executable,
+                "-c",
+                "import os; print(os.getpid(), os.getpgid(0), os.getsid(0))",
+            ],
+            input_text="",
+            cwd=self.cwd,
+            timeout_seconds=JOIN_TIMEOUT_SECONDS,
+        )
+
+        pid, pgid, sid = (int(value) for value in output.stdout.split())
+        self.assertEqual((pid, pid), (pgid, sid))
+        self.assertNotEqual(os.getpgid(0), pgid)
+
+    def test_terminate_reclaims_the_root_the_child_and_the_grandchild(self):
+        process, pids = self.spawn_tree(3)
+        self.registry.track("news-a1", process)
+
+        self.assertTrue(self.registry.terminate("news-a1"))
+
+        self.assertEqual(3, len(pids))
+        self.assert_group_gone(pids)
+        self.assertEqual(PROCESS_GROUP_RECLAIMED, self.registry.outcome("news-a1"))
+
+    def test_a_group_whose_root_already_exited_is_still_reclaimed(self):
+        root_script = self.cwd / "root-exits.py"
+        root_script.write_text(ROOT_EXITS_SOURCE, encoding="utf-8")
+        process = subprocess.Popen(
+            [sys.executable, str(root_script), str(self.script), str(self.markers)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.addCleanup(force_reap, process)
+        self.registry.track("derivatives-a1", process)
+        [child] = self.tree_pids(1)
+        self.assertEqual(0, process.wait(timeout=JOIN_TIMEOUT_SECONDS))
+        self.assertTrue(pid_alive(child))
+
+        # root 已經退出並被回收：只看 root PID 會把這個 group 當成已經消失。
+        self.assertTrue(self.registry.terminate("derivatives-a1"))
+
+        self.assert_group_gone([child])
+        self.assertEqual(
+            PROCESS_GROUP_RECLAIMED, self.registry.outcome("derivatives-a1")
+        )
+
+    def test_a_timeout_reclaims_the_whole_group(self):
+        runner = TerminatingRunner(self.registry, key_source=lambda: "seat-key")
+        outputs = []
+        worker = threading.Thread(
+            target=lambda: outputs.append(
+                runner.run(
+                    self.tree_argv(3),
+                    input_text="",
+                    cwd=self.cwd,
+                    timeout_seconds=3,
+                )
+            )
+        )
+        worker.start()
+        self.addCleanup(worker.join, JOIN_TIMEOUT_SECONDS)
+        pids = self.tree_pids(3)
+
+        worker.join(timeout=JOIN_TIMEOUT_SECONDS)
+
+        self.assertFalse(worker.is_alive())
+        [output] = outputs
+        self.assertTrue(output.timed_out)
+        self.assert_group_gone(pids)
 
 
 class RealSeatRunnerTest(unittest.TestCase):
@@ -513,15 +723,30 @@ class RealSeatRunnerTest(unittest.TestCase):
             ),
             codex_adapter=self.codex_adapter,
             codex_mode=codex_mode,
+            # Ticket 03：executable 解析也是一道 seam。注入一個看得見三個命令的
+            # 假 PATH，這些測試才不會因為機器上剛好沒裝 CLI 而改變行為。
+            which=lambda name: "/fake/wsl/bin/{}".format(name),
         )
         self.addCleanup(runner.shutdown)
         return runner
 
     def drain(self, runner, expected):
+        """Collect ``expected`` result/failure messages, keeping lineage aside.
+
+        A research worker publishes its ``research_lineage`` message *before* the
+        result it belongs to (Ticket 03), so once the last result has been taken
+        every lineage message has already been taken with it — which is why the
+        queue is still asserted empty here rather than merely drained.
+        """
         runner.shutdown()
         messages = []
+        self.lineage = []
         while len(messages) < expected:
-            messages.append(self.results.get(timeout=10))
+            message = self.results.get(timeout=10)
+            if message[0] == RESEARCH_LINEAGE_MESSAGE:
+                self.lineage.append(message)
+                continue
+            messages.append(message)
         self.assertTrue(self.results.empty())
         return messages
 
@@ -601,9 +826,15 @@ class RealSeatRunnerTest(unittest.TestCase):
         call = self.claude_runner.calls[0]
         self.assertEqual(345, CLAUDE_TIMEOUT_SECONDS)
         self.assertEqual(CLAUDE_TIMEOUT_SECONDS, call["timeout_seconds"])
+        # Ticket 03：送出的是這一次 attempt 自己的 schema，不是通用模板；
+        # 模板本身照樣一個字都不能被改動。
         self.assertIn(
-            json.dumps(RESEARCH_ENVELOPE_SCHEMA, separators=(",", ":")), call["args"]
+            json.dumps(
+                research_envelope_schema(self.run_id, attempt), separators=(",", ":")
+            ),
+            call["args"],
         )
+        self.assertNotIn("enum", RESEARCH_ENVELOPE_SCHEMA["properties"]["seat_id"])
         prompt = call["prompt"]
         self.assertIn(self.run_id, prompt)
         self.assertIn(attempt.attempt_id, prompt)
@@ -651,14 +882,19 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.assertIn("--resume", second["args"])
         self.assertEqual(first["cwd"], second["cwd"])
 
-    def test_claude_failures_map_to_the_scheduler_failure_kinds(self):
+    def test_claude_failures_map_to_the_stable_failure_codes(self):
+        """Ticket 03／Reviewer B2：發到 queue 上的就是穩定 code。
+
+        壞掉的輸出不再和一次普通的 provider 雜訊共用同一個值：Claude 邊界本來
+        就知道 stdout 不是合法 JSON，那個區分要一路留到 scheduler。
+        """
         cases = {
-            "timeout": [claude_timeout()],
-            "process_error": [claude_process_error(), claude_process_error()],
-            "provider_error": [claude_malformed()],
+            PROVIDER_TIMEOUT: [claude_timeout()],
+            PROVIDER_PROCESS_ERROR: [claude_process_error(), claude_process_error()],
+            PROVIDER_MALFORMED_OUTPUT: [claude_malformed()],
         }
         for expected_kind, outputs in cases.items():
-            with self.subTest(failure_kind=expected_kind):
+            with self.subTest(failure_code=expected_kind):
                 self.setUp()
                 attempt = self.attempt("official-events")
                 runner = self.build_runner(
@@ -695,7 +931,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         kind, attempt_id, failure_kind, message = messages[0]
         self.assertEqual("failure", kind)
         self.assertEqual(attempt.attempt_id, attempt_id)
-        self.assertEqual("provider_error", failure_kind)
+        self.assertEqual(PROVIDER_OUTPUT_REJECTED, failure_kind)
         self.assertIn("actual_model_mismatch:claude-sonnet-4-5", message)
 
     def test_claude_result_without_live_research_proof_is_refused(self):
@@ -719,7 +955,7 @@ class RealSeatRunnerTest(unittest.TestCase):
 
         kind, _, failure_kind, message = messages[0]
         self.assertEqual("failure", kind)
-        self.assertEqual("provider_error", failure_kind)
+        self.assertEqual(RESEARCH_PROOF_MISSING, failure_kind)
         self.assertIn("no_live_research_proof", message)
 
     def test_claude_web_fetch_alone_still_proves_live_research(self):
@@ -810,7 +1046,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         kind, attempt_id, failure_kind, message = messages[0]
         self.assertEqual("failure", kind)
         self.assertEqual(attempt.attempt_id, attempt_id)
-        self.assertEqual("provider_error", failure_kind)
+        self.assertEqual(RESEARCH_PROOF_MISSING, failure_kind)
         self.assertIn("search_web", message)
 
     def test_codex_result_without_a_search_invocation_is_refused(self):
@@ -831,16 +1067,16 @@ class RealSeatRunnerTest(unittest.TestCase):
         kind, attempt_id, failure_kind, message = messages[0]
         self.assertEqual("failure", kind)
         self.assertEqual(attempt.attempt_id, attempt_id)
-        self.assertEqual("provider_error", failure_kind)
+        self.assertEqual(RESEARCH_PROOF_MISSING, failure_kind)
         self.assertIn("no_live_research_proof", message)
 
-    def test_antigravity_timeout_and_provider_error_map_to_failure_kinds(self):
+    def test_antigravity_timeout_and_provider_error_map_to_stable_codes(self):
         cases = {
-            "timeout": FakeAgyRunner(timed_out=True),
-            "provider_error": FakeAgyRunner(stream="", returncode=2, stderr="boom"),
+            PROVIDER_TIMEOUT: FakeAgyRunner(timed_out=True),
+            PROVIDER_START_FAILED: FakeAgyRunner(stream="", returncode=2, stderr="boom"),
         }
         for expected_kind, agy_runner in cases.items():
-            with self.subTest(failure_kind=expected_kind):
+            with self.subTest(failure_code=expected_kind):
                 self.setUp()
                 attempt = self.attempt("counter-evidence")
                 runner = self.build_runner(agy_runner=agy_runner)
@@ -937,7 +1173,9 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.drain(runner, 1)
 
         [call] = self.codex_adapter.calls
-        self.assertEqual(RESEARCH_ENVELOPE_SCHEMA, call["schema"])
+        # Ticket 03：codex 也收自己的 per-attempt schema，通用模板不被就地改寫。
+        self.assertEqual(research_envelope_schema(self.run_id, attempt), call["schema"])
+        self.assertNotIn("enum", RESEARCH_ENVELOPE_SCHEMA["properties"]["seat_id"])
         self.assertEqual(
             self.run.path / "agents" / "derivatives" / "work" / attempt.attempt_id,
             call["work_dir"],
@@ -949,14 +1187,24 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.assertIn("evidence_cards", prompt)
         self.assertIn("不得建立任何額外 agent", prompt)
 
-    def test_codex_cli_failures_map_to_the_scheduler_failure_kinds(self):
+    def test_codex_cli_failures_map_to_the_stable_failure_codes(self):
         cases = {
-            "timeout": CodexExecTimeout("codex exec 超過 270 秒"),
-            "process_error": CodexExecProcessError("codex exec 非零結束（exit 1）：boom"),
-            "provider_error": CodexExecOutputError("codex exec 未寫出 last message 檔"),
+            PROVIDER_TIMEOUT: CodexExecTimeout("codex exec 超過 270 秒"),
+            PROVIDER_PROCESS_ERROR: CodexExecProcessError(
+                "codex exec 非零結束（exit 1）：boom"
+            ),
+            PROVIDER_MALFORMED_OUTPUT: CodexExecOutputError(
+                "codex exec 未寫出 last message 檔"
+            ),
+            PROVIDER_EMPTY_OUTPUT: CodexExecEmptyOutputError(
+                "codex exec 的 last message 為空"
+            ),
+            PROCESS_TREE_TERMINATION_FAILED: CodexExecTreeTerminationError(
+                "process_tree_termination_failed"
+            ),
         }
         for expected_kind, error in cases.items():
-            with self.subTest(failure_kind=expected_kind):
+            with self.subTest(failure_code=expected_kind):
                 self.setUp()
                 attempt = self.attempt("spot-technical")
                 runner = self.build_runner(
@@ -997,21 +1245,26 @@ class RealSeatRunnerTest(unittest.TestCase):
             with self.subTest(seat_id=seat_id):
                 self.assertIsNone(REPLACEMENT_MODELS[seat_id])
 
-    def test_production_recovery_stops_after_one_same_model_retry(self):
+    def test_production_recovery_stops_after_one_other_provider_backup(self):
+        """Ticket 03：同 Provider 同模型重試退場，改成一次不同 Provider 的 backup。"""
         for seat_id in SEAT_IDS:
             with self.subTest(seat_id=seat_id):
                 state = SeatRecoveryState(
                     seat_id=seat_id,
                     primary_model=PRIMARY_MODELS[seat_id],
                     replacement_model=REPLACEMENT_MODELS[seat_id],
+                    provider=SEAT_PROVIDERS[seat_id],
+                    backup=BACKUP_CANDIDATES[seat_id],
                 )
                 primary = state.primary()
-                retry = state.recover(primary.attempt_id, "process_error")
-                replacement = state.recover(retry.attempt_id, "process_error")
+                backup = state.recover(primary.attempt_id, "process_error")
+                exhausted = state.recover(backup.attempt_id, "process_error")
 
-                self.assertEqual("same_model_retry", retry.kind)
-                self.assertEqual(PRIMARY_MODELS[seat_id], retry.model)
-                self.assertIsNone(replacement)
+                self.assertEqual("backup", backup.kind)
+                self.assertEqual(seat_id, backup.seat_id)
+                self.assertNotEqual(primary.provider, backup.provider)
+                self.assertNotEqual(primary.model, backup.model)
+                self.assertIsNone(exhausted)
 
     def test_sonnet_is_not_present_in_production_recovery_config(self):
         self.assertNotIn("sonnet", json.dumps(REPLACEMENT_MODELS).lower())
@@ -1041,10 +1294,16 @@ class RealSeatRunnerTest(unittest.TestCase):
 
         self.assertTrue(self.results.empty())
 
+    def fake_group_runner(self, *groups, codex_mode="cli"):
+        """Runner whose registry signals fake groups instead of the real OS."""
+        runner = self.build_runner(codex_mode=codex_mode)
+        runner.process_registry = ProcessRegistry(killpg=FakeKillpg(*groups))
+        return runner
+
     def test_cancel_terminates_the_provider_process_still_burning_at_the_deadline(self):
         attempt = self.attempt("spot-technical")
-        process = FakeProcess()
-        runner = self.build_runner(codex_mode="cli")
+        process = FakeProcessGroup(8101)
+        runner = self.fake_group_runner(process)
         runner.codex_adapter = BlockingCodexAdapter(
             runner.process_registry, process, runner.worker_key
         )
@@ -1056,28 +1315,63 @@ class RealSeatRunnerTest(unittest.TestCase):
 
         # 註冊鍵是 attempt 而不是 pool 執行緒：執行緒會被別席重用，毒不得。
         self.assertEqual(attempt.attempt_id, runner.codex_adapter.key)
-        self.assertTrue(process.terminated)
+        self.assertEqual([signal.SIGTERM], process.signals)
+        self.assertEqual(
+            PROCESS_GROUP_RECLAIMED,
+            runner.process_registry.outcome(attempt.attempt_id),
+        )
+        self.assertTrue(self.results.empty())
+
+    def test_cancel_reclaims_the_whole_provider_process_group(self):
+        attempt = self.attempt("spot-technical")
+        process, markers = spawn_process_tree(Path(self._tmp.name), 3)
+        self.addCleanup(force_reap, process)
+        runner = self.build_runner(codex_mode="cli")
+        runner.codex_adapter = BlockingCodexAdapter(
+            runner.process_registry, process, runner.worker_key
+        )
+        runner.start(attempt, None)
+        self.assertTrue(runner.codex_adapter.started.wait(timeout=JOIN_TIMEOUT_SECONDS))
+        self.assertTrue(wait_until(lambda: len(list(markers.glob("*.pid"))) == 3))
+        pids = [
+            int(path.read_text(encoding="utf-8"))
+            for path in sorted(markers.glob("*.pid"))
+        ]
+
+        self.assertIsNone(runner.cancel(attempt.attempt_id))
+        runner.shutdown()
+
+        for pid in pids:
+            self.assertTrue(
+                wait_until(lambda pid=pid: not pid_alive(pid)),
+                "PID {} 在 cancel 後仍然存活".format(pid),
+            )
+        self.assertEqual(
+            PROCESS_GROUP_RECLAIMED,
+            runner.process_registry.outcome(attempt.attempt_id),
+        )
         self.assertTrue(self.results.empty())
 
     def test_a_provider_process_registered_after_the_cancel_is_stopped_too(self):
         # F3 的競態：cancel 落在 _is_cancelled 檢查之後、resume 進程註冊之前。
         # key 是 attempt 而不是 pool 執行緒，所以毒不到別席。
         attempt = self.attempt("official-events")
-        runner = self.build_runner()
-        late = FakeProcess()
-        other = FakeProcess()
+        late = FakeProcessGroup(8201)
+        other = FakeProcessGroup(8202)
+        runner = self.fake_group_runner(late, other)
 
         runner.cancel(attempt.attempt_id)
-        runner.process_registry.track(attempt.attempt_id, late)
-        runner.process_registry.track("news-a1", other)
+        runner.process_registry.track(attempt.attempt_id, late, grace_seconds=0)
+        runner.process_registry.track("news-a1", other, grace_seconds=0)
 
-        self.assertTrue(late.terminated)
-        self.assertFalse(other.terminated)
+        self.assertFalse(late.alive)
+        self.assertTrue(other.alive)
 
     def test_terminate_never_raises_when_the_provider_process_cannot_be_stopped(self):
         attempt = self.attempt("derivatives")
-        process = UnstoppableProcess()
+        process = FakeProcessGroup(8301)
         runner = self.build_runner(codex_mode="cli")
+        runner.process_registry = ProcessRegistry(killpg=deaf_killpg)
         runner.codex_adapter = BlockingCodexAdapter(
             runner.process_registry, process, runner.worker_key
         )
@@ -1086,7 +1380,7 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.assertTrue(runner.codex_adapter.started.wait(timeout=JOIN_TIMEOUT_SECONDS))
 
         self.assertIsNone(runner.terminate(attempt.attempt_id))
-        process.finished.set()  # 訊號失敗時只能靠 provider 自己結束
+        process.exit_cleanly()  # 訊號送不進去時只能靠 provider 自己結束
         runner.shutdown()
         self.assertTrue(self.results.empty())
 
@@ -1142,6 +1436,93 @@ class RealSeatRunnerTest(unittest.TestCase):
         self.assertNotIn("--resume", call["args"])
         self.assertEqual(45, call["timeout_seconds"])
 
+    def opening_dispatch(self, seat_id, provider, timeout_seconds):
+        """One Opening dispatch carrying exactly the budget its wall leaves."""
+        return DebateDispatch(
+            dispatch_id="{}-opening".format(seat_id),
+            seat_id=seat_id,
+            prompt="independent Opening prompt",
+            schema=DEBATE_SCHEMA,
+            validator=lambda value: value,
+            timeout_seconds=timeout_seconds,
+            phase="opening",
+            research_attempt_id="{}-a1".format(seat_id),
+            provider=provider,
+            requested_model=PROVIDER_MODELS[provider],
+            research_actual_model=PROVIDER_MODELS[provider],
+            adopted_evidence_sha256="a" * 64,
+        )
+
+    def test_every_debate_lane_uses_this_dispatch_s_own_remaining_timeout(self):
+        """All three lanes honour the dispatch budget, down to half a second.
+
+        The two Codex dispatches share one adapter instance on purpose: if the
+        remaining budget were written onto the adapter, the second call would
+        overwrite the first and a concurrent seat would inherit a wall that is
+        not its own.
+        """
+        codex = FakeCodexAdapter(
+            structured_output={"seat_id": "news", "stance": "bullish"},
+            search_invocations=0,
+        )
+        runner = self.build_runner(codex_adapter=codex, codex_mode="cli")
+
+        for seat_id, provider, budget in (
+            ("news", "codex", 0.5),
+            ("spot-technical", "codex", 120.0),
+            ("official-events", "claude", 0.5),
+            ("counter-evidence", "antigravity", 0.5),
+        ):
+            self.assertIs(
+                True,
+                runner.start_debate(self.opening_dispatch(seat_id, provider, budget)),
+            )
+        runner.shutdown()
+
+        self.assertEqual(
+            [0.5, 120.0], sorted(call["timeout_seconds"] for call in codex.calls)
+        )
+        self.assertEqual(
+            [0.5], [call["timeout_seconds"] for call in self.claude_runner.calls]
+        )
+        [(argv, _cwd, subprocess_timeout)] = self.agy_runner.calls
+        self.assertEqual("0.5s", argv[argv.index("--print-timeout") + 1])
+        self.assertEqual(10.5, subprocess_timeout)
+
+    def test_an_opening_uses_the_adopted_provider_lane_not_the_roster_lane(self):
+        """A Claude-primary seat adopted by Codex must open through Codex."""
+        dispatch = DebateDispatch(
+            dispatch_id="official-events-opening",
+            seat_id="official-events",
+            prompt="independent Opening prompt",
+            schema=DEBATE_SCHEMA,
+            validator=lambda value: value,
+            timeout_seconds=17 * 60,
+            phase="opening",
+            research_attempt_id="official-events-a2",
+            provider="codex",
+            requested_model="gpt-5.6-sol",
+            research_actual_model="gpt-5.6-sol",
+            adopted_evidence_sha256="a" * 64,
+        )
+        self.codex_adapter = FakeCodexAdapter(
+            structured_output={"seat_id": "official-events", "stance": "bullish"},
+            search_invocations=0,
+        )
+        runner = self.build_runner(codex_mode="cli", codex_adapter=self.codex_adapter)
+
+        self.assertIs(True, runner.start_debate(dispatch))
+        runner.shutdown()
+        lineage = self.results.get(timeout=10)
+        result = self.results.get(timeout=10)
+
+        self.assertEqual("debate_result", result[0])
+        self.assertEqual([], self.claude_runner.calls)
+        self.assertEqual(1, len(self.codex_adapter.calls))
+        self.assertEqual("opening", lineage[2]["phase"])
+        self.assertEqual("official-events-a2", lineage[2]["research_attempt_id"])
+        self.assertTrue(self.results.empty())
+
     def test_every_debate_turn_calls_its_provider_with_search_switched_off(self):
         # T+4:00 之後只能依封存證據：三個 provider 的辯論呼叫都不得帶著搜尋能力。
         claude = self.dispatch("official-events")
@@ -1196,6 +1577,26 @@ class RealSeatRunnerTest(unittest.TestCase):
             codex_adapter=FakeCodexAdapter(
                 structured_output={"seat_id": "news", "stance": "bearish"},
                 search_invocations=1,
+            ),
+        )
+
+        runner.start_debate(self.dispatch("news"))
+        messages = self.drain(runner, 2)
+
+        kind, dispatch_id, failure_kind, message = messages[1]
+        self.assertEqual("debate_failure", kind)
+        self.assertEqual("news-r1", dispatch_id)
+        self.assertEqual("provider_error", failure_kind)
+        self.assertIn(POST_SEAL_SEARCH, message)
+
+    def test_a_malformed_codex_event_stream_after_the_seal_is_refused(self):
+        runner = self.build_runner(
+            codex_mode="cli",
+            codex_adapter=FakeCodexAdapter(
+                structured_output={"seat_id": "news", "stance": "bearish"},
+                search_invocations=0,
+                search_activity_count=0,
+                malformed_event_count=1,
             ),
         )
 

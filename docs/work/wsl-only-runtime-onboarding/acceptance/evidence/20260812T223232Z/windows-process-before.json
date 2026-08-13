@@ -1,0 +1,7 @@
+﻿{
+    "schema_version":  "hoya.wsl-release-acceptance.v1",
+    "kind":  "windows-process-audit",
+    "providers":  [
+
+                  ]
+}

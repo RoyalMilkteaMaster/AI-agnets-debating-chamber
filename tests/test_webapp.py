@@ -31,7 +31,7 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import urlencode
 
-from fakes import FixedClock
+from tests.fakes import FixedClock
 
 from hoya_market_agents import design_tokens
 from hoya_market_agents.debate_rules import (
@@ -612,16 +612,6 @@ def write_run(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
 
-    write(
-        "manifest.json",
-        {
-            "run_id": run_id,
-            "question": question,
-            "assets": list(assets),
-            "question_type": "open_proposition",
-            "completed_at_utc": "2026-08-01T02:15:00Z",
-        },
-    )
     question_record = {
         "run_id": run_id,
         "question": question,
@@ -672,6 +662,33 @@ def write_run(
             "<!doctype html><title>{0}</title><p>{0} 的內容</p>".format(artifact),
             encoding="utf-8",
         )
+    artifact_index = {}
+    for path in run_dir.iterdir():
+        if path.is_file():
+            artifact_index[path.name] = {
+                "path": path.name,
+                "sha256": sha256(path.read_bytes()).hexdigest(),
+                "source": "webapp test fixture",
+            }
+    write(
+        "manifest.json",
+        {
+            "schema_version": "1.0.0",
+            "run_id": run_id,
+            "provider_mode": "fake",
+            "question": question,
+            "started_at_utc": created_at_utc or "2026-08-01T02:00:00Z",
+            "completed_at_utc": "2026-08-01T02:15:00Z",
+            "elapsed_ms": 900_000,
+            "assets": list(assets),
+            "period_days": period_days or 7,
+            "seats": [
+                {"seat_id": seat_id, "attempt_ids": [seat_id + "-a1"]}
+                for seat_id in SEAT_IDS
+            ],
+            "artifacts": artifact_index,
+        },
+    )
     return run_dir
 
 
@@ -815,6 +832,7 @@ class PageFixture:
             stream=self.stream,
             lock=self.lock,
             spawn=spawn or self.spawn,
+            live_clock=lambda: datetime(2026, 8, 6, 2, 4, tzinfo=timezone.utc),
         )
         return self.handler
 
@@ -1909,6 +1927,29 @@ def write_live_run(
     return run_dir
 
 
+def finish_live_run(run_dir, run_id=LIVE_RUN_ID):
+    """Write the smallest canonical final marker for an in-progress fixture."""
+    manifest = {
+        "schema_version": "1.0.0",
+        "run_id": run_id,
+        "provider_mode": "fake",
+        "question": "BTC 會漲嗎",
+        "started_at_utc": "2026-08-06T02:00:00Z",
+        "completed_at_utc": "2026-08-06T02:15:00Z",
+        "elapsed_ms": 900_000,
+        "assets": ["BTC"],
+        "period_days": 7,
+        "seats": [
+            {"seat_id": seat_id, "attempt_ids": [seat_id + "-a1"]}
+            for seat_id in SEAT_IDS
+        ],
+        "artifacts": {},
+    }
+    (Path(run_dir) / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+
+
 def seat_message(
     seat_id,
     stance,
@@ -2357,7 +2398,10 @@ class LiveSnapshotTest(unittest.TestCase):
         self.data_root = Path(self._tmp.name)
 
     def test_a_data_root_with_no_run_is_waiting_rather_than_broken(self):
-        snapshot = live.live_snapshot(self.data_root)
+        snapshot = live.live_snapshot(
+            self.data_root,
+            clock=lambda: datetime(2026, 8, 6, 2, 4, tzinfo=timezone.utc),
+        )
 
         self.assertEqual(live.STATUS_WAITING, snapshot["state"])
         self.assertIsNone(snapshot["run_id"])
@@ -2401,7 +2445,10 @@ class LiveSnapshotTest(unittest.TestCase):
         run_dir = write_live_run(self.data_root)
         append_events(run_dir, [seat_message("spot-technical", "bullish", 240000)])
 
-        snapshot = live.live_snapshot(self.data_root)
+        snapshot = live.live_snapshot(
+            self.data_root,
+            clock=lambda: datetime(2026, 8, 6, 2, 4, tzinfo=timezone.utc),
+        )
 
         self.assertEqual(live.STATUS_RUNNING, snapshot["state"])
         self.assertIsNone(snapshot["outcome"])
@@ -2749,7 +2796,9 @@ class LivePageTest(PageFixture, unittest.TestCase):
         body = self.get("/live?run={}".format(self.finished_run())).body
 
         self.assertIn("綠燈", body)
-        self.assertIn('href="/run/20260806T030000Z-btc-done01"', body)
+        self.assertIn(
+            'href="/run/20260806T030000Z-btc-done01/report.html"', body
+        )
 
     def finished_run(self):
         run_id = "20260806T030000Z-btc-done01"
@@ -2902,11 +2951,10 @@ class HeaderFixture(PageFixture):
     def refused_launch(self):
         """The page a launch this server will not start is answered with.
 
-        No READY certificate is written, so the submission is refused with
-        guidance — which is the page, and the only way to reach it is to make
-        that request.
+        An empty question is refused with guidance; READY is no longer a webapp
+        prerequisite under Ticket 06.
         """
-        response = self.post("/launch", ask_bar_submission("BTC 未來七天會不會漲"))
+        response = self.post("/launch", ask_bar_submission("   "))
         self.assertEqual(200, response.status)
         self.assertIn("這次沒有啟動", response.body)
         return response.body
@@ -3033,7 +3081,7 @@ class LiveSinglePageTest(HeaderFixture, unittest.TestCase):
     def test_the_four_countdowns_and_gauges_are_all_on_the_page(self):
         body = self.get("/live").body
 
-        for label in ("十七分鐘剩餘時間", "報告期限剩餘時間", "目前階段", "目前共識門檻"):
+        for label in ("十七分鐘剩餘時間", "開始辯論剩餘時間", "目前階段", "目前共識門檻"):
             self.assertIn(label, body, label)
 
     # -- the three collapsible panels --------------------------------------
@@ -3764,9 +3812,12 @@ class ProtectedZoneOuterwearTest(PageFixture, unittest.TestCase):
         )
 
     def test_the_seat_roll_carries_exactly_the_classes_it_carried(self):
-        """``agent-blurb`` is the one addition the roll has taken since: Spec
-        R-005 asks for the roster's 白話說明 under each seat's name, so the card
-        gained a line and nothing else did."""
+        """``agent-blurb`` and ``agent-attempt`` are the two additions the roll
+        has taken since. Spec R-005 asks for the roster's 白話說明 under each
+        seat's name; Spec R-008 asks the same card to name the attempt whose
+        research was adopted and, compactly, what went wrong otherwise. A seat
+        that retried on a second provider is still **one** seat with one card,
+        so that is one more line — not a second card and not an error panel."""
         seats_panel = self.region(
             r'<section class="panel" aria-labelledby="live-seats-heading">.*?</section>'
         )
@@ -3774,7 +3825,7 @@ class ProtectedZoneOuterwearTest(PageFixture, unittest.TestCase):
         self.assertEqual(
             {
                 "panel", "agents", "agent", "agent-head", "agent-blurb",
-                "avatar", "stance", "status",
+                "agent-attempt", "avatar", "stance", "status",
             }
             | self.stance_classes()
             | {live.UNKNOWN_STANCE_CLASS}
@@ -3815,8 +3866,12 @@ class RoomSeatLabelsTest(PageFixture, unittest.TestCase):
         return self.get("/").body
 
     def seat_panel(self, body):
+        # Anchored on the roll's own id rather than on the exact attribute list:
+        # what this class is about is which names are printed inside it, and the
+        # room adds attributes to the roll for reasons of its own — Ticket 06
+        # marks it as a surface a same-page run switch has to blank.
         return re.search(
-            r'<div class="agents" id="live-seats">.*?</section>', body, re.DOTALL
+            r'<div class="agents" id="live-seats"[^>]*>.*?</section>', body, re.DOTALL
         ).group(0)
 
     def test_a_taiwan_stock_run_names_its_seats_from_the_stock_set(self):
@@ -4480,9 +4535,9 @@ class LiveScriptTest(PageFixture, unittest.TestCase):
         self.assertNotIn("。！？", self.script)
         self.assertNotIn(".!?", self.script)
 
-    def test_the_script_opens_the_stream_at_the_cursor_the_page_was_drawn_with(self):
-        self.assertIn('"?after=" + encodeURIComponent(feed.dataset.cursor)',
-                      self.script)
+    def test_the_script_pins_the_stream_to_the_pages_exact_run_and_cursor(self):
+        self.assertIn('"/live/events?run=" + encodeURIComponent(runId)', self.script)
+        self.assertIn('"&after=" + encodeURIComponent(feed.dataset.cursor)', self.script)
 
     def test_the_script_listens_for_the_three_frames_the_server_sends(self):
         for name in ("snapshot", "append", "done"):
@@ -5057,24 +5112,23 @@ class LaunchFormTest(PageFixture, unittest.TestCase):
 
         body = self.get("/live").body
 
-        self.assertIn("結束碼 0", body)
+        self.assertIn("上一次由本頁啟動的程序已結束", body)
+        self.assertNotIn("結束碼", body)
         self.assertNotIn("<button class=\"primary\" type=\"submit\" disabled>", body)
 
-    def test_a_missing_certificate_is_guidance_rather_than_a_traceback(self):
+    def test_a_missing_certificate_does_not_block_webapp_launch(self):
         response = self.submit()
 
-        self.assertEqual(200, response.status)
+        self.assertEqual(303, response.status)
         self.assertNotIn("Traceback", response.body)
-        self.assertIn("latest-ready.json", response.body)
-        self.assertEqual([], self.spawned)
+        self.assertEqual(1, len(self.spawned))
 
-    def test_a_missing_certificate_says_the_line_that_produces_one(self):
-        body = self.submit().body
+    def test_a_missing_certificate_does_not_show_preflight_guidance(self):
+        response = self.submit()
 
-        self.assertIn("preflight --provider system --seats 7 --mode real", body)
-        self.assertIn(str(self.data_root), body)
+        self.assertNotIn("preflight", response.body)
 
-    def test_a_certificate_that_is_not_ready_is_refused_with_its_own_reason(self):
+    def test_a_certificate_that_is_not_ready_is_not_a_webapp_gate(self):
         self.write_certificate()
         path = self.data_root / "preflight" / "latest-ready.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -5083,11 +5137,10 @@ class LaunchFormTest(PageFixture, unittest.TestCase):
 
         response = self.submit()
 
-        self.assertEqual(200, response.status)
-        self.assertIn("provider_capabilities_ready", response.body)
-        self.assertEqual([], self.spawned)
+        self.assertEqual(303, response.status)
+        self.assertEqual(1, len(self.spawned))
 
-    def test_a_certificate_whose_manifest_was_edited_is_refused(self):
+    def test_an_edited_certificate_is_not_a_webapp_gate(self):
         manifest_path = self.write_certificate()
         self.data_root.joinpath("preflight").exists()
         manifest_path_file = (
@@ -5097,9 +5150,8 @@ class LaunchFormTest(PageFixture, unittest.TestCase):
 
         response = self.submit()
 
-        self.assertEqual(200, response.status)
-        self.assertIn("fail closed", response.body)
-        self.assertEqual([], self.spawned)
+        self.assertEqual(303, response.status)
+        self.assertEqual(1, len(self.spawned))
 
     def test_a_blank_question_is_refused_before_anything_is_started(self):
         self.write_certificate()
@@ -5111,7 +5163,7 @@ class LaunchFormTest(PageFixture, unittest.TestCase):
         self.assertEqual([], self.spawned)
 
     def test_a_refused_launch_is_recorded(self):
-        self.submit()
+        self.submit("   ")
 
         refusals = [r for r in self.records() if r["event"] == "launch_refused"]
         self.assertEqual(1, len(refusals))
@@ -5197,7 +5249,7 @@ class LaunchLockBoundaryTest(unittest.TestCase):
 
 
 class LaunchReadinessTest(unittest.TestCase):
-    """The readiness sentence is the launcher's, asked of the launcher."""
+    """READY remains a launcher concern, not a webapp intake gate."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -5216,15 +5268,13 @@ class LaunchReadinessTest(unittest.TestCase):
         self.assertEqual(launch_module.PROBLEM_BLANK, problem)
         self.assertIn("題目", sentence)
 
-    def test_a_missing_certificate_is_reported_in_the_launchers_own_words(self):
-        from hoya_market_agents.launcher import ready_certificate_problem
-
+    def test_a_missing_certificate_refuses_nothing_at_webapp_intake(self):
         problem, sentence = launch_module.launch_problem(
             self.data_root, self.submission()
         )
 
-        self.assertEqual(launch_module.PROBLEM_NOT_READY, problem)
-        self.assertEqual(ready_certificate_problem(self.data_root), sentence)
+        self.assertIsNone(problem)
+        self.assertIsNone(sentence)
 
     def test_a_ready_data_root_refuses_nothing(self):
         """FP direction: a check that always refuses would pass the two above."""
@@ -5245,10 +5295,8 @@ class LaunchReadinessTest(unittest.TestCase):
             launch_module.launch_problem(self.data_root, self.submission()),
         )
 
-    def test_the_repair_line_names_this_data_root(self):
-        self.assertIn(
-            str(self.data_root), launch_module.preflight_command(self.data_root)
-        )
+    def test_the_webapp_module_has_no_ready_problem_code(self):
+        self.assertFalse(hasattr(launch_module, "PROBLEM_NOT_READY"))
 
 
 class LivePolicyTest(PageFixture, unittest.TestCase):
@@ -6285,7 +6333,7 @@ class SettingsLockTest(SettingsFixture, unittest.TestCase):
         self.data_root = Path(self._data_tmp.name)
 
     def finish(self, run_dir):
-        (run_dir / "manifest.json").write_text("{}", encoding="utf-8")
+        finish_live_run(run_dir)
 
     def save(self):
         return settings.save_rules(
@@ -6763,7 +6811,7 @@ class SettingsLockedPageTest(SettingsPageFixture, unittest.TestCase):
         self.run_dir = write_live_run(self.data_root)
 
     def finish(self):
-        (self.run_dir / "manifest.json").write_text("{}", encoding="utf-8")
+        finish_live_run(self.run_dir)
 
     def test_the_page_says_it_is_locked_and_which_run_locks_it(self):
         body = self.page()

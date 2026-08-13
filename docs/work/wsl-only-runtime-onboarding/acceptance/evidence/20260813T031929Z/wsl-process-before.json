@@ -1,0 +1,6 @@
+{
+  "kind": "wsl-process-audit",
+  "providers": [],
+  "schema_version": "hoya.wsl-release-acceptance.v1",
+  "status": "PASS"
+}

@@ -59,14 +59,17 @@ from .clock import SystemClock, iso_utc
 from .codex_exec_adapter import CODEX_MODEL, CodexExecAdapter
 from .codex_inbox import ensure_inbox, inbox_root, poll_results, write_seat_prompt
 from .contract_validator import CONTRACT_VERSION
-from .debate_driver import run_after_seal
+from .debate_driver import DebateDriver, run_after_seal
 from .question import UnsupportedQuestionError
 from .question_package import build_question_package
 from .real_provider import (
+    BACKUP_CANDIDATES,
     CODEX_MODE_CLI,
     CODEX_SEAT_IDS,
     PRIMARY_MODELS,
     REPLACEMENT_MODELS,
+    RESEARCH_LINEAGE_MESSAGE,
+    SEAT_PROVIDERS,
     RealEvidenceGateway,
     RealSeatRunner,
     TrailingCommaRepairer,
@@ -228,22 +231,49 @@ def _launch(
         inbox_requests_dir=inbox_root(data_root, run_id) / "requests",
         codex_mode=codex_mode,
     )
-    scheduler = ResearchScheduler(
+    # 這一次 run 只有一個絕對起點。Driver 與 ResearchScheduler 各自讀一次時鐘的
+    # 話，兩次讀取之間的每一格都是永久偏移：adopted edge 派出的 Opening 會用跟
+    # 採用它的 deadline 不同的座標計時。
+    run_started_at_utc = clock.utc_now()
+    run_start_monotonic_ms = clock.monotonic_ms()
+    early_driver = None
+    if phase != PHASE_RESEARCH:
+        early_driver = DebateDriver(
+            run=run,
+            clock=clock,
+            runner=runner,
+            results_queue=results,
+            package=package,
+            evidence_records=None,
+            snapshot_sha256=None,
+            start_monotonic_ms=run_start_monotonic_ms,
+            started_at_utc=run_started_at_utc,
+            sleeper=sleeper,
+            err=err,
+        )
+    scheduler = _build_research_scheduler(
         run=run,
         clock=clock,
-        gateway=RealEvidenceGateway(run.run_id, _allowed_assets(package)),
-        process_runner=runner,
-        format_repairer=TrailingCommaRepairer(),
-        primary_models=PRIMARY_MODELS,
-        replacement_models=REPLACEMENT_MODELS,
-        # 題型決定這一場的收件牆與封存時刻；權威只有 research_deadlines 一個。
-        deadlines=research_deadlines(package.question_type),
+        runner=runner,
+        package=package,
+        early_driver=early_driver,
     )
-    scheduler.start()
+    scheduler.start(
+        started_at_utc=run_started_at_utc,
+        start_monotonic_ms=run_start_monotonic_ms,
+    )
     try:
         # 研究與辯論共用同一個 worker pool，所以 shutdown 一定放在整條管線之後：
         # 提早 shutdown 會讓後續 start_debate 無法再送出任何工作。
-        _drive_until_sealed(scheduler, results, data_root, run_id, sleeper, err)
+        _drive_until_sealed(
+            scheduler,
+            results,
+            data_root,
+            run_id,
+            sleeper,
+            err,
+            debate_driver=early_driver,
+        )
         summary = _seal_artifacts(run, scheduler, certificate)
         _emit(out, _sealed_handshake(run, summary))
         if phase == PHASE_RESEARCH:
@@ -265,11 +295,29 @@ def _launch(
                 start_monotonic_ms=scheduler.start_monotonic_ms,
                 sleeper=sleeper,
                 err=err,
+                debate_driver=early_driver,
             ),
         )
         return EXIT_OK
     finally:
         _shutdown(runner, err)
+
+
+def _build_research_scheduler(*, run, clock, runner, package, early_driver):
+    """Build the production scheduler with its adopted-to-Opening callback."""
+    return ResearchScheduler(
+        run=run,
+        clock=clock,
+        gateway=RealEvidenceGateway(run.run_id, _allowed_assets(package)),
+        process_runner=runner,
+        format_repairer=TrailingCommaRepairer(),
+        primary_models=PRIMARY_MODELS,
+        replacement_models=REPLACEMENT_MODELS,
+        seat_providers=SEAT_PROVIDERS,
+        backup_candidates=BACKUP_CANDIDATES,
+        deadlines=research_deadlines(package.question_type),
+        on_adopted=(early_driver.start_early_opening if early_driver else None),
+    )
 
 
 def _require_phase(phase):
@@ -610,24 +658,28 @@ def _default_runner_factory(
     )
 
 
-def _drive_until_sealed(scheduler, results, data_root, run_id, sleeper, err):
+def _drive_until_sealed(
+    scheduler, results, data_root, run_id, sleeper, err, debate_driver=None
+):
     """Own every scheduler call on this one thread until the snapshot is sealed."""
     seen = set()
     while scheduler.seal is None:
         scheduler.tick()
-        _drain_queue(scheduler, results, err)
+        _drain_queue(scheduler, results, err, debate_driver=debate_driver)
         _drain_inbox(scheduler, data_root, run_id, seen, err)
         if scheduler.seal is not None:
             return
         sleeper(POLL_SECONDS)
 
 
-def _drain_queue(scheduler, results, err):
+def _drain_queue(scheduler, results, err, debate_driver=None):
     while True:
         try:
             message = results.get_nowait()
         except queue.Empty:
             return
+        if debate_driver is not None and debate_driver.accept_provider_message(message):
+            continue
         _relay(scheduler, message, err)
 
 
@@ -648,10 +700,19 @@ def _drain_inbox(scheduler, data_root, run_id, seen, err):
 def _relay(scheduler, message, err):
     """Relay one worker or inbox message; an unusable one never ends the run."""
     kind, attempt_id = message[0], message[1]
-    if kind not in ("result", "failure"):
+    if kind not in ("result", "failure", RESEARCH_LINEAGE_MESSAGE):
         print("忽略未知的 runner 訊息類型：{!r}".format(kind), file=err)
         return
     try:
+        if kind == RESEARCH_LINEAGE_MESSAGE:
+            # 誰真的回答了是事實，不是判決：它不碰 terminal outcome。
+            payload = message[2]
+            scheduler.record_lineage(
+                attempt_id,
+                provider=payload.get("provider"),
+                actual_model=payload.get("actual_model"),
+            )
+            return
         if kind == "result":
             scheduler.submit_result(attempt_id, message[2])
             return
@@ -706,25 +767,14 @@ def _seal_artifacts(run, scheduler, certificate):
 
 
 def _seat_status(scheduler):
-    exhausted = {
-        event["seat_id"]
-        for event in scheduler.events
-        if event["event"] == "recovery_exhausted"
-    }
-    return [
-        _one_seat_status(scheduler.recovery.seats[seat_id], exhausted)
-        for seat_id in SEAT_IDS
-    ]
+    """The seats block of the launch summary, from the scheduler's own projection.
 
-
-def _one_seat_status(state, exhausted):
-    return {
-        "seat_id": state.seat_id,
-        "adopted": state.adopted_attempt_id is not None,
-        "adopted_attempt_id": state.adopted_attempt_id,
-        "exhausted": state.adopted_attempt_id is None and state.seat_id in exhausted,
-        "attempt_ids": [attempt.attempt_id for attempt in state.attempts],
-    }
+    Every field the older summary carried is still here; the per-attempt
+    provider, model and terminal outcome are added beside them (Spec R-008). The
+    scheduler owns that projection, so the summary artifact and the Live seat
+    cards cannot come to two different accounts of the same attempt.
+    """
+    return scheduler.attempt_summary()
 
 
 def _event_counts(events):

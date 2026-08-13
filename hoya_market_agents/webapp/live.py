@@ -28,9 +28,12 @@ happens to carry does not reach a page through here.
 Reading is all this module does — it opens no file for writing.
 """
 
+import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+from ..contract_validator import ContractViolationError, validate_run_manifest
 
 from ..debate_rules import debate_rules
 from ..debate_state_machine import DebateError, stances_for
@@ -65,6 +68,37 @@ QUESTION_RECORD = "question.json"
 FINISHED_MARKER = "manifest.json"
 
 SEAT_MESSAGE_EVENT = "seat_message"
+
+# The three additive research events one seat card is projected from. They are
+# read for lineage only: a seat card never becomes a second, competing account
+# of what a seat *said*, and an event carrying none of these fields is ignored.
+ATTEMPT_LAUNCH_EVENT = "attempt_launch_requested"
+ATTEMPT_OUTCOME_EVENT = "attempt_outcome_recorded"
+ATTEMPT_LINEAGE_EVENT = "attempt_lineage_recorded"
+RECOVERY_EXHAUSTED_EVENT = "recovery_exhausted"
+ATTEMPT_EVENTS = (
+    ATTEMPT_LAUNCH_EVENT,
+    ATTEMPT_OUTCOME_EVENT,
+    ATTEMPT_LINEAGE_EVENT,
+    RECOVERY_EXHAUSTED_EVENT,
+)
+
+# 舊 run 沒有這些欄位。中性地說「未記錄」，不要猜 attempt kind、實際模型或失敗
+# 原因——猜錯的除錯線索比沒有線索更貴。
+UNRECORDED_LABEL = "未記錄"
+ATTEMPT_KIND_LABELS = {
+    "primary": "主要",
+    "backup": "備援",
+    "same_model_retry": "同模型重試",
+    "cross_model_replacement": "跨模型替補",
+}
+ATTEMPT_OUTCOME_LABELS = {
+    "adopted": "已採用",
+    "superseded": "已被取代",
+    "failed": "失敗",
+    "cancelled": "已取消",
+    "late_discarded": "逾時捨棄",
+}
 
 STATUS_WAITING = "waiting"
 STATUS_RUNNING = "running"
@@ -211,24 +245,92 @@ class ChatRoom:
         self.messages = []
         self.changes = []
         self.stances = {}
+        self.attempts = {seat_id: _empty_attempt_state() for seat_id in SEAT_IDS}
+        self.debate_started = False
 
     def ingest(self, records):
         """Add every seat message among ``records``; return just the new views.
 
         Two things are dropped: an event that is not a ``seat_message``, and a
         ``seat_message`` naming a seat outside the fixed seven. The rest of
-        ``events.jsonl`` — the research attempts, the rejections — is not shown
+        ``events.jsonl`` — the rejections, the milestones — is not shown
         anywhere in this room, so the seat panel says what a seat last *said*
         and is silent about a seat that has not spoken.
+
+        The research attempt events are the one exception, and they are not
+        messages: they feed the seat's own lineage line (Spec R-008) rather than
+        the feed, so a seat that retried on a second provider is still one seat
+        with one card. They are never returned as fresh messages.
         """
         fresh = []
         for record in records:
-            if record.get("event") != SEAT_MESSAGE_EVENT:
+            event = record.get("event")
+            if event == "debate_opened":
+                self.debate_started = True
                 continue
             if record.get("seat_id") not in SEAT_IDS:
                 continue
+            if event in ATTEMPT_EVENTS:
+                self._add_attempt(record)
+                continue
+            if event != SEAT_MESSAGE_EVENT:
+                continue
             fresh.append(self._add(record))
         return fresh
+
+    def _add_attempt(self, record):
+        """Fold one research attempt event into its seat's single lineage view.
+
+        Only an outcome event settles ``terminal_outcome``: a seat whose result
+        was adopted keeps saying so even when a second attempt fails afterwards,
+        because the failure belongs to that other attempt and was never this
+        seat's answer.
+        """
+        state = self.attempts[record["seat_id"]]
+        event = record.get("event")
+        attempt_id = record.get("attempt_id")
+        if event == RECOVERY_EXHAUSTED_EVENT:
+            state["exhausted"] = True
+            return
+        if not isinstance(attempt_id, str):
+            return
+        attempt = state["by_id"].setdefault(attempt_id, _empty_attempt(attempt_id))
+        if event == ATTEMPT_LAUNCH_EVENT:
+            if attempt_id not in state["order"]:
+                state["order"].append(attempt_id)
+            attempt["provider"] = record.get("provider")
+            attempt["requested_model"] = record.get("requested_model")
+            attempt["attempt_kind"] = record.get("attempt_kind")
+            return
+        if event == ATTEMPT_LINEAGE_EVENT:
+            attempt["actual_provider"] = record.get("actual_provider")
+            attempt["actual_model"] = record.get("actual_model")
+            return
+        if attempt["terminal_outcome"] is not None:
+            return
+        attempt["terminal_outcome"] = record.get("terminal_outcome")
+        attempt["failure_code"] = record.get("failure_code")
+        attempt["failure_message"] = record.get("failure_message")
+        attempt["adopted"] = record.get("adopted") is True
+        if attempt["adopted"]:
+            state["adopted_attempt_id"] = attempt_id
+
+    def attempt_view(self, seat_id):
+        """The one attempt line this seat's card shows, adopted source first."""
+        state = self.attempts[seat_id]
+        shown = state["adopted_attempt_id"] or (
+            state["order"][-1] if state["order"] else None
+        )
+        attempt = state["by_id"].get(shown) or _empty_attempt(None)
+        adopted = attempt["adopted"]
+        view = dict(
+            attempt,
+            attempt_count=len(state["order"]),
+            adopted=adopted,
+            exhausted=state["exhausted"] and not adopted,
+        )
+        view["label"] = _attempt_label(view)
+        return view
 
     def _add(self, record):
         """Read one seat message's public fields, and only those.
@@ -334,6 +436,7 @@ class ChatRoom:
                 "stance_class": self.stance_classes.get(stance, UNKNOWN_STANCE_CLASS),
                 "status": message["kind_label"] if message else WAITING_LABEL,
                 "message_count": counts[seat_id],
+                "attempt": self.attempt_view(seat_id),
             }
             view.update(self.seat_fields[seat_id])
             views_out.append(view)
@@ -346,6 +449,56 @@ class ChatRoom:
 
     def latest_elapsed_ms(self):
         return self.messages[-1]["elapsed_ms"] if self.messages else 0
+
+
+def _empty_attempt_state():
+    return {"order": [], "by_id": {}, "adopted_attempt_id": None, "exhausted": False}
+
+
+def _empty_attempt(attempt_id):
+    """A seat with no recorded attempt, and every old run's missing field."""
+    return {
+        "attempt_id": attempt_id,
+        "provider": None,
+        "requested_model": None,
+        "actual_provider": None,
+        "actual_model": None,
+        "attempt_kind": None,
+        "terminal_outcome": None,
+        "failure_code": None,
+        "failure_message": None,
+        "adopted": False,
+    }
+
+
+def _attempt_label(view):
+    """One short line: the adopted source, or the last thing that went wrong.
+
+    One line, never a panel: a seat card that fills with error text pushes the
+    six other seats off the screen, and the detail is already in the run's own
+    events. An attempt with nothing recorded says :data:`UNRECORDED_LABEL`
+    rather than guessing a kind or a failure the old run never wrote down.
+    """
+    if view["attempt_count"] == 0 and view["attempt_id"] is None:
+        return UNRECORDED_LABEL
+    source = _attempt_source(view)
+    if view["adopted"]:
+        return "已採用：{}".format(source)
+    if view["exhausted"]:
+        return "備援已用盡：{}".format(view["failure_code"] or UNRECORDED_LABEL)
+    outcome = view["terminal_outcome"]
+    if outcome is None:
+        return "研究中：{}".format(source)
+    label = ATTEMPT_OUTCOME_LABELS.get(outcome, outcome)
+    if view["failure_code"]:
+        return "{}：{}（{}）".format(label, source, view["failure_code"])
+    return "{}：{}".format(label, source)
+
+
+def _attempt_source(view):
+    provider = view["actual_provider"] or view["provider"] or UNRECORDED_LABEL
+    kind = ATTEMPT_KIND_LABELS.get(view["attempt_kind"])
+    return "{}（{}）".format(provider, kind) if kind else provider
 
 
 def seat_fields(asset_class=None):
@@ -462,13 +615,16 @@ def _child_dirs(parent):
         return []
 
 
-def run_finished(run_dir):
-    """Has this run written the marker that says it is over?
+def run_finished(run_dir, run_id=None):
+    """Has this run written a canonical marker that says it is over?
 
     One reading of :data:`FINISHED_MARKER`, so the live room, the stream and the
     settings page cannot come to three different answers about the same run.
     """
-    return (Path(run_dir) / FINISHED_MARKER).is_file()
+    if run_id is None:
+        question = read_question(run_dir)
+        run_id = question.get("run_id") if isinstance(question, dict) else None
+    return _validated_final_manifest(run_dir, run_id) is not None
 
 
 def in_progress_run_id(data_root):
@@ -747,21 +903,15 @@ def _option_label(row):
     return "｜".join(marks)
 
 
-def live_snapshot(data_root, run_id=None):
-    """Return everything the live page shows, including that there is nothing.
-
-    ``state`` is :data:`STATUS_WAITING` when no run has been found. The same
-    keys are present either way — the seven seats are still on the roll, with
-    nothing said yet — so a caller renders one shape rather than two.
-    """
+def _live_snapshot(data_root, run_id=None, clock=None):
     run_id, run_dir = resolve_live_run(data_root, run_id)
     if run_dir is None:
         return _waiting_snapshot(data_root)
     question = read_question(run_dir)
     room, offset, _, _ = open_room(run_dir, question)
-    finished = run_finished(run_dir)
+    finished = run_finished(run_dir, run_id)
     state = STATUS_FINISHED if finished else STATUS_RUNNING
-    elapsed_ms = room.latest_elapsed_ms()
+    elapsed_ms = authoritative_elapsed_ms(run_dir, question, clock=clock)
     # The seal milestone and the vote gate move with this run's question type;
     # ``ballot_for`` already reads the same field for the stance vocabulary.
     question_type = question.get("question_type") if isinstance(question, dict) else None
@@ -784,6 +934,10 @@ def live_snapshot(data_root, run_id=None):
         "changes": list(room.changes),
         "round": room.latest_round(),
         "elapsed_ms": elapsed_ms,
+        "debate_started": room.debate_started or elapsed_ms >= research_deadlines(question_type).seal_ms,
+        "debate_start_remaining_ms": debate_start_remaining_ms(
+            elapsed_ms, question_type, room.debate_started
+        ),
         "cursor": make_cursor(run_id, offset),
         "outcome": outcome,
         "report_available": (run_dir / "report.html").is_file(),
@@ -797,7 +951,13 @@ def live_snapshot(data_root, run_id=None):
         "evidence": evidence,
         "total_remaining_ms": max(0, TOTAL_WINDOW_MS - elapsed_ms),
         "report_remaining_ms": max(0, REPORT_DEADLINE_MS - elapsed_ms),
+        "completion": completion_for(run_dir, run_id),
     }
+
+
+def live_snapshot(data_root, run_id=None, clock=None):
+    """Project one exact run using its question timestamp as the clock origin."""
+    return _live_snapshot(data_root, run_id, clock=clock)
 
 
 def _waiting_snapshot(data_root):
@@ -817,6 +977,8 @@ def _waiting_snapshot(data_root):
         "changes": [],
         "round": None,
         "elapsed_ms": 0,
+        "debate_started": False,
+        "debate_start_remaining_ms": None,
         "cursor": None,
         "outcome": None,
         "report_available": False,
@@ -830,7 +992,103 @@ def _waiting_snapshot(data_root):
         "evidence": [],
         "total_remaining_ms": TOTAL_WINDOW_MS,
         "report_remaining_ms": REPORT_DEADLINE_MS,
+        "completion": None,
     }
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def authoritative_elapsed_ms(run_dir, question, clock=None):
+    """Return the run clock, frozen only by a matching valid manifest."""
+    manifest = _validated_final_manifest(run_dir, question.get("run_id"))
+    if manifest is not None:
+        frozen = _integer(manifest.get("elapsed_ms"))
+        return frozen
+    created = _parse_utc(question.get("created_at_utc"))
+    if created is None:
+        return 0
+    now = (clock or utc_now)()
+    if not isinstance(now, datetime):
+        return 0
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return max(0, int((now.astimezone(timezone.utc) - created).total_seconds() * 1000))
+
+
+def debate_start_remaining_ms(elapsed_ms, question_type=None, opened=False):
+    remaining = research_deadlines(question_type).seal_ms - elapsed_ms
+    return None if opened or remaining <= 0 else remaining
+
+
+def completion_for(run_dir, run_id):
+    """Name the records this finished run actually produced, and no others.
+
+    The report is what completion *means* — without one there is no completion
+    to announce. The full debate record is separate: a run can end having written
+    a report and no debate record, and offering one anyway would hand the reader
+    a link to a file that was never written, dressed as this run's conclusion.
+    So it is named only when this run's own manifest binds it by hash, and is
+    ``None`` otherwise — the same answer, in the same field, either way.
+    """
+    manifest = _validated_final_manifest(run_dir, run_id)
+    if manifest is None:
+        return None
+    report_href = _bound_artifact_href(run_dir, run_id, manifest, views.REPORT_ARTIFACT)
+    if report_href is None:
+        return None
+    return {
+        "report_href": report_href,
+        "debate_href": _bound_artifact_href(
+            run_dir, run_id, manifest, views.DEBATE_ARTIFACT
+        ),
+    }
+
+
+def _bound_artifact_href(run_dir, run_id, manifest, name):
+    """The href of one artifact this manifest binds by hash, else ``None``.
+
+    A file the manifest does not name, or names with another digest, is not this
+    run's record: it is a stray or a rewrite, and either way the room does not
+    link to it.
+    """
+    path = Path(run_dir) / name
+    if not path.is_file() or path.is_symlink():
+        return None
+    record = manifest["artifacts"].get(name)
+    if not isinstance(record, dict):
+        return None
+    try:
+        if path.stat().st_size <= 0:
+            return None
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    if record.get("path") != name or record.get("sha256") != digest:
+        return None
+    return "/run/{}/{}".format(run_id, name)
+
+
+def _validated_final_manifest(run_dir, run_id):
+    """Return one canonical matching manifest, else fail closed as unfinished."""
+    manifest = _read_json(Path(run_dir) / FINISHED_MARKER)
+    if not manifest or manifest.get("run_id") != run_id:
+        return None
+    try:
+        validate_run_manifest(manifest)
+    except ContractViolationError:
+        return None
+    return manifest
+
+
+def _parse_utc(value):
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(value[:-1] + "+00:00").astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def run_outcome(data_root, run_id):

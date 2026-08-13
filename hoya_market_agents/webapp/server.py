@@ -111,6 +111,7 @@ and the launch child's ``_data/logs/launch.log``.
 
 import errno
 import json
+import secrets
 import time
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -129,6 +130,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 HTML_CONTENT_TYPE = "text/html; charset=utf-8"
+JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 CSS_CONTENT_TYPE = "text/css; charset=utf-8"
 SCRIPT_CONTENT_TYPE = "text/javascript; charset=utf-8"
 EVENT_STREAM_CONTENT_TYPE = "text/event-stream; charset=utf-8"
@@ -180,6 +182,7 @@ HISTORY_PATH = "/history"
 LIVE_SCRIPT_PATH = pages.LIVE_SCRIPT_PATH
 LIVE_EVENTS_PATH = "/live/events"
 LAUNCH_PATH = "/launch"
+LAUNCH_STATUS_PATH = "/launch/status"
 SETTINGS_PATH = "/settings"
 STATIC_SITE_CSS_PATH = "/static/site.css"
 STATIC_LIVE_JS_PATH = "/static/live.js"
@@ -194,6 +197,35 @@ EXPORT_PDF_SEGMENT = pages.EXPORT_PDF_SEGMENT
 # for the same reason: a stop button pointing at a route nobody answers would 404
 # rather than fail, and nothing else would say so.
 SHUTDOWN_PATH = pages.SHUTDOWN_PATH
+
+# The ownership contract, spelled here because this module is what publishes it
+# (architecture §15.4). :mod:`~hoya_market_agents.webapp.runtime_control` is its
+# one consumer and reads these names from here rather than repeating them: a
+# producer and a consumer spelling the same contract separately is exactly the
+# failure the contract exists to prevent.
+#
+# The direction of that import is the other reason they live here. This package's
+# ``__init__`` imports this module, so a consumer that this module imported would
+# already be loaded before ``python3 -m …runtime_control`` ran it — which Python
+# answers with a ``RuntimeWarning`` on every start and every stop.
+HEALTH_PATH = "/health"
+RUNTIME_APP = "hoya-market-agents-webapp"
+RUNTIME_OWNER = "wsl"
+
+# What a stop must claim about the listener it believes it is talking to. Sent as
+# an ordinary form body, because that is what ``POST /shutdown`` already accepts.
+EXPECT_RUNTIME_FIELD = "expect_runtime"
+EXPECT_INSTANCE_FIELD = "expect_instance"
+
+# The third field, and the only one that is about a person rather than a process:
+# "somebody was asked whether to interrupt the analysis that is running, and said
+# yes". It is absent from every stop where nobody was asked.
+#
+# One spelling counts and it is this one. ``true``, ``1``, ``YES`` and ``on`` are
+# all near misses, and a near miss deciding whether a running analysis is killed
+# is not a contract — it is a coin toss with good intentions.
+ALLOW_ACTIVE_RUN_FIELD = "allow_active_run"
+ALLOW_ACTIVE_RUN_CONSENT = "yes"
 
 # The retired statistics page. It is a redirect and nothing else: the hit rates
 # it used to show are part of :data:`HISTORY_PATH` now (Spec R1), and a bookmark
@@ -373,6 +405,8 @@ def webapp_handler_class(
     outcome_check=None,
     convert_pdf=None,
     stop=None,
+    instance=None,
+    live_clock=None,
 ):
     """Return the request handler for one Data Root and one open log.
 
@@ -399,12 +433,22 @@ def webapp_handler_class(
     ``None`` means what it says, and is the state a handler built for a test is
     in: there is no serving loop, so there is nothing to stop, and the endpoint
     records that rather than implying it stopped one.
+
+    ``instance`` is the seventh, and the only one whose default is a random
+    value: it is what ``GET /health`` publishes and what a conditional
+    ``POST /shutdown`` must name, so one handler class is one listener for as
+    long as it serves. A test that needs to speak about a particular listener
+    hands one in; nothing else does, because a value someone could predict would
+    let a stop meant for the listener that has gone land on the one that
+    replaced it.
     """
     root = Path(data_root)
     stream = stream or DEFAULT_STREAM_SETTINGS
     lock = lock if lock is not None else launch_module.LaunchLock()
     rules = Path(settings.RULES_PATH if rules_path is None else rules_path)
     checker = outcome_check if outcome_check is not None else OutcomeCheck(log=log)
+    runtime_instance = instance or secrets.token_hex(8)
+    live_clock = live_clock or live.utc_now
 
     class WebappHandler(BaseHTTPRequestHandler):
         server_version = "HoyaBitWebapp/1.0"
@@ -442,6 +486,9 @@ def webapp_handler_class(
             if path.startswith(STATIC_PATH_PREFIX):
                 self._not_found(path, "這個靜態資產不在本站白名單。")
                 return
+            if path == HEALTH_PATH:
+                self._health()
+                return
             if path in (ROOT_PATH, LIVE_PATH):
                 self._live(query)
                 return
@@ -453,6 +500,9 @@ def webapp_handler_class(
                 return
             if path == LIVE_EVENTS_PATH:
                 self._live_events(query)
+                return
+            if path == LAUNCH_STATUS_PATH:
+                self._launch_status(query)
                 return
             if path == SETTINGS_PATH:
                 self._settings()
@@ -609,7 +659,9 @@ def webapp_handler_class(
         # -- the live room -------------------------------------------------
 
         def _live(self, query):
-            data = live.live_snapshot(root, first_value(query, "run"))
+            data = live.live_snapshot(
+                root, first_value(query, "run"), clock=live_clock
+            )
             self._send_page(
                 200,
                 pages.render_live_page(
@@ -687,7 +739,10 @@ def webapp_handler_class(
             self._frame(
                 "append" if resumed else "snapshot",
                 live.make_cursor(run_id, offset),
-                _room_payload(room, missed, run_id, offset),
+                _room_payload(
+                    room, missed, run_id, offset, run_dir, live.read_question(run_dir),
+                    live_clock,
+                ),
             )
             self._follow(run_id, run_dir, room, offset)
 
@@ -707,16 +762,24 @@ def webapp_handler_class(
             last_write = started
             while True:
                 entries, offset = live.read_events(events_path, offset)
+                was_debate_started = room.debate_started
                 fresh = room.ingest([record for _, record in entries])
                 now = stream.monotonic()
-                if fresh:
+                if fresh or room.debate_started != was_debate_started:
                     self._frame("append", live.make_cursor(run_id, offset),
-                                _room_payload(room, fresh, run_id, offset))
+                                _room_payload(
+                                    room, fresh, run_id, offset, run_dir,
+                                    live.read_question(run_dir), live_clock,
+                                ))
                     last_write = now
                 if not entries and live.run_finished(run_dir):
-                    payload = _room_payload(room, [], run_id, offset)
+                    payload = _room_payload(
+                        room, [], run_id, offset, run_dir,
+                        live.read_question(run_dir), live_clock,
+                    )
                     payload["outcome"] = live.run_outcome(root, run_id)
                     payload["state"] = live.STATUS_FINISHED
+                    payload["completion"] = live.completion_for(run_dir, run_id)
                     self._frame("done", live.make_cursor(run_id, offset), payload)
                     return
                 if now - last_write >= stream.heartbeat_seconds:
@@ -754,24 +817,36 @@ def webapp_handler_class(
         # -- the one write -------------------------------------------------
 
         def _launch(self):
+            wants_json = "application/json" in (self.headers.get("Accept") or "")
             request = launch_module.read_request(_form_body(self))
             problem, sentence = launch_module.launch_problem(root, request)
             if problem is not None:
                 log.warning("launch_refused", SOURCE_LAUNCH, sentence)
-                command = (
-                    launch_module.preflight_command(root)
-                    if problem == launch_module.PROBLEM_NOT_READY
-                    else None
-                )
-                self._send_page(
-                    200,
-                    pages.render_launch_problem_page(
-                        sentence, command, report_run=views.latest_report_run(root)
-                    ),
-                )
+                if wants_json:
+                    self._send_json(
+                        400,
+                        {"status": "failed", "problem": problem, "reason": sentence},
+                    )
+                else:
+                    self._send_page(
+                        200,
+                        pages.render_launch_problem_page(
+                            sentence, report_run=views.latest_report_run(root)
+                        ),
+                    )
                 return
-            process = self.launch_lock.claim(
-                lambda: launch_module.start_launch(root, request, spawn=spawn)
+            token = launch_module.launch_token()
+            handshake = launch_module.handshake_path(root, token)
+            process = self.launch_lock.claim_token(
+                token,
+                handshake,
+                lambda: launch_module.start_launch(
+                    root,
+                    request,
+                    token=token,
+                    handshake=handshake,
+                    spawn=spawn,
+                ),
             )
             if process is None:
                 # 409 rather than 200: nothing is wrong with the Data Root or
@@ -780,17 +855,34 @@ def webapp_handler_class(
                 log.warning(
                     "launch_refused", SOURCE_LAUNCH, launch_module.BUSY_MESSAGE
                 )
-                self._send_page(
-                    409,
-                    pages.render_launch_problem_page(
-                        launch_module.BUSY_MESSAGE,
-                        report_run=views.latest_report_run(root),
-                    ),
-                )
+                if wants_json:
+                    self._send_json(
+                        409,
+                        {"status": "busy", "reason": launch_module.BUSY_MESSAGE},
+                    )
+                else:
+                    self._send_page(
+                        409,
+                        pages.render_launch_problem_page(
+                            launch_module.BUSY_MESSAGE,
+                            report_run=views.latest_report_run(root),
+                        ),
+                    )
                 return
             self.launch_lock.note_question(request.question)
             log.info("launch_started", SOURCE_LAUNCH, "已在背景啟動一次 launch")
-            self._redirect(LIVE_PATH)
+            if wants_json:
+                self._send_json(202, {"status": "pending", "launch_token": token})
+            else:
+                self._redirect(LIVE_PATH)
+
+        def _launch_status(self, query):
+            token = first_value(query, "token")
+            status = self.launch_lock.launch_status(token, root)
+            if status is None:
+                self._send_json(404, {"status": "unknown"})
+                return
+            self._send_json(200, status)
 
         # -- the other write -----------------------------------------------
 
@@ -901,22 +993,109 @@ def webapp_handler_class(
                 self._run_page(run_id, data, export=result),
             )
 
+        # -- who owns this port ---------------------------------------------
+
+        def _health(self):
+            """Publish the ownership contract, and exactly it.
+
+            Four fields, no more: the one module that reads this fails closed on
+            anything it does not recognise, so a fifth field added here for a
+            reader's convenience would be a field that reader has to be taught to
+            ignore. ``active_run`` is asked of the launch lock rather than
+            remembered, for the reason the lock itself gives — a run that
+            finished or crashed releases it without anyone clearing a flag.
+            """
+            self._send_json(200, {
+                "app": RUNTIME_APP,
+                "runtime_owner": RUNTIME_OWNER,
+                "instance": runtime_instance,
+                "active_run": lock.busy(),
+            })
+
         # -- the one route that ends this process ---------------------------
 
         def _shutdown(self):
-            """Send the closed page, then ask the serving loop to end.
+            """Check the claim, send the closed page, then ask the loop to end.
 
-            The two statements are in the order the endpoint contract names, and
-            the order is the whole feature: this reply is the last thing this
-            server will ever write, so it is written while it still can be.
+            The check is here, at the moment the ``POST`` is handled, and not at
+            the moment the caller last looked: that gap is the whole failure this
+            precondition exists for. A stop aimed at the listener that answered
+            ``/health`` two seconds ago must not land on the one that replaced it,
+            so a claim naming another instance is a ``409`` and this server keeps
+            serving.
+
+            A submission carrying no claim at all is the page's own button, which
+            is same-origin and is talking to the server that drew it. It keeps
+            the behaviour it had; the public scripts always claim, because they
+            are the ones that cannot see which listener they reached.
+
+            The two statements after the check are in the order the endpoint
+            contract names, and the order is the whole feature: this reply is the
+            last thing this server will ever write, so it is written while it
+            still can be.
 
             Nothing here writes ``server_stop``. That record belongs to the end of
             :func:`serve_webapp`, which is where it was before this endpoint
             existed and where ``Ctrl+C`` still produces it — one stop path, one
             record, whichever way the stop was asked for.
             """
+            form = _form_body(self)
+            refusal = self._claim_refusal(form)
+            if refusal is not None:
+                self._reject_stop(refusal)
+                return
+            # Re-read at the moment the POST is handled — and take the lock in the
+            # same step. A client that saw ``active_run: false`` a second ago and
+            # asked nobody is a client whose information is now out of date, so
+            # this is a conflict in the same sense a replaced instance is; and a
+            # decision that did not also take the lock would leave a window for a
+            # launch to start in before the loop actually ends.
+            if not lock.reserve_stop(self._consented(form)):
+                self._reject_stop(
+                    "目前有分析正在進行，而這次關閉沒有帶明確同意，伺服器維持運行。"
+                )
+                return
             self._send_page(200, pages.render_shutdown_page())
             self._stop_serving()
+
+        def _reject_stop(self, reason):
+            log.warning("shutdown_claim_rejected", SOURCE_SERVER, reason)
+            self._send_page(409, pages.render_not_found_page(reason))
+
+        def _claim_refusal(self, form):
+            """Why this stop is not for this listener, or ``None`` if it is.
+
+            A submission with neither field is the in-page button and claims
+            nothing. One with either field is a public script's, and a script
+            that names half a precondition has not established one — so a claim
+            missing its other half is refused rather than half-honoured.
+            """
+            runtime = first_value(form, EXPECT_RUNTIME_FIELD)
+            claimed = first_value(form, EXPECT_INSTANCE_FIELD)
+            if runtime is None and claimed is None:
+                return None
+            if runtime != RUNTIME_OWNER:
+                return "這次關閉宣告的 runtime 是 {}，這台 webapp 屬於 {}。".format(
+                    runtime, RUNTIME_OWNER
+                )
+            if claimed != runtime_instance:
+                return (
+                    "這次關閉宣告的 instance 已經不是現在在聽的這一個，"
+                    "伺服器維持運行。"
+                )
+            return None
+
+        def _consented(self, form):
+            """Did somebody actually agree to interrupt a running analysis?
+
+            Exact equality with the one approved spelling, so every other value —
+            including the empty string a checkbox sends when nothing was ticked —
+            is "no". The default answer to this question is no, and a value this
+            server does not recognise is not an answer at all.
+            """
+            return (
+                first_value(form, ALLOW_ACTIVE_RUN_FIELD) == ALLOW_ACTIVE_RUN_CONSENT
+            )
 
         def _stop_serving(self):
             """Reach for the stop seam, and record how that went.
@@ -935,6 +1114,13 @@ def webapp_handler_class(
             :func:`_log_pdf_export` gives — "it would not", "it broke" and "it
             stopped" are three different things to find in a log afterwards, and
             only the middle one is this server failing at what it was asked.
+
+            **The two outcomes that are not a stop hand the lock back**, and that
+            is the other half of the reservation :meth:`_shutdown` took. A server
+            that answered "已關閉", kept serving, and then refused every launch
+            for the rest of its life would be a worse failure than the one the
+            reservation prevents — and the only sign of it would be a busy page
+            on a server with nothing running.
             """
             if stop is None:
                 log.warning(
@@ -942,6 +1128,7 @@ def webapp_handler_class(
                     SOURCE_SERVER,
                     "這個 handler 沒有可停止的伺服器，只送出了關閉頁面。",
                 )
+                lock.release_stop()
                 return
             log.info(
                 "shutdown_requested", SOURCE_SERVER, "已送出關閉頁面，正在停止監聽"
@@ -957,6 +1144,7 @@ def webapp_handler_class(
                         type(exc).__name__, exc
                     ),
                 )
+                lock.release_stop()
 
         # -- sending -------------------------------------------------------
 
@@ -986,6 +1174,13 @@ def webapp_handler_class(
 
         def _send_page(self, status, html, policy=CONTENT_SECURITY_POLICY):
             self._send(status, HTML_CONTENT_TYPE, html.encode("utf-8"), policy=policy)
+
+        def _send_json(self, status, payload):
+            self._send(
+                status,
+                JSON_CONTENT_TYPE,
+                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            )
 
         def _send(self, status, content_type, body, policy=CONTENT_SECURITY_POLICY):
             self.send_response(status)
@@ -1267,15 +1462,30 @@ def _site_nav_tokens():
     )
 
 
-def _room_payload(room, messages, run_id, offset):
+def _room_payload(
+    room, messages, run_id, offset, run_dir=None, question=None, clock=None
+):
     """What one frame carries: the new messages, and the counts they changed."""
+    question = question if isinstance(question, dict) else {}
+    elapsed_ms = (
+        live.authoritative_elapsed_ms(run_dir, question, clock=clock)
+        if run_dir is not None
+        else room.latest_elapsed_ms()
+    )
+    question_type = question.get("question_type")
     return {
         "run_id": run_id,
         "messages": list(messages),
         "seats": room.seat_views(),
         "tally": room.tally_views(),
         "round": room.latest_round(),
-        "elapsed_ms": room.latest_elapsed_ms(),
+        "elapsed_ms": elapsed_ms,
+        "debate_started": room.debate_started or (
+            live.debate_start_remaining_ms(elapsed_ms, question_type) is None
+        ),
+        "debate_start_remaining_ms": live.debate_start_remaining_ms(
+            elapsed_ms, question_type, room.debate_started
+        ),
         "cursor": live.make_cursor(run_id, offset),
     }
 

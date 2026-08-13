@@ -34,6 +34,9 @@
 - **導覽注入**（2026-08-10 起）：離線報告的五導覽由伺服器回應時插入（ADR 0007），磁碟檔案不動；直接開檔或分享時維持自足兩分頁導覽。
 - **標的選單**：發問時以選單選定資產類別與標的，取代純文字解析；接 T05 的 `assets`／`asset_class` 接縫。
 - **歷史與命中率頁**（2026-08-09 起）：原歷史查詢頁與命中率統計頁合併成的單一頁面。
+- **WSL Runtime**（2026-08-12 起）：正式執行 webapp、Python controller 與全部 Provider CLI 的唯一產品 Runtime；正式支援環境為 Windows 10／11 上的 WSL2 Ubuntu。
+- **Windows 薄入口**（2026-08-12 起）：只負責以桌面捷徑呼叫 `wsl.exe` 啟動或關閉 WSL Runtime 的 Windows 管理入口；不得執行 Provider CLI。
+- **Provider canary**（2026-08-12 起）：正式七席驗收前，針對單一 WSL Provider 執行的最小真實呼叫，用來提早暴露安裝、登入、搜尋證據或輸出契約問題。
 
 ## Relationships
 
@@ -43,6 +46,8 @@
 - 七席根據同一 Evidence snapshot 在 Shared debate room 交換 Claims；2026-08-10 起此交換受證據可見性閘門管制，第一輪開票前各席只據自己的證據投票。
 - Valid votes 決定是否達成 Consensus；Core Agent 依實際票數與證據撰寫報告。
 - Python controller 管理時間、程序、驗證、合併與排版，不產生市場方向。
+- Windows 薄入口、WSL／Ubuntu 終端與 MobaXterm 都只能操作同一個 WSL Runtime；不得形成第二套 Windows Provider Runtime。
+- 既有 Data Root 持續保存所有歷史 run、報告與設定；新版 Code Root 不得在安裝或更新時搬移、刪除或重新格式化它。
 
 ## Flagged ambiguities
 
@@ -51,5 +56,6 @@
 - 「信心」描述結論可靠程度，不代表價格上漲幅度或方向強度。
 - 「中性」是有理由的市場立場，不等同流程失敗；少於四張有效票才是分析失敗。
 - `research` 指固定、已記錄 commit 與雜湊的 Skill snapshot，不指執行時從 GitHub 即時下載的內容。
+- 「支援 Windows 10／11」只表示 Windows 是 WSL2 Ubuntu 的宿主與桌面捷徑所在處，不表示正式支援 Windows 原生 Provider Runtime。
 - 2026-08-05 起「燈號」代表共識強度（票數），不再代表證據廣度；證據品質把關交給七席辯論，僅剩兩條來源降級。舊報告的 `yellow_green` 級已退場。
 - 「反證」有兩義：全席共用的「第一輪反方挑戰」機制（2026-08-10 起正式關卡退役，由資料交換＋重新判斷＋自由辯論取代）與第七席的舊研究職能（2026-08-09 起退役，改為基本面研究）。`seat_id: counter-evidence` 是歷史識別碼，不代表現職能。

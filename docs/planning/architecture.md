@@ -816,3 +816,158 @@ hoya_market_agents/webapp/
 ### 14.6 ADR（本次新增）
 
 - `docs/adr/0008-discrete-vote-rounds.md`：離散四輪投票＋提示詞層證據閘門＋挑戰機制退役。
+
+---
+
+## 15. 2026-08-12 WSL-only Runtime、零經驗安裝與共用可靠性修復
+
+- 本節來源：2026-08-12 `$milktea-skills-grill-me` 架構訪談核准內容。
+- 需求權威：`docs/planning/requirements.md`〈WSL-only Runtime、零經驗安裝與共用可靠性修復〉。
+- 實作基準：乾淨 commit `e05bf493e2f05dca37e15d6d10721c418c2c37e3`；原 dirty worktree 只作唯讀比對，不整批移植。
+
+### 15.1 Code／Data／Runtime 根目錄
+
+- **Code Root**：Git clone 或 worktree 的實際位置；所有入口由自身位置解析，不寫死 Windows 磁碟、Windows 使用者、Linux 使用者或開發者路徑。
+- **Data Root**：沿用 Code Root 同層的 `AI-agnets-debating-chamber_data`。現有使用者繼續讀取既有 Data Root；新使用者在 WSL 家目錄 clone 時自然取得同層的新 Data Root。
+- **Runtime Root**：不建立專案專用 Runtime Root。產品使用 WSL2 Ubuntu 的系統 `python3` 與使用者安裝在 Linux `PATH` 的 Claude／Codex／Antigravity CLI。
+- 專案目前使用 Python 標準函式庫，故不建立 `.venv` 或無實際內容的相依安裝層。未來若新增第三方 Python dependency，另開工作包決定環境管理。
+- 多個 Code worktree 可指向同一 Data Root；既有 run artifact、SQLite 衍生索引與 write-once 規則維持原權威。測試只能使用暫存 Data Root。
+
+### 15.2 正式 Log
+
+- **正式 Log：沿用既有，不新增系統。** 專案確有長時間 webapp 與背景 Provider，但基準版已由 `hoya_market_agents/webapp/log.py` 寫入 `<Data Root>/logs/webapp.jsonl`，每個 run 另有 `events.jsonl`、diagnostics 與 manifest。
+- 本工作不新增 Logger、Log 檔、輪替器、清理器或集中式收集器；短 UI 錯誤只投影既有紀錄的摘要。
+- Provider stderr、launch failure 與 attempt lineage 仍由既有 launch log／run artifact 接縫保存；不得記錄 Token、credential 或完整未清理 prompt。
+
+### 15.3 公開入口與腳本責任
+
+Code Root 新增三個使用者入口：
+
+```text
+setup-wsl.sh       # 一次性設定與捷徑安裝
+START-HERE.sh      # WSL／MobaXterm 正式啟動入口
+STOP-HERE.sh       # WSL／MobaXterm 正式關閉入口
+```
+
+- `setup-wsl.sh` 驗證自己正在 WSL2 Ubuntu、確認 `python3` 可呼叫，然後以 Windows 內建 PowerShell 執行 `scripts/install-shortcuts.ps1`。沒有第三方 Python 套件可安裝，所以 setup 不建立 venv；缺少 Python 或 Agent CLI 時只印 README 對應的可複製指令，不自動安裝或登入。
+- `START-HERE.sh` 與 `STOP-HERE.sh` 是唯一正式啟停行為入口。兩者只負責解析 Code／Data Root、呼叫 Python runtime-control 接縫及開啟 Windows 瀏覽器；ownership 規則不寫在 shell。
+- `scripts/install-shortcuts.ps1` 使用 Windows Desktop 的系統 API 建立 `開啟辯論室.lnk`／`關閉辯論室.lnk`，並精確移除同位置及可確認舊工作區中的四個舊名稱捷徑；只處理這些固定檔名，不掃描或刪除其他 `.lnk`。
+- `scripts/wsl-shortcut.ps1` 是兩個 `.lnk` 共用的薄 wrapper，以 `-Action start|stop`、setup 時記錄的 distro 與 Linux Code Root 呼叫 `wsl.exe` 的 login Bash；不得執行 Python controller 或 Provider CLI。
+- 原 `scripts/start-webapp.ps1`、`scripts/stop-webapp.ps1`、`scripts/webapp-common.ps1` 的 Windows 原生 Runtime 責任退役。確認無呼叫者後刪除，避免留下第二套公開入口。
+- MobaXterm 只連入同一個 WSL2 Ubuntu，直接執行根目錄 Bash；不安裝另一份 Code／Data／Runtime。
+
+### 15.4 Runtime ownership 與關閉 precondition
+
+- `hoya_market_agents/webapp/server.py` 的 `GET /health` 是 server ownership producer，精確回傳：
+
+```json
+{
+  "app": "hoya-market-agents-webapp",
+  "runtime_owner": "wsl",
+  "instance": "<每次 server 啟動的隨機非空字串>",
+  "active_run": false
+}
+```
+
+- `instance` 只用作短生命期 stale-listener precondition，不是秘密、認證或持久狀態。
+- 新的 `hoya_market_agents/webapp/runtime_control.py` 是唯一 ownership consumer：解析 `/health`、區分 free／owned／foreign／malformed，並執行條件式 shutdown。Bash 與 PowerShell 不各自解析 JSON。
+- `POST /shutdown` 接受可選的 `expect_runtime` 與 `expect_instance`。捷徑與 Bash stop 必須傳入兩者；server 在處理 POST 當下重新核對，不符即回 `409` 且不停止。
+- 網頁內既有 shutdown 可保留無 claim 的同源操作；公開腳本一律走 owner-gated contract。
+- `active_run=true` 時，互動 Bash 預設詢問且預設否；Windows shortcut 以最小確認對話框取得明確同意。未確認不得 POST。
+- `127.0.0.1:8765` 固定不變；foreign listener 時拒絕啟動／關閉，不換 port、不終止程序。
+
+### 15.5 同頁 launch 與精確 run handshake
+
+沿用 `hoya_market_agents/webapp/launch.py`、`LaunchLock` 與 `launcher.run_launch(..., handshake_path=...)`，不另建 waiting page：
+
+```text
+live.js 攔截 form submit
+  → fetch POST /launch
+  → server 驗證題目並建立一次性 launch token
+  → child 收到 token-bound handshake path
+  → launcher 建立 run 後原子寫出既有 LAUNCHED handshake + token
+  → GET /launch/status?token=... 回 pending／launched／failed
+  → launched 回精確 run_id
+  → live.js 以該 run_id 重新取得 snapshot 並重連 SSE
+```
+
+- `POST /launch` 對 JavaScript 回 `202` JSON；輸入錯誤回穩定問題碼與一行繁體中文摘要。非 JavaScript fallback 可回 Live 頁錯誤，但不得導向獨立 waiting page。
+- `GET /launch/status` 只讀目前 server 內 `LaunchLock` 的 token、child 狀態與 atomic handshake；不得查 newest run、`latest.json` 或 run index 猜測。
+- handshake 必須同時符合 token、合法 `run_id` 且該精確 run directory 已存在才回 `launched`。暫存 handshake 在採用、失敗或下一次 launch 前清理。
+- `live.js` 把 SSE URL 固定為 `/live/events?run=<exact run_id>`，換 run 時關閉舊 EventSource、重設 run-local UI state，並以 `history.replaceState` 保存可刷新 URL；不整頁跳轉。
+- form 在送出後 disabled 並顯示小型既有 CSS 動畫；失敗只顯示 `啟動失敗：<短原因>　[重試]`。詳細 stderr 留在既有 launch log。
+- 完成時 `completion` 只有在有效 manifest 與 `report.html` 都存在才提供；UI 只顯示 `分析完成　[查看市場報告]`。
+- 啟動路徑移除 READY certificate gate。題目／標的驗證保留；Provider 不存在、未登入或輸出失敗由各 attempt 的正式 failure contract 處理，不由 webapp 預先假裝 READY。
+
+### 15.6 WSL Provider process ownership
+
+- `claude_adapter.ProcessRegistry` 繼續作所有外部 Provider `Popen` 的單一追蹤入口；Codex 與 Antigravity adapter 經同一 registry contract 註冊與終止。
+- WSL／POSIX spawn 一律 `start_new_session=True`，並在 spawn 後保存 process group id。timeout、cancel、first-valid-wins 與 cutoff 皆先 poison 該 invocation，使後到結果不可採用，再以 `SIGTERM`／有界 grace／`SIGKILL` 回收 group。
+- registry 以 `(attempt key, invocation generation)` 分隔同 key 的 resume；每 key 使用一個 reclaim lock。取得 lock 後必須重讀 settled outcome，禁止 late terminate 覆寫較早的肯定結果。
+- poisoned process 在 track 時也必須進入相同 reclaim lock；同 key 不得同時回收，不同 key 仍可並行。
+- terminal outcome 只有三種證據語意：已回收、已確認沒有東西需回收、回收失敗。回收失敗時 attempt 永久不可採用並帶穩定 failure code。
+- 不移植 Windows Job Object、`taskkill`、CP950 reader 或 Windows-specific fallback。
+
+### 15.7 Provider 路徑、主備與獨立 Opening
+
+- 新增或重建 `hoya_market_agents/provider_cli.py`，只以 WSL process 的 `PATH` 和 `shutil.which` 解析 `codex`、`claude`、`agy`；不得寫死 `/home/leslie`。依使用者決策，不額外阻擋解析到 Windows mount 的 CLI；README 的正式路徑只教 Linux 安裝，release acceptance 另檢查沒有 Windows Provider process。
+- primary roster、seat identity、focus 與 3 Codex／3 Claude／1 Antigravity 配額不變。
+- 每席最多一個不同 Provider backup，沿用已核准的 candidate order 與該 Provider 固定模型；backup 是 attempt lineage，不改 roster primary 身分。
+- worker capacity 至少容納七個 primary 與七個 backup 同時進入合法平行窗口；缺少一個 Provider 不阻擋整場，該 attempt 記 `provider_cli_missing` 後由 recovery 繼續。
+- 每席第一個合法 research result 採用後，可開始一次獨立 Opening provider call；Opening prompt 只含該席自身 research evidence，不讀他席資料。Opening output 暫存到 evidence seal 後交給既有 DebateStateMachine，不能直接把 research envelope 當票。
+- fake／offline launch test 必須明確注入 fake proposition adapter，避免測試意外呼叫真 Codex。
+
+### 15.8 attempt terminal outcome、late result 與 lineage schema
+
+- `ResearchScheduler` 是 attempt terminal outcome 唯一寫入者。`attempt_outcomes[attempt_id]` 至少包含 `terminal_outcome`、`failure_code`、`failure_message`；同一 attempt 的終局不可被較晚訊息覆寫。
+- `submit_result` 首先檢查 finished／non-adoptable outcome；逾時、取消、失敗、接收窗關閉或已有 adopted result 後到的有效內容只寫 diagnostic，不進 `adopted_records`。
+- events 與既有 `research-summary.json` 以加法欄位投影 primary／backup、provider、requested／actual model、phase、started、terminal outcome、failure 與 adopted。不得建立第二份競爭性 summary。
+- 舊 run 缺少新欄位時，Live 顯示中性「未記錄」，不推測 attempt kind、actual model 或 failure。
+- `real_provider.research_envelope_schema(run_id, attempt)` 每次從通用模板 `deepcopy`，再以單值 JSON Schema `enum` 鎖住 envelope／card 的 `run_id`、`seat_id`、`attempt_id`；Claude、Codex、Antigravity 三個正式 research callsite 都必須使用該 schema。gateway 保持第二層 fail-closed lineage 驗證。
+- `research_proof_missing` 先以單一 WSL Codex 真實 canary 驗證。若可重現，parser 只接受 CLI 機器可讀事件中的 matching search tool invocation/result；URL、模型自述與一般文字不算 proof。若未重現，此工作只保存證據，不修改 parser。
+
+### 15.9 Live 權威時間與 projection
+
+- `webapp/live.py` 提供唯一 `authoritative_elapsed_ms`：run 未完成時以注入 clock 減 `question.json.created_at_utc`；完成後讀合法 manifest 的 `elapsed_ms` 凍結。不得以最後一則聊天室訊息時間當 run clock。
+- `ChatRoom` ingest 同一份 `events.jsonl` 時 sticky 保存 `debate_opened`；它不是 seat message。
+- `debate_start_remaining_ms` 只以 `research_deadlines(question_type).seal_ms - authoritative_elapsed` 計算。結果為正整數或 `None`；到時／已 opened 回 `None`，因此不產生 `00:00`。
+- 初始 HTML、snapshot、append、done、reconnect 與 refresh 都使用相同欄位 `debate_start_remaining_ms`。
+- `live.js` 對同一 run 取 `max(current_elapsed, incoming_elapsed)`，且 debate-start target 不得因 stale frame 放大；`debate_started` latch 不可降級。不同 run 才完整重設。
+- 報告期限、17 分鐘總窗、四輪 offset 與規則檔不修改；只把第二格顯示改為「開始辯論剩餘時間」。
+
+### 15.10 README 與 onboarding
+
+- `README.md` 重寫為單一路徑教學，只保留現有 `![AI agnets debating chamber](docs/assets/readme-hero.png)` 與下列內容：
+  1. Windows 10／11 安裝 WSL2 Ubuntu。
+  2. 重新開機與建立 Ubuntu 帳號。
+  3. 在 WSL 家目錄 clone 正式 Git remote。
+  4. 執行 `bash setup-wsl.sh`。
+  5. Python、Codex、Claude、Antigravity 的 Linux 安裝及互動登入命令。
+  6. 桌面捷徑、`START-HERE.sh`／`STOP-HERE.sh` 與 MobaXterm 操作。
+  7. 只列缺少命令、未登入、8765 被占用與 Log 路徑的極短排查。
+- 命令區塊逐段標示 `[Windows]` 或 `[WSL／Ubuntu]`；不假設 Codex Task、不要求使用者理解 READY／preflight／run manifest。
+- 既有其餘 README 文字全部刪除；`docs/assets/readme-hero.png` 檔案與引用保留。
+- Provider 安裝命令在實作時以各產品第一手官方來源核對；setup 不下載或更新 Provider。
+
+### 15.11 相容、遷移與回復
+
+- Data Root 不遷移、不刪除、不改寫舊 run。所有 runtime／summary 新欄位採加法，相容讀取缺欄位舊資料。
+- setup 只重建固定名稱捷徑，不修改 Data Root；重跑結果必須冪等。
+- Windows native Provider 路徑是明確退役，不提供 fallback。需要追查時使用封存 dirty worktree，不把它合併回新 branch。
+- 回復策略是切回保留的 `e05bf49` 基準或封存 branch；不得以 reset 清除 dirty worktree。
+
+### 15.12 測試接縫與驗證邊界
+
+- **腳本／ownership**：PowerShell installer 靜態 `.lnk` 精確值、Bash syntax、隔離 fake listener、foreign/malformed/404、active-run default-no、instance replacement POST-time `409`、setup 重跑與舊捷徑精確清理。
+- **launch／UI**：fake child、token-bound handshake、unknown／invalid／failed token、精確 run SSE、同頁 retry、無 waiting route；Node VM 執行 production `live.js`，覆蓋 snapshot／append／done／reconnect、stale frame、started latch 與換 run reset。Node 不成為產品 runtime dependency，但 release acceptance 必須直接執行該 harness。
+- **研究流程**：FixedClock、fake process group、barrier-based registry race、same-key generation、different-key parallel、14-attempt worker、backup adoption、late result diagnostic、attempt summary、per-attempt schema mutation test、Early Opening 資料隔離。
+- **回歸**：WSL 執行完整 Python test suite；Windows 可跑純單元測試但不作正式 Runtime acceptance。所有 offline tests 禁止真 Provider。
+- **真實驗收**：依序執行 WSL Codex／Claude／Antigravity 最小 canary；任一已知失敗立即停止、修正、雙 Reviewer 複驗後重跑。最後真實市場題須在既有時間內產生恰好七席 `7/7` 有效最終票、完整 report／debate／evidence／votes／manifest，`verify-run` 通過，且 Windows 無 Provider process。
+
+### 15.13 ADR
+
+- 新增 `docs/adr/0009-wsl-only-provider-runtime.md`，記錄 Windows 原生 Provider Runtime 退役、Windows 只保留 WSL 管理入口，以及此決策取代 ADR 0001 中「正式執行依賴 Windows Codex 與 WSL 間橋接」的舊後果。
+
+### 15.14 未決事項
+
+無。

@@ -1,0 +1,12 @@
+{
+  "elapsed_ms": 114077,
+  "executable_sha256": "674f61f20ff306f3100cf9200e4c36c4b70278b5bef2884549819b942a89c863",
+  "finished_at_utc": "2026-08-13T03:22:02.391486Z",
+  "kind": "provider-canary",
+  "provider": "claude",
+  "ready": true,
+  "report_sha256": "48dc1ab0da75978cff6040af91b365b352f99fa60c967b02201dab65a480ef56",
+  "schema_version": "hoya.wsl-release-acceptance.v1",
+  "started_at_utc": "2026-08-13T03:20:02.590769Z",
+  "status": "PASS"
+}

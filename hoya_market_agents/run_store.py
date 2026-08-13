@@ -541,8 +541,17 @@ class RunDirectory:
         self._record_artifact(relative, text.encode("utf-8"), source)
         return target
 
-    def record_attempt(self, seat_id, attempt_id, raw_text, validated_payload):
-        """Atomically commit one valid attempt and adopt only the first success."""
+    def record_attempt(
+        self, seat_id, attempt_id, raw_text, validated_payload, adoptable=True
+    ):
+        """Atomically commit one valid attempt and adopt only the first success.
+
+        ``adoptable=False`` commits the artifacts without ever offering the
+        attempt for adoption. The scheduler uses it for an answer that arrived
+        after its attempt already had a terminal outcome: the output is still
+        worth keeping, but a seat's adopted source is decided by the terminal
+        outcome authority and not by whichever write happens to land first.
+        """
         seat_id = _safe_segment(seat_id, "seat_id")
         attempt_id = _safe_segment(attempt_id, "attempt_id")
         seat = self.seat_dir(seat_id)
@@ -574,6 +583,11 @@ class RunDirectory:
         self._record_artifact(validated_name, validated_bytes, "validated attempt output")
 
         adopted_name = "agents/{}/adopted.json".format(seat_id)
+        if not adoptable:
+            self._record_not_adopted(
+                seat_id, attempt_id, validated_name, "not_adopted_attempt_not_adoptable"
+            )
+            return False
         try:
             self.write_json(
                 adopted_name,
@@ -587,18 +601,26 @@ class RunDirectory:
             )
             return True
         except ArtifactAlreadyExistsError:
-            self.write_json(
-                "diagnostics/attempts/{}.json".format(attempt_id),
-                {
-                    "run_id": self.run_id,
-                    "seat_id": seat_id,
-                    "attempt_id": attempt_id,
-                    "reason": "not_adopted_first_valid_already_selected",
-                    "validated_path": validated_name,
-                },
-                source="non-adopted valid attempt",
+            self._record_not_adopted(
+                seat_id,
+                attempt_id,
+                validated_name,
+                "not_adopted_first_valid_already_selected",
             )
             return False
+
+    def _record_not_adopted(self, seat_id, attempt_id, validated_name, reason):
+        self.write_json(
+            "diagnostics/attempts/{}.json".format(attempt_id),
+            {
+                "run_id": self.run_id,
+                "seat_id": seat_id,
+                "attempt_id": attempt_id,
+                "reason": reason,
+                "validated_path": validated_name,
+            },
+            source="non-adopted valid attempt",
+        )
 
     def seal_evidence_snapshot(self, records, sealed_at_utc, elapsed_ms):
         """Write and seal the scheduled evidence snapshot exactly once."""

@@ -1,0 +1,21 @@
+﻿{
+    "schema_version":  "hoya.wsl-release-acceptance.v1",
+    "kind":  "shortcut-smoke",
+    "status":  "PASS",
+    "desktop":  "C:\\Users\\leslie\\Desktop",
+    "project_shortcut_count":  2,
+    "shortcuts":  [
+                      {
+                          "name":  "開啟辯論室.lnk",
+                          "sha256":  "5e2c4e8023bbe8775dbb3f8db16830e24e646927fc19df13962481e96973b6e5",
+                          "target":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                          "arguments":  "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"D:\\workstationD\\AI agnets debating chamber\\AI-agnets-debating-chamber-wsl-runtime\\scripts\\wsl-shortcut.ps1\" -Action start -Distro \"Ubuntu-24.04\" -CodeRoot \"/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber-wsl-runtime\""
+                      },
+                      {
+                          "name":  "關閉辯論室.lnk",
+                          "sha256":  "ee72c627b3f31c583de712427a16b07994fa8abbcbef316d8c06b20f666385e4",
+                          "target":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                          "arguments":  "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"D:\\workstationD\\AI agnets debating chamber\\AI-agnets-debating-chamber-wsl-runtime\\scripts\\wsl-shortcut.ps1\" -Action stop -Distro \"Ubuntu-24.04\" -CodeRoot \"/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber-wsl-runtime\""
+                      }
+                  ]
+}

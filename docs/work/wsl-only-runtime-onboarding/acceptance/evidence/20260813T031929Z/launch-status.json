@@ -1,0 +1,9 @@
+{
+  "kind": "launch-binding-evidence",
+  "status": "LAUNCHED",
+  "run_id": "20260813T032513Z-btc-acca1e",
+  "question_type": "single_asset_market_state",
+  "handshake_sha256": "0f7c259db6b937f0a80126ecd64ddd59ab52056079a48d0f7d106c7e6c516e72",
+  "launch_token": "redacted",
+  "note": "token-bound handshake file in Data Root logs/launch-handshakes/; token redacted per acceptance evidence policy"
+}

@@ -1,0 +1,6 @@
+{
+  "kind": "shutdown-precondition-check",
+  "wrong_instance_claim_http": 409,
+  "expected": 409,
+  "server_survived": true
+}

@@ -356,3 +356,142 @@ webapp 零 SQL（唯一取數路徑 `run_index.query_runs`）；run artifact 唯
 ## 未決事項
 
 無（設定頁新增規則鍵逐鍵文案於 Spec 階段逐條過目）。
+
+# WSL-only Runtime、零經驗安裝與共用可靠性修復（2026-08-12 核准）
+
+- 狀態：已核准（使用者於需求訪談逐項定案）
+- 來源：`$milktea-skills-grill-me` 需求階段
+- 實作基準：乾淨 commit `e05bf493e2f05dca37e15d6d10721c418c2c37e3`
+- 保留原則：目前累積 Windows 修復的 dirty worktree 完整保留供追查，不重設、不覆寫；新工作只在獨立 branch／worktree 進行。
+
+## 問題與使用者
+
+Windows 原生 Provider Runtime 在登入、CLI 啟動、程序回收、逾時與證據輸出上反覆出現平台差異；WSL2 Ubuntu 的真實七席 run 相對穩定。使用者決定停止維護雙 Runtime，把 webapp、Python controller 與 Claude／Codex／Antigravity CLI 全部收斂到 WSL。
+
+產品同時要交給完全沒有 WSL 經驗的新使用者。README 必須從安裝 WSL 開始提供可複製指令；使用者本人則可由 MobaXterm 或 Ubuntu 終端操作同一套 WSL Runtime，不需要以 PowerShell 作日常操作介面。
+
+既有產品另有已重現或使用者實際遇到的共用問題：Live 倒數倒退、送出後跳到多餘等待頁、場次綁定不清、研究席派工與替補結果不透明、逾時結果可能覆寫 terminal outcome、WSL Provider tree 回收不完整，以及研究 lineage 未被輸入 schema 鎖定。
+
+## 目標結果
+
+1. 正式產品只有一套 WSL2 Ubuntu Runtime；Windows 僅保留不可見的啟停薄入口。
+2. 完全沒有 WSL 經驗的使用者能依 README 從零安裝並啟動產品。
+3. 使用者可由桌面捷徑、Ubuntu 終端或 MobaXterm 操作同一套 Runtime。
+4. Live 頁不再跳轉到獨立等待頁，並以緊湊方式呈現啟動、錯誤與完成狀態。
+5. 共用研究、逾時與程序問題在 WSL 接縫修復；正式發行前以真實市場題完成一次 `7/7` 有效票驗收。
+
+## 核心流程
+
+```text
+首次使用：Windows 安裝 WSL2 Ubuntu
+→ 於 WSL 家目錄 clone 專案
+→ 執行一個 setup 指令
+→ 建立專案環境與兩個桌面捷徑
+→ 使用捷徑或 WSL／MobaXterm Bash 啟動 webapp
+→ 所有 Provider CLI 在 WSL 執行
+→ Live 頁送出題目並在同頁接上精確 run
+→ 七席完成研究、獨立 Opening、辯論與投票
+→ Live 頁顯示「分析完成」與市場報告連結
+```
+
+## 必要需求
+
+### 1. 單一 WSL Runtime
+
+- 正式支援 Windows 10／11 上的 WSL2 Ubuntu。
+- webapp、Python controller、Claude、Codex 與 Antigravity 必須在 WSL Runtime 內執行。
+- PowerShell 只能是桌面捷徑背後的 Windows 薄入口；不得啟動或管理 Windows 原生 Provider process。
+- Ubuntu 終端與 MobaXterm 必須使用相同的 Bash 啟停入口，不得形成第三套 Runtime。
+- 其他 WSL2 Linux 發行版只提供盡力相容，不納入正式驗收。
+
+### 2. 零經驗 README 與最小設定
+
+- README 從電腦尚未安裝 WSL 開始，依序說明：執行 `wsl --install -d Ubuntu`、重新開機、建立 Ubuntu 帳號、在 WSL 家目錄 clone 專案、執行一個主要 setup 指令、安裝及登入各 Provider CLI、啟動與關閉產品。
+- 每段命令清楚標示執行環境；安裝 WSL 以外的專案操作全部使用通用 Bash。
+- README 不得包含開發者帳號、`D:\workstationD` 或其他個人硬編碼路徑。
+- README 附一小段 MobaXterm 進入同一套 WSL2 Ubuntu 並執行相同 Bash 指令的說明。
+- README 最終只保留上述 WSL 教學與原有圖片；其他既有說明先移除。
+- setup 自動建立專案環境、安裝專案相依套件並建立桌面捷徑；不得自動登入 Provider、讀寫或輸出使用者憑證。
+- README 提供 Python 與三個 Agent CLI 的可複製安裝／登入指令。產品不建立 CLI 路徑、登入狀態或模型狀態的複雜診斷器；工具未裝好時保留簡短原始失敗原因供使用者自行排查。
+
+### 3. 單一捷徑組與安全啟停
+
+- 桌面只保留 `開啟辯論室` 與 `關閉辯論室` 兩個使用者入口，兩者都操作 WSL Runtime。
+- setup 重跑必須冪等，並移除舊的重複 `WSL 開啟辯論室`／`WSL 關閉辯論室` 捷徑。
+- 開啟時若本專案 WSL Runtime 已存在，直接使用既有 instance；若連接埠由其他程式占用，顯示簡短原因後退出。
+- 關閉入口只能停止已確認屬於本專案的 WSL instance；不得誤關同一連接埠上的其他程式。
+
+### 4. 同頁啟動、精確場次與緊湊狀態
+
+- 使用者送出問題後留在 Live 頁；JavaScript 立即停用重複送出並顯示小型等待動畫。
+- server 建立場次並回傳精確 `run_id` 後，同一頁接上該 run 的 snapshot／SSE；不得以「最新 run」代替精確場次。
+- 不得跳到獨立 waiting page 再返回 Live。
+- 啟動失敗只在原位置顯示一行簡短原因與 `[重試]`；詳細技術資料寫入既有 Log，不得用大區塊占據畫面。
+- 分析完成後，同頁只顯示 `分析完成　[查看市場報告]`；不得自動跳頁、播放聲音或發瀏覽器通知。
+
+### 5. Live 倒數與研究狀態
+
+- 第二個 Live 指標為「開始辯論剩餘時間」，以題型對應的證據封存時刻為權威。
+- snapshot、SSE、reconnect 與瀏覽器刷新後都不得使倒數增加或跳回總時間；最後一秒不得顯示 `00:00`。
+- 封存到時或已觀察到 `debate_opened` 後固定顯示「辯論已開始」，後到舊 frame 不得使它退回數字。
+- Live／artifact 必須可區分每席 primary、backup、adopted、failed、timeout 與 exhausted；不能只顯示是否曾啟動 Provider。
+
+### 6. 共用可靠性修復
+
+- WSL Provider 取消或逾時必須處理整個 Linux process group，並以可驗證結果區分成功、無需回收與回收失敗。
+- attempt 一旦逾時、取消或失敗，其後到結果只能作診斷，不得成為 adopted result 或覆寫既有 terminal outcome。
+- research schema 必須把 `run_id`、`seat_id` 與 `attempt_id` 綁定到該次呼叫，gateway 仍以相同 lineage fail closed 驗證。
+- 每席研究完成後仍必須另外產生獨立 Opening；不得直接把 research 結果當成第一票。
+- 保留基準版已有的報告完成期限修正：到達期限時使用期限內已取得的證據完成誠實報告，不得為追求完美資料無限延長。
+- `research_proof_missing` 先以一個 WSL Codex 真實 canary 重現；只有 WSL 仍可重現才修改共用 proof／failure contract，未重現不得移植未完成的 Windows parser 修補。
+
+### 7. 資料相容
+
+- 新 Code Root 沿用既有 Data Root；歷史 run、報告與設定均須保留。
+- setup、啟停與更新流程不得刪除、搬移或重新格式化既有 Data Root。
+- 新使用者可在自己的 WSL 家目錄建立全新資料；不得把開發者個人資料路徑寫入產品預設。
+
+## 邊界與錯誤
+
+- Windows 原生 Provider Runtime 退役，不作為 fallback。
+- 少於七張有效最終票、報告未完成、artifact 不可驗證或超過既有期限，該次正式驗收即失敗；不得用部分成功冒充通過。
+- Provider canary 或正式 run 一旦出現已知失敗，必須立即停止該驗收流程、找出根因並完成修正後重跑，不得明知失敗仍等待整輪結束。
+- 外部 Provider 的服務可用性無法永久保證；單次 `7/7` 驗收只證明固定版本與當下環境符合發行門檻。
+- 錯誤畫面保持一行摘要；完整 stack、Provider stderr 與診斷寫入既有 logging／artifact 接縫。
+
+## 產品限制
+
+- 本機單人產品；不新增外部登入系統、雲端服務或付費 API。
+- 延續既有 CSP、run artifact 唯讀、規則檔唯一來源、全繁體中文與離線報告相容要求。
+- 不為本工作建立全功能環境管理或 Provider 帳號管理平台。
+- README 清理不得刪除使用者指定保留的原有圖片檔或圖片引用。
+
+## 實作偏好或硬性限制
+
+- 採最小 WSL-only 路徑；優先重用基準版現有 Bash、Python、webapp 與 logging 接縫，不為已退役的 Windows Provider Runtime 增加相容層。
+- 新 branch／worktree 從 `e05bf493e2f05dca37e15d6d10721c418c2c37e3` 開始；目前 dirty worktree 保留作唯讀比對與選擇性移植來源。
+- 可選擇性重建或移植 WSL／共用修正與測試；不得整批搬入 Windows Job Object、Windows CLI PATH／編碼處理、Windows-only acceptance 文件或未核准 parser 修補。
+- 一個完整功能區域完成修正與驗證後再進下一區；發現失敗立即中斷該驗收、修正後重跑。
+
+## 驗收結果
+
+1. 全新 Windows 10／11 使用者能依 README 從未安裝 WSL 的狀態完成 WSL2 Ubuntu、clone、setup、Provider 安裝／登入指令、啟動與關閉；README 除教學及原有圖片外無其他舊內容。
+2. 桌面僅留下兩個 WSL-backed 捷徑；重跑 setup 結果相同；Windows 端沒有 Provider process。Ubuntu 終端與 MobaXterm 可使用同一套 Bash 入口。
+3. foreign listener 與 instance replacement 測試證明開啟／關閉皆 fail closed，不會誤認或誤關其他程式；既有 Data Root 前後內容與歷史 run 可讀性不變。
+4. 送出問題後同頁顯示小動畫並綁定精確 `run_id`；失敗顯示單行原因與重試；完成顯示單行報告連結；不存在 waiting-page 跳轉、聲音或通知。
+5. 一般題與比較題的開始辯論倒數皆以規則檔為準；snapshot、append、done、reconnect、refresh 與 stale frame 測試均不倒退，開始後保持文字狀態。
+6. process-group 回收、terminal outcome、late result、backup adoption、research lineage 與獨立 Opening 的確定性測試通過；基準版報告期限行為維持通過。
+7. 先逐一完成必要 WSL Provider canary；發現問題即停、修、重跑。最後以真實市場問題完成一場 WSL run：七個固定席位恰有 `7/7` 有效最終票、完整報告與可驗證 artifacts，且遵守既有研究、辯論與總時間限制。
+
+## 範圍外
+
+- Windows 原生 Provider Runtime 與 Windows 真實七席驗收。
+- Windows Job Object、Windows CLI PATH refresh、CP950 decoding、Windows run-index `fcntl` 相容修補。
+- 四個 Windows／WSL 重複捷徑。
+- 自動安裝或代管 Agent 帳號憑證、登入狀態與模型狀態診斷平台。
+- 瀏覽器通知、聲音、大面積錯誤面板與自動跳轉報告。
+- 一般回答格式重構、行動版專屬佈局及舊 run 回溯重製。
+
+## 未決事項
+
+無；技術切分、資料流、Runtime ownership、README 腳本入口與測試接縫進入架構階段逐項確認。

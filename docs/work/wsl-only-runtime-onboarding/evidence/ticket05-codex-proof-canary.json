@@ -1,0 +1,80 @@
+{
+  "schema_version": "hoya.codex-proof-canary.safe.v1",
+  "execution_environment": "WSL Ubuntu-24.04",
+  "executed_at_utc": "2026-08-12T20:44:16.014Z",
+  "execution_sequence": {
+    "position": "before_production_parser_change_and_before_any_full_debate",
+    "production_adapter_sha256_at_execution": "3f7c3e8e16a9694923f55d882ec241086126e0694654c6c5aa9cae6cd1b28790",
+    "full_debate_started": false
+  },
+  "invocation_count": 1,
+  "command_shape": [
+    "codex",
+    "exec",
+    "-m",
+    "<model>",
+    "-s",
+    "read-only",
+    "--skip-git-repo-check",
+    "-c",
+    "tools.web_search=true",
+    "-C",
+    "<ephemeral-work-dir>",
+    "--output-schema",
+    "<ephemeral-schema>",
+    "-o",
+    "<ephemeral-last-message>",
+    "--color",
+    "never",
+    "--json",
+    "<redacted-prompt>"
+  ],
+  "cli_version": "codex-cli 0.146.0",
+  "declared_model": "gpt-5.6-sol",
+  "prompt_profile": {
+    "template_id": "single-official-codex-doc-search-v1",
+    "live_search_required": true,
+    "requested_search_count": 1,
+    "final_response_must_omit_url": true,
+    "prompt_sha256": "2e72ad300bb7839b44b54e24fb0a47edd8227620654b04a8094b11ddf3c9f1c8"
+  },
+  "schema_profile": {
+    "type": "closed_object",
+    "required_fields": [
+      "status"
+    ],
+    "status_allowed_values": [
+      "ok"
+    ],
+    "schema_canonical_sha256": "8e6ecfaa86e29d7c63bb937d3f0f27b8243a39b9ef13fc77181dc937f1693ea8"
+  },
+  "exit_code": 0,
+  "timed_out": false,
+  "elapsed_ms": 14164,
+  "event_stream_sha256": "24c0c95266bcab8ceceab861475f75f1f16d11e6a3c1f5c1ba02d6d52b9ac257",
+  "stderr_sha256": "1aa26269eb1cc57f86b235a03cda53c004edb5b1e9fc99d4da4f00843293d721",
+  "event_line_count": 8,
+  "parsed_event_count": 8,
+  "malformed_event_count": 0,
+  "search_started_count": 1,
+  "search_success_count": 1,
+  "search_error_count": 0,
+  "matched_search_count": 1,
+  "legacy_stderr_marker_count": 0,
+  "last_message_parse_status": "valid_object",
+  "production_parser_sha256_before": "3f7c3e8e16a9694923f55d882ec241086126e0694654c6c5aa9cae6cd1b28790",
+  "production_failure_code_before": "research_proof_missing",
+  "conditional_decision": "reproduced_modify_existing_parser_seam",
+  "production_adapter_sha256_after": "68a6bb31ccd53ec1110e5140ffba2a75468a540ba531f2b736d73a9a7d2a5e1d",
+  "proof_parser_source_sha256_after": "2818887dbfc81e8802a9eb7e6df53ff1823306fa34ba8c9584a01839600b13ed",
+  "post_fix_validation": "offline_fixtures_only",
+  "ephemeral_artifacts_removed": true,
+  "redactions": [
+    "prompt",
+    "provider_response",
+    "event_payload_values",
+    "urls",
+    "raw_stderr",
+    "credentials"
+  ]
+}

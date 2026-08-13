@@ -1,0 +1,29 @@
+{
+  "adopted_attempts": {
+    "counter-evidence": "counter-evidence-a1",
+    "derivatives": "derivatives-a1",
+    "news": "news-a1",
+    "official-events": "official-events-a1",
+    "onchain": "onchain-a1",
+    "social-macro": "social-macro-a2",
+    "spot-technical": "spot-technical-a1"
+  },
+  "artifact_problems": [],
+  "kind": "run-reconciliation",
+  "opening_events": 7,
+  "problems": [],
+  "run_id": "20260813T032513Z-btc-acca1e",
+  "schema_version": "hoya.wsl-release-acceptance.v1",
+  "status": "PASS",
+  "terminal_outcome_events": 13,
+  "valid_vote_count": 7,
+  "vote_seats": [
+    "spot-technical",
+    "derivatives",
+    "onchain",
+    "official-events",
+    "news",
+    "social-macro",
+    "counter-evidence"
+  ]
+}

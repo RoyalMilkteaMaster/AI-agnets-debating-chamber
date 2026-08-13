@@ -12,6 +12,7 @@ from .contract_validator import (
     RUN_RULES_FIELD,
     run_rules_record,
     validate_evidence_card,
+    validate_run_manifest,
 )
 from .debate_rules import debate_rules
 from .debate_state_machine import DebateStateMachine, stances_for
@@ -235,6 +236,10 @@ def run_fake_competition_drill(*, data_root, question, token):
         "report_completed_at_ms": clock.monotonic_ms(),
         "report_hard_deadline_ms": HARD_DEADLINE_MS,
     }
+    attempts_by_seat = {
+        row["seat_id"]: list(row["attempt_ids"])
+        for row in votes["votes"]
+    }
     manifest = {
         "schema_version": CONTRACT_VERSION,
         "run_id": run_id,
@@ -254,6 +259,7 @@ def run_fake_competition_drill(*, data_root, question, token):
         "seats": [
             {
                 **seat,
+                "attempt_ids": attempts_by_seat[seat["seat_id"]],
                 "actual_model": "fixture:{}".format(seat["target_model"]),
                 "completion_ms": completion_ms[seat["seat_id"]],
             }
@@ -265,6 +271,7 @@ def run_fake_competition_drill(*, data_root, question, token):
         "limitations": [LIMITATION],
         RUN_RULES_FIELD: run_rules_record(rules),
     }
+    validate_run_manifest(manifest)
     run.write_json("manifest.json", manifest, source="fake competition drill manifest")
     store.point_latest_at(run)
     return DrillResult(run_id, run.path, timeline)

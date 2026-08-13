@@ -45,14 +45,18 @@ handed an answer instead of a sentence to guess from.
 """
 
 import argparse
+import json
+import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..launcher import ready_certificate_problem, run_launch
+from .. import launcher as launcher_module
+from ..run_store import resolve_run_dir
 from ..question import (
     UnknownAssetError,
     UnsupportedQuestionError,
@@ -95,6 +99,9 @@ QUESTION_ARGUMENT = "question"
 ASSET_CLASS_ARGUMENT = "asset-class"
 DATA_ROOT_ARGUMENT = "data-root"
 TARGET_ARGUMENT = "asset"
+LAUNCH_TOKEN_ARGUMENT = "launch-token"
+HANDSHAKE_ARGUMENT = "launch-handshake"
+HANDSHAKE_DIR_NAME = "launch-handshakes"
 
 # What separates two targets in one box: a comma of either width, the ideographic
 # comma, and plain whitespace. Every one of them is a character no identifier may
@@ -105,7 +112,6 @@ PROBLEM_BLANK = "blank_question"
 PROBLEM_NO_ASSET_CLASS = "no_asset_class"
 PROBLEM_BLANK_TARGET = "blank_target"
 PROBLEM_TARGET_REFUSED = "target_refused"
-PROBLEM_NOT_READY = "not_ready"
 
 # What a reader is told when :class:`LaunchLock` refuses. It lives here rather
 # than in the route because the sentence describes this lock's scope, and the
@@ -132,6 +138,8 @@ class LaunchLock:
         self._guard = threading.Lock()
         self._process = None
         self._question = None
+        self._stopping = False
+        self._launches = {}
 
     def busy(self):
         """Is a launch this web app started still running?"""
@@ -142,19 +150,118 @@ class LaunchLock:
         return self._process is not None and self._process.poll() is None
 
     def claim(self, start):
-        """Run ``start`` and keep its process, unless one is already running.
+        """Run ``start`` and keep its process, unless the lock is taken.
 
         ``start`` is called while the lock is held, so two requests arriving at
         once cannot both find the lock free and both spawn. It returns the
         process object; ``claim`` returns it too, or ``None`` when the lock was
-        already taken and nothing was started.
+        already taken and **nothing was started** — which is the part that
+        matters, because a refusal that had already spawned would be no refusal.
+
+        Two things take the lock: a launch that is still running, and a stop this
+        server has already authorised. The second is why :meth:`reserve_stop`
+        exists — see it for what that window is.
         """
         with self._guard:
-            if self._running():
+            if self._stopping or self._running():
                 return None
             process = start()
             self._process = process
             return process
+
+    def claim_token(self, token, handshake_path, start):
+        """Atomically reserve ``token`` and start exactly one child."""
+        with self._guard:
+            if self._stopping or self._running():
+                return None
+            self._discard_handshake(self._process_state())
+            process = start()
+            self._process = process
+            self._launches[token] = {
+                "process": process,
+                "handshake_path": Path(handshake_path),
+                "run_id": None,
+                "failure": None,
+            }
+            return process
+
+    def launch_status(self, token, data_root):
+        """Return the status bound to ``token``; never infer a run from disk."""
+        with self._guard:
+            state = self._launches.get(token)
+            if state is None:
+                return None
+            if state["run_id"] is not None:
+                return {"status": "launched", "run_id": state["run_id"]}
+            if state["failure"] is not None:
+                return {"status": "failed", "reason": state["failure"]}
+            handshake = _read_token_handshake(state["handshake_path"], token, data_root)
+            if handshake is not None:
+                state["run_id"] = handshake["run_id"]
+                self._discard_handshake(state)
+                return {"status": "launched", "run_id": state["run_id"]}
+            code = state["process"].poll()
+            if code is None:
+                return {"status": "pending"}
+            state["failure"] = "啟動程序未建立可驗證的 run。"
+            self._discard_handshake(state)
+            return {"status": "failed", "reason": state["failure"]}
+
+    def _process_state(self):
+        for state in self._launches.values():
+            if state.get("process") is self._process:
+                return state
+        return None
+
+    @staticmethod
+    def _discard_handshake(state):
+        if not state:
+            return
+        try:
+            state["handshake_path"].unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    def reserve_stop(self, allow_active_run):
+        """Decide a stop and take the lock for it, in one step under one guard.
+
+        A stop is not instantaneous: ``POST /shutdown`` authorises it, writes its
+        reply, and only then asks the serving loop to end. Between the decision
+        and the loop actually returning, this process is still accepting
+        requests — so a ``POST /launch`` can arrive, find nothing running, and
+        start an analysis that this server has already agreed to die on. Nobody
+        was ever asked about interrupting *that* run, because at the moment the
+        question was asked it did not exist.
+
+        Reading the state and acting on it therefore cannot be two steps. This is
+        one: it re-reads whether a run is going, refuses unless that is allowed,
+        and on success marks the lock as stopping before releasing the guard.
+        From that point :meth:`claim` starts nothing, so there is no window left
+        for a launch to appear in.
+
+        ``allow_active_run`` is the consent the caller carries: ``True`` only
+        when a person has said, in so many words, to interrupt a run.
+
+        Returns whether the stop is authorised. A caller that gets ``True`` and
+        then cannot stop must hand the lock back with :meth:`release_stop`,
+        otherwise this server refuses every future launch while still serving.
+
+        ``self._running()`` rather than ``self.busy()`` on purpose: ``busy``
+        takes this same guard, and a method that called it from in here would
+        deadlock the moment a run existed.
+        """
+        with self._guard:
+            if self._running() and not allow_active_run:
+                return False
+            self._stopping = True
+            return True
+
+    def release_stop(self):
+        """Undo a reservation whose stop did not happen, so launching resumes."""
+        with self._guard:
+            self._stopping = False
 
     def note_question(self, question):
         """Remember what the running launch was asked, for the page to show."""
@@ -238,16 +345,14 @@ def _split_targets(box):
 def launch_problem(data_root, request):
     """Return ``(problem id, sentence)`` for why a launch cannot be asked for.
 
-    Five things are checked and the order is the answer to "who is entitled to
+    Four things are checked and the order is the answer to "who is entitled to
     say this": a question was typed, a market was chosen, the intake authority
     accepts what was stated, the chosen market's box names at least one target,
-    and the READY certificate is one :mod:`hoya_market_agents.launcher` would
-    accept.
+    accept. Provider readiness is deliberately not a webapp launch gate.
 
-    Two of the five sentences are quoted rather than written here — the intake's
-    and the launcher's — for the same reason: the form must refuse in the same
-    words the run would have, or the reader is being told a second story about
-    one rule. ``(None, None)`` means nothing refuses it, which is not a promise
+    The intake sentence is quoted rather than written here: the form must refuse
+    in the same words the run would have, or the reader is being told a second
+    story about one rule. ``(None, None)`` means nothing refuses it, which is not a promise
     that the run will succeed; it is a promise that the *stated* answer is one
     the run would accept.
 
@@ -271,9 +376,6 @@ def launch_problem(data_root, request):
         return PROBLEM_TARGET_REFUSED, refusal
     if not request.targets:
         return PROBLEM_BLANK_TARGET, "請先輸入或從建議清單選擇要分析的標的。"
-    problem = ready_certificate_problem(data_root)
-    if problem is not None:
-        return PROBLEM_NOT_READY, problem
     return None, None
 
 
@@ -302,20 +404,20 @@ def _intake_refusal(request):
     return None
 
 
-def preflight_command(data_root):
-    """The one line that produces a READY certificate for this Data Root."""
-    return (
-        "python3 -m hoya_market_agents preflight --provider system --seats 7 "
-        "--mode real --data-root {}".format(data_root)
-    )
-
-
 def launch_log_path(data_root):
     """Where a launch this web app started writes what it printed."""
     return Path(data_root) / "logs" / LAUNCH_LOG_NAME
 
 
-def start_launch(data_root, request, spawn=None):
+def launch_token():
+    return secrets.token_urlsafe(24)
+
+
+def handshake_path(data_root, token):
+    return Path(data_root) / "logs" / HANDSHAKE_DIR_NAME / (token + ".json")
+
+
+def start_launch(data_root, request, token=None, handshake=None, spawn=None):
     """Start one launch in its own process and return it.
 
     ``spawn`` is the seam: it is handed the argument list and the keyword
@@ -331,14 +433,14 @@ def start_launch(data_root, request, spawn=None):
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log:
         return spawn(
-            child_command(data_root, request),
+            child_command(data_root, request, token=token, handshake=handshake),
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
 
 
-def child_command(data_root, request):
+def child_command(data_root, request, token=None, handshake=None):
     """The argument list the child is started with.
 
     Every value is written as ``--name=value`` rather than as two words, and that
@@ -351,6 +453,10 @@ def child_command(data_root, request):
         _flag(ASSET_CLASS_ARGUMENT, request.asset_class),
         _flag(DATA_ROOT_ARGUMENT, str(data_root)),
     ] + [_flag(TARGET_ARGUMENT, target) for target in request.targets]
+    if token is not None:
+        flags.append(_flag(LAUNCH_TOKEN_ARGUMENT, token))
+    if handshake is not None:
+        flags.append(_flag(HANDSHAKE_ARGUMENT, str(handshake)))
     return [sys.executable, "-c", CHILD_BOOTSTRAP] + flags
 
 
@@ -371,14 +477,41 @@ def main(argv=None, launch=None):
     how a caller says "read the wording", and a submission from a menu never
     means that.
     """
-    launch = launch or run_launch
+    launch = launch or webapp_run_launch
     arguments = _child_parser().parse_args(argv)
+    out = None
+    if arguments.launch_token and arguments.launch_handshake:
+        out = TokenHandshakeWriter(
+            sys.stdout, arguments.launch_token, Path(arguments.launch_handshake)
+        )
     return launch(
         arguments.question,
         Path(arguments.data_root),
         assets=list(arguments.asset),
         asset_class=arguments.asset_class,
+        out=out,
     )
+
+
+def webapp_run_launch(question, data_root, **options):
+    """Run the generic launcher with READY disabled only for this webapp child.
+
+    The generic CLI retains its fail-closed READY contract. This process is the
+    webapp-specific adapter approved by Ticket 06: provider availability is
+    reported by each attempt after the run exists, so an absent certificate
+    must not prevent the token-bound LAUNCHED handshake.
+
+    ``run_launch`` has no public certificate-injection seam. The narrow adapter
+    therefore replaces its loader for this synchronous call and restores it in
+    ``finally``. The child executes one launch on one thread; the replacement is
+    never present in the resident web server.
+    """
+    original_loader = launcher_module._load_ready_certificate
+    launcher_module._load_ready_certificate = lambda _root: {}
+    try:
+        return launcher_module.run_launch(question, data_root, **options)
+    finally:
+        launcher_module._load_ready_certificate = original_loader
 
 
 def _child_parser():
@@ -397,4 +530,78 @@ def _child_parser():
         default=[],
         help="選單選定的分析標的；可重複，順序即 run id 的順序",
     )
+    parser.add_argument("--" + LAUNCH_TOKEN_ARGUMENT)
+    parser.add_argument("--" + HANDSHAKE_ARGUMENT)
     return parser
+
+
+class TokenHandshakeWriter:
+    """Mirror launcher output and atomically publish its first LAUNCHED line."""
+
+    def __init__(self, stream, token, path):
+        self.stream = stream
+        self.token = token
+        self.path = Path(path)
+        self.buffer = ""
+        self.published = False
+
+    def write(self, text):
+        self.stream.write(text)
+        self.buffer += text
+        while "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            self._publish(line)
+        return len(text)
+
+    def flush(self):
+        self.stream.flush()
+
+    def _publish(self, line):
+        if self.published:
+            return
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict) or payload.get("status") != "LAUNCHED":
+            return
+        payload["launch_token"] = self.token
+        _atomic_write(self.path, payload)
+        self.published = True
+
+
+def _atomic_write(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp-" + secrets.token_hex(6))
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_token_handshake(path, token, data_root):
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "LAUNCHED":
+        return None
+    if payload.get("launch_token") != token:
+        return None
+    run_id = payload.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return None
+    run_dir = resolve_run_dir(data_root, run_id)
+    if run_dir is None or not run_dir.is_dir():
+        return None
+    recorded = payload.get("run_dir")
+    if not isinstance(recorded, str) or Path(recorded).resolve() != run_dir.resolve():
+        return None
+    return payload

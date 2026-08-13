@@ -1,0 +1,16 @@
+{
+  "actual_model": "gemini-3.1-pro-high",
+  "elapsed_ms": 22467,
+  "executable_sha256": "dfa88b922a2a16f4b9f28553a9625390c010bd011304b4dc892ce72a6d58b144",
+  "finished_at_utc": "2026-08-13T03:22:27.151464Z",
+  "kind": "provider-canary",
+  "provider": "antigravity",
+  "ready": true,
+  "requested_model": "gemini-3.1-pro-high",
+  "schema_sha256": "96b90ce53f1977a09d7030f8dc69484f1cd54062d43dd25e0b9131a6498ba1e4",
+  "schema_version": "hoya.wsl-release-acceptance.v1",
+  "search_succeeded": true,
+  "started_at_utc": "2026-08-13T03:22:03.252820Z",
+  "status": "PASS",
+  "version": "1.1.12"
+}

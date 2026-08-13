@@ -38,8 +38,12 @@ from hoya_market_agents.run_store import run_dir_parts
 from hoya_market_agents.seats import SEAT_IDS, seat_profiles
 from hoya_market_agents.webapp import live, pages, server
 
+# Anchored on the roll's own id rather than on its exact attribute list: this
+# module is about which sentence sits beside which name inside the roll, and the
+# room adds attributes to the roll for reasons of its own — Ticket 06 marks it as
+# a surface a same-page run switch has to blank.
 SEAT_PANEL = re.compile(
-    r'<div class="agents" id="live-seats">(.*?)</div>\s*</section>', re.DOTALL
+    r'<div class="agents" id="live-seats"[^>]*>(.*?)</div>\s*</section>', re.DOTALL
 )
 SEAT_CARD = re.compile(
     r'<article class="agent [^"]*" data-seat-id="([^"]+)">(.*?)</article>', re.DOTALL

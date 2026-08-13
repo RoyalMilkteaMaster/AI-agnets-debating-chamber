@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from tests.fakes import FIXED_START_UTC, FixedClock, ScriptedTokenSource
 
 from hoya_market_agents.clock import iso_utc
-from hoya_market_agents.contract_validator import CONTRACT_VERSION
+from hoya_market_agents.contract_validator import CONTRACT_VERSION, validate_run_manifest
 from hoya_market_agents.debate_driver import (
     CORE_REPORT_SCHEMA,
     DebateDriver,
@@ -246,19 +246,24 @@ class ScriptedDebateRunner:
                 ("debate_failure", dispatch.dispatch_id, kind, message)
             )
             return True
-        self.results_queue.put(
-            (
-                "provider_lineage",
-                seat_id,
-                {
-                    "seat_id": seat_id,
-                    "dispatch_id": dispatch.dispatch_id,
-                    "provider": "scripted",
-                    "actual_model": "scripted-{}".format(seat_id),
-                    "elapsed_ms": 1_000,
-                },
+        lineage = {
+            "seat_id": seat_id,
+            "dispatch_id": dispatch.dispatch_id,
+            "provider": "scripted",
+            "actual_model": "scripted-{}".format(seat_id),
+            "elapsed_ms": 1_000,
+        }
+        if dispatch.phase == "opening":
+            lineage.update(
+                phase="opening",
+                provider=dispatch.provider,
+                requested_provider=dispatch.provider,
+                requested_model=dispatch.requested_model,
+                actual_model=dispatch.research_actual_model,
+                research_attempt_id=dispatch.research_attempt_id,
+                adopted_evidence_sha256=dispatch.adopted_evidence_sha256,
             )
-        )
+        self.results_queue.put(("provider_lineage", seat_id, lineage))
         self.results_queue.put(
             (
                 "debate_result",
@@ -281,7 +286,11 @@ class ScriptedDebateRunner:
 
     def _payload(self, seat_id, slug):
         if slug == "opening":
-            return self._vote(seat_id, self.stances[seat_id])
+            payload = self._vote(seat_id, self.stances[seat_id])
+            # Opening has its own strict schema and never carries the later
+            # free-debate-only stance_change_reason field.
+            payload.pop("stance_change_reason", None)
+            return payload
         stance = self.revotes.get((seat_id, slug), self.stances[seat_id])
         changed = stance != self.stances[seat_id]
         self.stances[seat_id] = stance
@@ -1128,12 +1137,12 @@ class UnanimousRoomScrutinyTest(DebateDriverTestCase):
             },
         )
         self.assertEqual(set(driver.published), set(driver.completed_turns["r1"]))
-        self.assertEqual("consensus_5_votes", votes["stop_reason"])
+        self.assertEqual("consensus_6_votes", votes["stop_reason"])
         self.assertEqual("consensus", votes["consensus_status"])
         self.assertEqual("bullish", votes["adopted_stance"])
-        self.assertEqual(5, votes["tally"]["bullish"])
+        self.assertEqual(6, votes["tally"]["bullish"])
         self.assertFalse(votes["challenge_completed"])
-        self.assertEqual(self.seal_ms + 240_000, votes["stop_elapsed_ms"])
+        self.assertEqual(self.seal_ms + 150_000, votes["stop_elapsed_ms"])
 
     def test_free_debate_creates_no_challenge_audit_records(self):
         runner = self.build_latency_runner(UNANIMOUS_SEVEN, self.latencies())
@@ -1901,6 +1910,13 @@ class FullLaunchTest(unittest.TestCase):
         self.assertEqual("real-subscription-fast", verification["provider_mode"])
         self.assertFalse(verification["competition_ready"])
         run_dir = Path(finalized["run_dir"])
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        votes = json.loads((run_dir / "votes.json").read_text(encoding="utf-8"))
+        self.assertIs(manifest, validate_run_manifest(manifest))
+        self.assertEqual(
+            {row["seat_id"]: row["attempt_ids"] for row in votes["votes"]},
+            {row["seat_id"]: row["attempt_ids"] for row in manifest["seats"]},
+        )
         self.assertTrue((run_dir / "report.html").is_file())
         self.assertTrue((run_dir / "debate.html").is_file())
         events = [
@@ -2920,6 +2936,19 @@ class FullRunFakeRunner(ScriptedDebateRunner):
         self.run = run
 
     def start(self, attempt, checkpoint):
+        self.results_queue.put(
+            (
+                "research_lineage",
+                attempt.attempt_id,
+                {
+                    "seat_id": attempt.seat_id,
+                    "attempt_id": attempt.attempt_id,
+                    "attempt_kind": attempt.kind,
+                    "provider": attempt.provider,
+                    "actual_model": attempt.model,
+                },
+            )
+        )
         self.results_queue.put(
             (
                 "result",

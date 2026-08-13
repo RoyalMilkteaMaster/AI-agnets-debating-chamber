@@ -10,18 +10,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hoya_market_agents.claude_adapter import ProcessOutput
+from hoya_market_agents.claude_adapter import (
+    PROCESS_GROUP_RECLAIMED,
+    PROCESS_TREE_TERMINATION_FAILED,
+    ProcessOutput,
+)
 from hoya_market_agents.codex_exec_adapter import (
     CODEX_LAST_MESSAGE_NAME,
     CODEX_MODEL,
     CODEX_SCHEMA_NAME,
     CODEX_TIMEOUT_SECONDS,
-    SEARCH_INVOCATION_MARKER,
     CodexExecAdapter,
     CodexExecError,
     CodexExecOutputError,
     CodexExecProcessError,
     CodexExecTimeout,
+    CodexExecTreeTerminationError,
 )
 
 PROMPT = "請以繁體中文回報 BTC 現貨技術面證據。"
@@ -37,11 +41,21 @@ ENVELOPE = {"seat_id": "spot-technical", "evidence_cards": [{"evidence_id": "x-0
 class FakeCodexRunner:
     """Codex CLI seam: records the invocation and writes the last message file."""
 
-    def __init__(self, last_message=None, returncode=0, stderr="", timed_out=False):
+    def __init__(
+        self,
+        last_message=None,
+        returncode=0,
+        stdout="",
+        stderr="",
+        timed_out=False,
+        process_outcome=None,
+    ):
         self.last_message = last_message
         self.returncode = returncode
+        self.stdout = stdout
         self.stderr = stderr
         self.timed_out = timed_out
+        self.process_outcome = process_outcome
         self.calls = []
 
     def run(self, args, *, input_text, cwd, timeout_seconds):
@@ -63,7 +77,11 @@ class FakeCodexRunner:
             target = Path(args[args.index("-o") + 1])
             target.write_text(self.last_message, encoding="utf-8")
         return ProcessOutput(
-            returncode=self.returncode, stdout="", stderr=self.stderr, elapsed_ms=4_200
+            returncode=self.returncode,
+            stdout=self.stdout,
+            stderr=self.stderr,
+            elapsed_ms=4_200,
+            process_outcome=self.process_outcome,
         )
 
 
@@ -111,6 +129,7 @@ class CodexExecAdapterTest(unittest.TestCase):
                 self.assertIn(flag, args)
                 self.assertEqual(value, args[args.index(flag) + 1])
         self.assertIn("--skip-git-repo-check", args)
+        self.assertIn("--json", args)
 
     def test_a_no_search_invocation_switches_the_capability_off(self):
         # T+4:00 封存後只能讀已封存的證據：搜尋要在能力層關掉，不是在 prompt 拜託。
@@ -145,27 +164,109 @@ class CodexExecAdapterTest(unittest.TestCase):
             SCHEMA, json.loads(result.schema_path.read_text(encoding="utf-8"))
         )
 
-    def test_search_invocations_are_counted_from_the_stderr_transcript(self):
-        stderr = "thinking\n{} BTC ETF 流入\n[2026-08-01] {} BTC 未平倉\n".format(
-            SEARCH_INVOCATION_MARKER, SEARCH_INVOCATION_MARKER
+    def test_only_matched_search_started_and_successful_completed_count_as_proof(self):
+        stdout = "\n".join(
+            json.dumps(event)
+            for event in (
+                {"type": "item.started", "item": {"id": "search-1", "type": "web_search"}},
+                {"type": "item.completed", "item": {"id": "search-1", "type": "web_search"}},
+                {"type": "item.started", "item": {"id": "search-2", "type": "web_search"}},
+                {"type": "item.completed", "item": {"id": "search-2", "type": "web_search"}},
+            )
         )
         runner = FakeCodexRunner(
-            last_message=json.dumps(ENVELOPE, ensure_ascii=False), stderr=stderr
+            last_message=json.dumps(ENVELOPE, ensure_ascii=False), stdout=stdout
         )
 
         result = self.invoke(runner)
 
         self.assertEqual(2, result.search_invocations)
+        self.assertEqual("matched", result.search_parse_status)
+        self.assertEqual(0, result.malformed_event_count)
 
-    def test_a_transcript_without_a_live_search_counts_zero_invocations(self):
-        runner = FakeCodexRunner(
-            last_message=json.dumps(ENVELOPE, ensure_ascii=False),
-            stderr="thinking\ncodex 已完成\n",
+    def test_url_or_search_claim_in_final_prose_is_not_proof(self):
+        stdout = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "answer-1",
+                    "type": "agent_message",
+                    "text": "I searched https://example.invalid and found evidence.",
+                },
+            }
         )
+        runner = FakeCodexRunner(last_message=json.dumps(ENVELOPE), stdout=stdout)
 
         result = self.invoke(runner)
 
         self.assertEqual(0, result.search_invocations)
+        self.assertEqual("no_search", result.search_parse_status)
+
+    def test_tool_use_without_a_result_fails_closed(self):
+        stdout = json.dumps(
+            {"type": "item.started", "item": {"id": "search-1", "type": "web_search"}}
+        )
+
+        result = self.invoke(
+            FakeCodexRunner(last_message=json.dumps(ENVELOPE), stdout=stdout)
+        )
+
+        self.assertEqual(0, result.search_invocations)
+        self.assertEqual("missing_result", result.search_parse_status)
+
+    def test_orphan_result_fails_closed(self):
+        stdout = json.dumps(
+            {"type": "item.completed", "item": {"id": "search-1", "type": "web_search"}}
+        )
+
+        result = self.invoke(
+            FakeCodexRunner(last_message=json.dumps(ENVELOPE), stdout=stdout)
+        )
+
+        self.assertEqual(0, result.search_invocations)
+        self.assertEqual("orphan_result", result.search_parse_status)
+
+    def test_error_result_fails_closed(self):
+        stdout = "\n".join(
+            json.dumps(event)
+            for event in (
+                {"type": "item.started", "item": {"id": "search-1", "type": "web_search"}},
+                {
+                    "type": "item.completed",
+                    "item": {"id": "search-1", "type": "web_search", "error": "blocked"},
+                },
+            )
+        )
+
+        result = self.invoke(
+            FakeCodexRunner(last_message=json.dumps(ENVELOPE), stdout=stdout)
+        )
+
+        self.assertEqual(0, result.search_invocations)
+        self.assertEqual("error_result", result.search_parse_status)
+
+    def test_malformed_event_invalidates_an_otherwise_matching_pair(self):
+        stdout = "\n".join(
+            (
+                json.dumps({"type": "item.started", "item": {"id": "search-1", "type": "web_search"}}),
+                "not-json https://example.invalid",
+                json.dumps({"type": "item.completed", "item": {"id": "search-1", "type": "web_search"}}),
+            )
+        )
+
+        result = self.invoke(
+            FakeCodexRunner(last_message=json.dumps(ENVELOPE), stdout=stdout)
+        )
+
+        self.assertEqual(0, result.search_invocations)
+        self.assertEqual("malformed", result.search_parse_status)
+        self.assertEqual(1, result.malformed_event_count)
+
+    def test_empty_event_stream_fails_closed(self):
+        result = self.invoke(FakeCodexRunner(last_message=json.dumps(ENVELOPE)))
+
+        self.assertEqual(0, result.search_invocations)
+        self.assertEqual("no_search", result.search_parse_status)
 
     # ---------- failure mapping ----------
 
@@ -217,6 +318,71 @@ class CodexExecAdapterTest(unittest.TestCase):
         ):
             with self.subTest(exception_class=exception_class.__name__):
                 self.assertTrue(issubclass(exception_class, CodexExecError))
+
+
+class CodexUnreclaimedTreeTest(unittest.TestCase):
+    """整組回收不了時，Codex 邊界必須先 fail closed（Reviewer A-1 第三次）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.work_dir = Path(self._tmp.name) / "work"
+        self.cli = Path(self._tmp.name) / "codex"
+
+    def invoke(self, runner):
+        return CodexExecAdapter(cli_path=self.cli, runner=runner).invoke(
+            PROMPT, SCHEMA, self.work_dir
+        )
+
+    def runner(self, process_outcome):
+        # CLI 本身完全正常：退出碼 0、last message 合法、轉錄還留著搜尋證據。
+        return FakeCodexRunner(
+            last_message=json.dumps(ENVELOPE, ensure_ascii=False),
+            returncode=0,
+            stdout="\n".join(
+                (
+                    json.dumps({"type": "item.started", "item": {"id": "search-1", "type": "web_search"}}),
+                    json.dumps({"type": "item.completed", "item": {"id": "search-1", "type": "web_search"}}),
+                )
+            ),
+            process_outcome=process_outcome,
+        )
+
+    def test_a_clean_looking_invocation_is_refused_when_the_tree_was_not_reclaimed(self):
+        runner = self.runner(PROCESS_TREE_TERMINATION_FAILED)
+
+        with self.assertRaises(CodexExecTreeTerminationError) as caught:
+            self.invoke(runner)
+
+        self.assertIsInstance(caught.exception, CodexExecError)
+        self.assertEqual(PROCESS_TREE_TERMINATION_FAILED, str(caught.exception))
+
+    def test_the_last_message_is_never_read_when_the_tree_was_not_reclaimed(self):
+        # 這次連 last message 檔都不存在：只要讀了就會變成 CodexExecOutputError，
+        # 拿到 tree 終局就證明 parse 與 search proof 都沒有跑到。
+        runner = FakeCodexRunner(
+            last_message=None,
+            returncode=0,
+            stdout=json.dumps(
+                {"type": "item.started", "item": {"id": "search-1", "type": "web_search"}}
+            ),
+            process_outcome=PROCESS_TREE_TERMINATION_FAILED,
+        )
+
+        with self.assertRaises(CodexExecTreeTerminationError):
+            self.invoke(runner)
+
+    def test_a_reclaimed_tree_still_returns_its_result_and_search_proof(self):
+        result = self.invoke(self.runner(PROCESS_GROUP_RECLAIMED))
+
+        self.assertEqual(ENVELOPE, result.structured_output)
+        self.assertEqual(1, result.search_invocations)
+
+    def test_a_runner_without_a_process_outcome_is_unchanged(self):
+        result = self.invoke(self.runner(None))
+
+        self.assertEqual(ENVELOPE, result.structured_output)
+        self.assertEqual(1, result.search_invocations)
 
 
 if __name__ == "__main__":

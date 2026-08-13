@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0.0",
+  "status": "VERIFIED",
+  "run_id": "20260812T225710Z-btc-1097e1",
+  "run_dir": "/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber_data/runs/2026-08-13/0657-分析-btc-過去-14-日市場狀態-ad791f2f32ed1a6c",
+  "seat_count": 7,
+  "required_artifacts": {
+    "manifest.json": "3b1e1a4f5bbc0499fb722ab43888c9dc79570d8c40bb67a373c9a2951128b62d",
+    "evidence.jsonl": "cd78ef55cf06a6c44dc24c3a77d3af03afe32d23809dedcd047532b6783af5f2",
+    "debate.jsonl": "d60f001d59d5df060a171f9d410abff333c708888acd6756e102e581667e69a7",
+    "votes.json": "d29871d6abb0c893f83de3fe7ce44853feed07e5e3d8b8313ee199316f2a446f",
+    "report.md": "36c33c121331bd439bfd3a5b8b82c29b2bf7b848129fb49e746b4c082242f5f4",
+    "report.html": "b1facb534a591aa2fdca2ff3eb3ca1b34ae2b66deab6be908c536082b40f373a",
+    "debate.html": "95f78287f3c13eb4c2c048bf3751cceee171035471ca8624879003519cc70a69"
+  },
+  "provider_mode": "real-subscription-fast",
+  "competition_ready": false,
+  "advisories": [],
+  "timeline": {
+    "all_seats_dispatched_at_ms": 0,
+    "seat_completion_ms": {
+      "counter-evidence": 63197,
+      "news": 184944,
+      "official-events": 199850,
+      "derivatives": 202271,
+      "spot-technical": 215931,
+      "social-macro": 281396,
+      "onchain": 286598
+    },
+    "research_accept_until_ms": 350000,
+    "evidence_snapshot_sealed_at_ms": 360000,
+    "evidence_snapshot_sha256": "cd78ef55cf06a6c44dc24c3a77d3af03afe32d23809dedcd047532b6783af5f2",
+    "debate_stop_at_ms": 600000,
+    "debate_stop_reason": "consensus_5_votes",
+    "report_completed_at_ms": 634352,
+    "report_hard_deadline_ms": 900000
+  },
+  "rules_sha256": "a603e0007753f7c8e3724958567a179cbd5e1af4e937c8ae2d1e78d95ee844b3",
+  "rule_checks_without_run_rules": []
+}

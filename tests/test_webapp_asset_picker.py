@@ -221,15 +221,16 @@ class TheChildCommandReallyRunsTest(unittest.TestCase):
     would put that warning at the head of every launch log, and no assertion on
     the command's spelling would notice.
 
-    **It starts no research.** The Data Root has no READY certificate, so the
-    launcher refuses at intake with its own exit code and never creates a run
-    directory — which the empty directory afterwards is here to show.
+    **It starts no research.** A deliberately invalid target reaches the
+    launcher's input contract and is refused before a run directory exists.
+    Webapp launch intentionally stopped requiring READY in Ticket 06, so a
+    missing certificate is no longer a safe offline refusal seam.
     """
 
-    def test_the_command_reaches_the_launcher_and_refuses_with_no_certificate(self):
+    def test_the_command_reaches_the_launcher_and_refuses_an_invalid_target(self):
         code_root = Path(live.__file__).resolve().parents[2]
         request = launch_module.LaunchRequest(
-            "2330 未來七天會不會漲", ASSET_CLASS_TW_STOCK, ("2330",)
+            "2330 未來七天會不會漲", ASSET_CLASS_TW_STOCK, ("bad target",)
         )
         with tempfile.TemporaryDirectory() as data_root:
             completed = subprocess.run(
@@ -241,7 +242,7 @@ class TheChildCommandReallyRunsTest(unittest.TestCase):
             left_behind = sorted(path.name for path in Path(data_root).iterdir())
 
         self.assertEqual(2, completed.returncode, completed.stderr)
-        self.assertIn("READY", completed.stderr)
+        self.assertIn("標的", completed.stderr)
         self.assertEqual([], left_behind)
         self.assertNotIn("RuntimeWarning", completed.stderr)
 

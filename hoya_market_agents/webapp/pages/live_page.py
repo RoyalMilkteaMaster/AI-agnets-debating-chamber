@@ -1,11 +1,67 @@
 """Live room, launch bar and protected debate-region page assembly."""
 
+from ..live import (
+    STATUS_FINISHED, STATUS_RUNNING, TOTAL_WINDOW_MS, UNRECORDED_LABEL,
+    focus_state, next_milestone, phase_label, rule_timeline, threshold_label,
+)
 from .components import (
     ASSET_CLASS_CONTROL_ID, BRIEF_ELLIPSIS, DEBATE_ARTIFACT, LIVE_SCRIPT_PATH,
     REPORT_ARTIFACT, _EMPTY, _LIVE_STATE_WORDS, _clock, _document, _e,
     _evidence_card, _light, _stop_form, ask_bar_markets, asset_class_label,
     latest_report_run, launch_module, site_tabs, target_format_hint,
 )
+
+# What each run-bound surface says about a run nothing is known about yet.
+#
+# The room can switch which run it watches without reloading, and the frames for
+# the next run carry only its feed, seats, tally, round and clock. Every other
+# surface here was painted for the run that was on screen when the page was
+# drawn, and no frame will ever correct it — so the client blanks each one at the
+# switch, and these are the words it blanks to. They are the page's own empty
+# wording rather than a second vocabulary: the same strings the server writes
+# when it has no question, no votes and no evidence to show.
+WAITING_QUESTION = "等待新的市場題目"
+WAITING_ROUND = "尚未進入辯論"
+WAITING_ASSETS = "市場"
+WAITING_CONFIDENCE = "⚪ 信心尚未評估"
+WAITING_TALLY_NOTE = "尚未開始投票。"
+WAITING_RULES = "規則時間線將在新的一場開始後顯示。"
+WAITING_VOTES = "尚未投票。"
+WAITING_EVIDENCE = "證據將在證據快照封存後顯示。"
+
+def _fresh_run_words():
+    """The reset word for every run-bound surface, read from the authorities.
+
+    The headline, the score, the next rule, the phase and the threshold are the
+    ones the page would print for a run with no votes and no elapsed time, taken
+    from the same functions that print them for a real run — so "not known yet"
+    can never drift into wording the room does not otherwise use. The tally and
+    the seat roll blank to nothing because the next run's first frame repaints
+    them outright.
+    """
+    timeline = rule_timeline()
+    focus = focus_state([], next_milestone(0, timeline), False, None)
+    return {
+        "live-question": WAITING_QUESTION,
+        "live-round": WAITING_ROUND,
+        "focus-asset": WAITING_ASSETS,
+        "focus-headline": focus["headline"],
+        "focus-tally": focus["tally_text"],
+        "focus-detail": WAITING_CONFIDENCE,
+        "focus-action": focus["next_label"],
+        "live-phase": phase_label(0, timeline, STATUS_RUNNING),
+        "live-threshold": threshold_label(0),
+        "live-tally": "",
+        "tally-note": WAITING_TALLY_NOTE,
+        "live-seats": "",
+        "rules-detail-body": WAITING_RULES,
+        "vote-history-detail-body": WAITING_VOTES,
+        "evidence-panel-body": WAITING_EVIDENCE,
+    }
+
+def _reset(words, element_id):
+    """Mark one surface as run-bound, and say what it reads when it is not."""
+    return 'id="{}" data-reset="{}"'.format(element_id, _e(words[element_id]))
 
 def render_live_page(data, launch=None, suggestions=None):
     """Return the live chat room for one run.
@@ -45,22 +101,27 @@ def render_live_page(data, launch=None, suggestions=None):
 
 def _live_header(data):
     """The original ``.top`` header: eyebrow, title, question, tabs, connection."""
-    question = data["question"] or "等待新的市場題目"
+    words = _fresh_run_words()
+    question = data["question"] or WAITING_QUESTION
     state = data["state"]
     state_word = _LIVE_STATE_WORDS.get(state, "執行中")
     round_word = (
-        "第 {} 輪".format(data["round"]) if data["round"] is not None else "尚未進入辯論"
+        "第 {} 輪".format(data["round"]) if data["round"] is not None else WAITING_ROUND
     )
     return "\n".join(
         [
             '<header class="top">',
             '<div><p class="eyebrow">AI AGNETS DEBATING CHAMBER 即時研究流程</p>',
             "<h1>即時 Agent 辯論室</h1>",
-            '<p id="question">{}</p>'.format(_e(question)),
+            # Named apart from the ask bar's 題目 field: they are two different
+            # things — what is being watched, and what is being asked next — and
+            # one id cannot address both.
+            '<p {}>{}</p>'.format(_reset(words, "live-question"), _e(question)),
             '<p class="run-state"><span id="live-state" data-state="{}">{}</span>'
-            '　<span id="live-round">{}</span>'
+            '　<span {}>{}</span>'
             '<time id="live-elapsed" data-elapsed-ms="{}" hidden>{}</time></p>'.format(
-                _e(state), _e(state_word), _e(round_word),
+                _e(state), _e(state_word),
+                _reset(words, "live-round"), _e(round_word),
                 data["elapsed_ms"], _e(_clock(data["elapsed_ms"])),
             ),
             "</div>",
@@ -70,11 +131,21 @@ def _live_header(data):
             # immediately left of the stop button — which it cannot be with a
             # third thing between them.
             '<span class="connection" id="live-connection">連線中</span>',
-            site_tabs("/", _live_report_run(data)),
+            _live_site_tabs(data),
             _stop_form(),
             "</div>",
             "</header>",
         ]
+    )
+
+def _live_site_tabs(data):
+    """Give the live room's two run-bound tabs stable client-side targets."""
+    tabs = site_tabs("/", _live_report_run(data))
+    tabs = tabs.replace(
+        ">市場報告</", ' id="live-report-link">市場報告</', 1
+    )
+    return tabs.replace(
+        ">完整辯論</", ' id="live-debate-link">完整辯論</', 1
     )
 
 def _live_report_run(data):
@@ -89,13 +160,34 @@ def _live_report_run(data):
     With no run to watch, the room is the front door before anything has been
     asked, and it offers the newest report exactly like the other pages that are
     about no run in particular (Spec R-002).
+
+    **A finished run's tabs are the completion's answer, not the directory's.**
+    ``completion`` names only what this run's own manifest binds by hash, which
+    is what the ``done`` frame carries and what the client writes onto these two
+    tabs. Reading the files off disk instead would let a stray or rewritten
+    ``debate.html`` open from the tab bar of the same page whose ``done`` frame
+    refuses to name it — the initial HTML and the frame disagreeing about one
+    field, which is the thing this room is not allowed to do.
     """
     if not data["run_id"]:
         return latest_report_run(data["data_root"])
+    if data.get("state") == STATUS_FINISHED:
+        # Finished is exactly "this run wrote a valid manifest", which is the
+        # same gate the completion is read through — so an ended run that bound
+        # nothing offers nothing, rather than whatever is lying in the directory.
+        completion = data.get("completion") or {}
+        return {
+            "run_id": data["run_id"],
+            "artifacts": {
+                REPORT_ARTIFACT: bool(completion.get("report_href")),
+                DEBATE_ARTIFACT: bool(completion.get("debate_href")),
+            },
+        }
     return {
         "run_id": data["run_id"],
-        # The snapshot has already looked for both files; it simply names them
-        # in its own words rather than by file name.
+        # Still running: there is no manifest to bind anything yet, so this is
+        # the snapshot's own look at the directory — it simply names the two
+        # files in its own words rather than by file name.
         "artifacts": {
             REPORT_ARTIFACT: data["report_available"],
             DEBATE_ARTIFACT: data["debate_report_available"],
@@ -106,7 +198,9 @@ def _live_run_bar(data):
     """The original ``.run-bar``: which run, a picker for the finished ones, and
     the way back to the current run and to the history page."""
     run_id = data["run_id"]
-    current = "<code>{}</code>".format(_e(run_id)) if run_id else "尚未選定"
+    current = '<code id="live-run-id">{}</code>'.format(
+        _e(run_id or "尚未選定")
+    )
     lines = [
         '<div class="run-bar">',
         "<span>目前 run：{}</span>".format(current),
@@ -138,62 +232,83 @@ def _live_run_options(data):
 def _live_focus(data):
     """The original ``.focus-bar``: leading stance, the score, the light, and
     the next rule — the one line a glance is meant to land on."""
+    words = _fresh_run_words()
     focus = data["focus"]
-    assets = "／".join(a for a in data.get("assets") or [] if a) or "市場"
+    assets = "／".join(a for a in data.get("assets") or [] if a) or WAITING_ASSETS
     confidence = (
         _light(focus.get("confidence_level"))
         if focus.get("confidence_level")
-        else "⚪ 信心尚未評估"
+        else WAITING_CONFIDENCE
     )
     return "\n".join(
         [
             '<section class="focus-bar" aria-labelledby="focus-headline">',
             "<div>",
-            '<p class="focus-asset" id="focus-asset">{}</p>'.format(_e(assets)),
-            '<h2><span id="focus-headline">{}</span>'
-            '<span class="focus-tally" id="focus-tally">{}</span></h2>'.format(
-                _e(focus["headline"]), _e(focus["tally_text"])
+            '<p class="focus-asset" {}>{}</p>'.format(
+                _reset(words, "focus-asset"), _e(assets)
             ),
-            '<p class="focus-detail" id="focus-detail">{}</p>'.format(confidence),
-            '<div id="live-outcome">{}</div>'.format(_outcome_block(data.get("outcome"))),
+            '<h2><span {}>{}</span>'
+            '<span class="focus-tally" {}>{}</span></h2>'.format(
+                _reset(words, "focus-headline"), _e(focus["headline"]),
+                _reset(words, "focus-tally"), _e(focus["tally_text"]),
+            ),
+            '<p class="focus-detail" {}>{}</p>'.format(
+                _reset(words, "focus-detail"), confidence
+            ),
+            '<div id="live-outcome">{}</div>'.format(
+                _completion_block(data.get("completion")) or _outcome_block(data.get("outcome"))
+            ),
             "</div>",
-            '<a class="focus-action" id="focus-action" href="#rules-detail">{}</a>'.format(
-                _e(focus["next_label"])
+            '<a class="focus-action" {} href="#rules-detail">{}</a>'.format(
+                _reset(words, "focus-action"), _e(focus["next_label"])
             ),
             "</section>",
         ]
     )
 
 def _live_metrics(data):
-    """The four gauges: two countdowns, the phase, and the vote wall.
+    """The four gauges: total countdown, debate countdown, phase, and vote wall.
 
-    The two countdowns carry ``data-countdown-from`` — the T+0 offset the clock
-    is counting *down* to zero from — so the script advances them off the same
-    elapsed value it advances ``#live-elapsed`` with, and neither is a second
-    copy of the run's clock. The phase and the threshold are the snapshot's, in
-    words; they are not counted between frames because a wall does not move on a
-    tick, it moves at a milestone.
+    The total countdown carries ``data-countdown-from`` for the existing client
+    clock seam. The debate countdown is projected from the same authoritative
+    run elapsed value and becomes terminal once debate opens. The phase and the
+    threshold are snapshot values; neither is advanced between frames.
     """
     countdowns = [
         ("十七分鐘剩餘時間", data["total_remaining_ms"], "total-remaining"),
-        ("報告期限剩餘時間", data["report_remaining_ms"], "report-remaining"),
     ]
     elapsed = data["elapsed_ms"]
     cells = [
         '<div class="metric"><small>{}</small>'
-        '<strong id="live-{}" data-countdown-from="{}">{}</strong></div>'.format(
-            _e(name), ident, remaining + elapsed, _e(_clock(remaining))
+        '<strong id="live-{}" data-countdown-from="{}" '
+        'data-duration-ms="{}">{}</strong></div>'.format(
+            _e(name), ident, remaining + elapsed, TOTAL_WINDOW_MS,
+            _e(_clock(remaining))
         )
         for name, remaining, ident in countdowns
     ]
+    debate_remaining = data.get("debate_start_remaining_ms")
+    debate_text = (
+        "辯論已開始" if debate_remaining is None else _countdown_clock(debate_remaining)
+    )
+    debate_value = "" if debate_remaining is None else str(debate_remaining)
+    cells.append(
+        '<div class="metric"><small>開始辯論剩餘時間</small>'
+        '<strong id="live-debate-remaining" data-remaining-ms="{}">{}</strong></div>'.format(
+            _e(debate_value), _e(debate_text)
+        )
+    )
+    words = _fresh_run_words()
     cells.append(
         '<div class="metric"><small>目前階段</small>'
-        '<strong id="live-phase">{}</strong></div>'.format(_e(data["phase_label"]))
+        '<strong {}>{}</strong></div>'.format(
+            _reset(words, "live-phase"), _e(data["phase_label"])
+        )
     )
     cells.append(
         '<div class="metric"><small>目前共識門檻</small>'
-        '<strong id="live-threshold">{}</strong></div>'.format(
-            _e(data["threshold_label"])
+        '<strong {}>{}</strong></div>'.format(
+            _reset(words, "live-threshold"), _e(data["threshold_label"])
         )
     )
     return '<section class="metrics" aria-label="流程計時與門檻">{}</section>'.format(
@@ -267,7 +382,7 @@ def _live_vote_history(data):
     ``.history`` list, one compact row per change."""
     changes = data["changes"]
     if not changes:
-        inner = "<p class=\"hint\">尚未投票。</p>"
+        inner = '<p class="hint">{}</p>'.format(_e(WAITING_VOTES))
     else:
         rows = "".join(_vote_history_row(change) for change in changes)
         inner = '<ol class="history">{}</ol>'.format(rows)
@@ -302,7 +417,7 @@ def _live_evidence(data):
     """可驗證證據: the sealed evidence cards, shown the same way run detail does."""
     evidence = data["evidence"]
     if not evidence:
-        inner = "<p class=\"hint\">證據將在證據快照封存後顯示。</p>"
+        inner = '<p class="hint">{}</p>'.format(_e(WAITING_EVIDENCE))
     else:
         inner = '<ul class="evidence">{}</ul>'.format(
             "".join(_evidence_card(card) for card in evidence)
@@ -310,11 +425,23 @@ def _live_evidence(data):
     return _detail_panel("evidence-panel", "可驗證證據", inner)
 
 def _detail_panel(panel_id, heading, inner):
+    """One folded panel: a heading that is the page's own, and a run-bound body.
+
+    The body is marked and the ``<details>`` around it is not. What is folded
+    here — the rule timeline, the changes of stance, the sealed evidence — is
+    this run's, and no later frame carries any of it, so a same-page switch can
+    only correct it by blanking it. The summary and the fold are the room's
+    furniture: they say the same thing whichever run is being watched, and a
+    client that blanked them would take the panel's name off it.
+    """
+    words = _fresh_run_words()
     return "\n".join(
         [
             '<details class="detail-panel" id="{}">'.format(panel_id),
             "<summary>{}</summary>".format(_e(heading)),
-            '<div class="detail-body">{}</div>'.format(inner),
+            '<div class="detail-body" {}>{}</div>'.format(
+                _reset(words, panel_id + "-body"), inner
+            ),
             "</details>",
         ]
     )
@@ -350,7 +477,7 @@ def _launch_form(launch, suggestions=None):
     busy = bool(launch.get("running"))
     suggestions = suggestions or {}
     lines = [
-        '<form class="run-bar ask" method="post" action="/launch" '
+        '<form class="run-bar ask" id="launch-form" method="post" action="/launch" '
         'aria-labelledby="ask-heading">',
         '<span id="ask-heading">提問並啟動七席</span>',
         '<label for="question">題目</label>',
@@ -365,9 +492,10 @@ def _launch_form(launch, suggestions=None):
         for asset_class in ask_bar_markets()
     ]
     lines += [
-        '<button type="submit"{}>送出並啟動</button>'.format(
+        '<button id="launch-submit" type="submit"{}>送出並啟動</button>'.format(
             " disabled" if busy else ""
         ),
+        '<span id="launch-status" role="status" aria-live="polite"></span>',
         _ask_note(launch, busy),
         '<span id="question-hint">送出後會在背景啟動一次完整的七席研究，'
         "本頁只負責啟動與觀看。同一類別要分析多個標的時，以逗號分隔。</span>",
@@ -406,8 +534,7 @@ def _ask_note(launch, busy):
     if not launch.get("started"):
         return ""
     return (
-        '<span id="ask-busy">上一次由本頁啟動的程序已結束'
-        "（結束碼 {}）。</span>".format(_e(launch.get("returncode")))
+        '<span id="ask-busy">上一次由本頁啟動的程序已結束。</span>'
     )
 
 def _asset_class_menu(busy):
@@ -494,17 +621,36 @@ def _outcome_block(outcome):
         )
     )
 
+
+def _completion_block(completion):
+    if not completion:
+        return ""
+    return '<p>分析完成　<a href="{}">查看市場報告</a></p>'.format(
+        _e(completion["report_href"])
+    )
+
+
+def _countdown_clock(milliseconds):
+    seconds = max(1, (int(milliseconds) + 999) // 1000)
+    minutes, seconds = divmod(seconds, 60)
+    return "{:02d}:{:02d}".format(minutes, seconds)
+
 def _live_tally(data):
     """The original right-column tally panel: one cell per ballot position, in
     this ballot's own words, with a big number underneath."""
+    words = _fresh_run_words()
     cells = "".join(_tally_cell(entry) for entry in data["tally"])
-    note = "" if data["tally"] else "尚未開始投票。"
+    note = "" if data["tally"] else WAITING_TALLY_NOTE
     return "\n".join(
         [
             '<section class="panel" aria-labelledby="live-tally-heading">',
             '<h2 id="live-tally-heading">即時票數</h2>',
-            '<div class="tally" id="live-tally">{}</div>'.format(cells),
-            '<p class="tally-note" id="tally-note">{}</p>'.format(_e(note)),
+            '<div class="tally" {}>{}</div>'.format(
+                _reset(words, "live-tally"), cells
+            ),
+            '<p class="tally-note" {}>{}</p>'.format(
+                _reset(words, "tally-note"), _e(note)
+            ),
             "</section>",
         ]
     )
@@ -528,8 +674,9 @@ def _live_seats(data):
         [
             '<section class="panel" aria-labelledby="live-seats-heading">',
             '<h2 id="live-seats-heading">七席研究 Agent</h2>',
-            '<div class="agents" id="live-seats">{}</div>'.format(
-                "".join(_agent_card(seat) for seat in data["seats"])
+            '<div class="agents" {}>{}</div>'.format(
+                _reset(_fresh_run_words(), "live-seats"),
+                "".join(_agent_card(seat) for seat in data["seats"]),
             ),
             "</section>",
         ]
@@ -543,7 +690,7 @@ def _agent_card(seat):
         "<div><h3>{name}</h3><small>{number}｜{label}</small></div>"
         '<p class="stance {stance_class}">{stance_label}</p>'
         '<span class="status">{status}</span>'
-        "</div>{blurb}</article>"
+        "</div>{blurb}{attempt}</article>"
     ).format(
         provider=_e(seat["provider"]),
         seat_id=_e(seat["seat_id"]),
@@ -555,6 +702,26 @@ def _agent_card(seat):
         stance_label=_e(seat["stance_label"]),
         status=_e(seat["status"]),
         blurb=_agent_blurb(seat["seat_blurb"]),
+        attempt=_agent_attempt(seat.get("attempt")),
+    )
+
+def _agent_attempt(attempt):
+    """The seat's research lineage as one line under its card (Spec R-008).
+
+    One seat is one card however many attempts it took, so this says which
+    source was adopted and what actually answered — ``未記錄`` for a run
+    recorded before those fields existed, never a guess. A caller that hands in
+    a seat with no lineage at all gets nothing extra rather than an empty box.
+    """
+    if not attempt:
+        return ""
+    return (
+        '<p class="agent-attempt" data-attempt-outcome="{outcome}">'
+        "<span>{label}</span><small>實際模型：{model}</small></p>"
+    ).format(
+        outcome=_e(attempt.get("terminal_outcome") or ""),
+        label=_e(attempt.get("label") or UNRECORDED_LABEL),
+        model=_e(attempt.get("actual_model") or UNRECORDED_LABEL),
     )
 
 def _agent_blurb(blurb):
@@ -574,10 +741,10 @@ def _live_feed(data):
             '<section class="panel chat-panel" aria-labelledby="live-feed-heading">',
             '<p class="eyebrow">現在正在發生</p>',
             '<h2 id="live-feed-heading">公開辯論直播</h2>',
-            '<div class="feed" id="live-feed" data-cursor="{}" role="log" '
+            '<div class="feed" id="live-feed" data-run-id="{}" data-cursor="{}" role="log" '
             'aria-live="polite" aria-relevant="additions" aria-label="辯論聊天室" '
             'tabindex="0">{}{}</div>'.format(
-                _e(data["cursor"] or ""), messages, empty
+                _e(data["run_id"] or ""), _e(data["cursor"] or ""), messages, empty
             ),
             '<button class="feed-jump" id="feed-jump" type="button" hidden>有新發言 ↓</button>',
             "</section>",

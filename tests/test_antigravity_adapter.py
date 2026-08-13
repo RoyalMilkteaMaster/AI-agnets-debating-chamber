@@ -11,17 +11,32 @@ from hoya_market_agents.antigravity_adapter import (
     AntigravityAdapter,
     AntigravityBoundaryError,
     AntigravityEnvelopeError,
+    AntigravityError,
     AntigravityLateResult,
     AntigravityNotReady,
     AntigravityPostSealSearch,
     AntigravitySchemaError,
     AntigravityTimeout,
+    AntigravityTreeTermination,
     parse_envelope,
 )
+from hoya_market_agents.claude_adapter import (
+    PROCESS_GROUP_RECLAIMED,
+    PROCESS_TREE_TERMINATION_FAILED,
+    ProcessRegistry,
+)
 from hoya_market_agents.prompt_builder import ResearchSnapshot, build_provider_prompt
+from tests.test_claude_adapter import (
+    FakeKillpg,
+    FakeProcessGroup,
+    FixedChildRunner,
+    UnreclaimableProcess,
+    deaf_killpg,
+)
 
 
 MODEL = "gemini-3.1-pro-high"
+PROMPT = "請以繁體中文回報 BTC 的公開研究結論。"
 SCHEMA = {
     "type": "object",
     "properties": {"answer": {"type": "string"}},
@@ -75,7 +90,9 @@ class FakeRunner:
         models_stderr="",
         models_output=MODEL + "\n",
         log_text=None,
+        process_outcome=None,
     ):
+        self.process_outcome = process_outcome
         self.stream = stream or stream_success()
         self.stream_returncode = stream_returncode
         self.stream_stderr = stream_stderr
@@ -97,9 +114,14 @@ class FakeRunner:
             Path(argv[argv.index("--log-file") + 1]).write_text(
                 self.log_text, encoding="utf-8"
             )
-        return subprocess.CompletedProcess(
+        completed = subprocess.CompletedProcess(
             argv, self.stream_returncode, self.stream, self.stream_stderr
         )
+        if self.process_outcome is not None:
+            # 只有 group-safe 的 runner 會多帶這個欄位；注入的 runner 不帶時
+            # adapter 必須維持原本行為。
+            completed.process_outcome = self.process_outcome
+        return completed
 
 
 class AntigravityAdapterTest(unittest.TestCase):
@@ -140,6 +162,23 @@ class AntigravityAdapterTest(unittest.TestCase):
         self.assertEqual({"answer": "ready"}, result.structured_output)
         self.assertEqual(2.5, result.duration_seconds)
         self.assertEqual(14, result.usage["total_tokens"])
+
+    def test_preflight_accepts_the_current_tab_separated_model_listing(self):
+        self.runner.models_output = (
+            MODEL + "\tGemini 3.1 Pro (High)\n"
+            "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n"
+        )
+
+        result = self.adapter.preflight(self.attempt_dir("tab-separated-models"))
+
+        self.assertTrue(result.ready)
+        self.assertEqual(MODEL, result.actual_model)
+
+    def test_preflight_does_not_treat_a_space_separated_status_as_available(self):
+        self.runner.models_output = MODEL + " unavailable\n"
+
+        with self.assertRaisesRegex(AntigravityNotReady, "指定模型不存在"):
+            self.adapter.preflight(self.attempt_dir("unavailable-model"))
 
     def test_call_uses_physical_schema_path_under_attempt_and_never_inline_schema(self):
         attempt = self.attempt_dir()
@@ -405,6 +444,193 @@ class EnvelopeParserTest(unittest.TestCase):
         raw = json.dumps({"status": "SUCCESS", "actual_model": MODEL})
         with self.assertRaises(AntigravityEnvelopeError):
             parse_envelope(raw)
+
+
+class AntigravityUnreclaimedTreeTest(unittest.TestCase):
+    """整組回收不了時，Antigravity 邊界必須先 fail closed（Reviewer A-1 第三次）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.code_root = root / "code"
+        self.data_root = root / "data"
+        self.code_root.mkdir()
+        self.data_root.mkdir()
+        self.cli = root / "agy"
+        self.cli.write_text("fixture", encoding="utf-8")
+        self.cli.chmod(0o700)
+
+    def invoke(self, process_outcome, name):
+        attempt_dir = self.data_root / "runs" / "run-1" / "agents" / "news" / name
+        attempt_dir.mkdir(parents=True)
+        adapter = AntigravityAdapter(
+            cli_path=self.cli,
+            code_root=self.code_root,
+            data_root=self.data_root,
+            runner=FakeRunner(process_outcome=process_outcome),
+        )
+        return adapter.invoke(PROMPT, SCHEMA, attempt_dir, require_search=True)
+
+    def test_a_clean_looking_reply_is_refused_when_the_tree_was_not_reclaimed(self):
+        # CLI 退出碼 0、envelope 合法、search_web 也真的跑過；唯一的問題是整組
+        # 證明不了回收，這份回覆就永遠不可採用。
+        with self.assertRaises(AntigravityTreeTermination) as caught:
+            self.invoke(PROCESS_TREE_TERMINATION_FAILED, "unreclaimed")
+
+        self.assertIsInstance(caught.exception, AntigravityError)
+        self.assertEqual(PROCESS_TREE_TERMINATION_FAILED, str(caught.exception))
+
+    def test_a_reclaimed_tree_still_admits_its_structured_output(self):
+        result = self.invoke(PROCESS_GROUP_RECLAIMED, "reclaimed")
+
+        self.assertEqual({"answer": "ready"}, result.structured_output)
+        self.assertTrue(result.search_succeeded)
+
+    def test_an_injected_runner_without_a_process_outcome_is_unchanged(self):
+        result = self.invoke(None, "plain")
+
+        self.assertEqual({"answer": "ready"}, result.structured_output)
+        self.assertTrue(result.search_succeeded)
+
+
+class CleanExitProcess:
+    """``Popen`` duck type：自己乾淨收工，但整組證明不了已經回收。"""
+
+    pid = 9501
+    returncode = 0
+
+    def communicate(self, input=None, timeout=None):
+        return "agy stdout", ""
+
+    def poll(self):
+        return 0
+
+
+class TerminatingRunnerOutcomeCarrierTest(unittest.TestCase):
+    """``run_process`` 必須把 process 終局帶到 Antigravity 這一側。"""
+
+    def test_the_completed_process_carries_the_process_outcome(self):
+        process = CleanExitProcess()
+        runner = FixedChildRunner(
+            ProcessRegistry(killpg=deaf_killpg), process, key_source=lambda: "seat-key"
+        )
+
+        completed = runner.run_process(["fake-agy"], cwd=".", timeout=5)
+
+        self.assertEqual(0, completed.returncode)
+        self.assertEqual("agy stdout", completed.stdout)
+        self.assertEqual(
+            PROCESS_TREE_TERMINATION_FAILED,
+            getattr(completed, "process_outcome", None),
+        )
+
+
+class TimedOutProcess:
+    """``Popen`` duck type：第一次 communicate 逾時，整組回收後就收得到 EOF。"""
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.returncode = None
+        self.communicate_calls = 0
+
+    def communicate(self, input=None, timeout=None):
+        self.communicate_calls += 1
+        if self.communicate_calls == 1:
+            raise subprocess.TimeoutExpired(["fake-agy"], timeout)
+        return "", ""
+
+    def poll(self):
+        return None
+
+
+def raising_timeout_runner(process_outcome=None):
+    """The group-safe runner's timeout shape, with or without a machine verdict."""
+
+    def run(argv, cwd, timeout):
+        error = subprocess.TimeoutExpired(list(argv), timeout)
+        if process_outcome is not None:
+            error.process_outcome = process_outcome
+        raise error
+
+    return run
+
+
+class AntigravityTimeoutOutcomeTest(unittest.TestCase):
+    """逾時與整組回收失敗同時成立時，永久不可採用的終局優先（Reviewer B-1）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.code_root = root / "code"
+        self.data_root = root / "data"
+        self.code_root.mkdir()
+        self.data_root.mkdir()
+        self.cli = root / "agy"
+        self.cli.write_text("fixture", encoding="utf-8")
+        self.cli.chmod(0o700)
+
+    def invoke(self, runner, name):
+        attempt_dir = self.data_root / "runs" / "run-1" / "agents" / "news" / name
+        attempt_dir.mkdir(parents=True)
+        adapter = AntigravityAdapter(
+            cli_path=self.cli,
+            code_root=self.code_root,
+            data_root=self.data_root,
+            runner=runner,
+        )
+        return adapter.invoke(PROMPT, SCHEMA, attempt_dir, require_search=True)
+
+    def test_run_process_carries_the_failed_verdict_on_its_timeout(self):
+        process = UnreclaimableProcess(pid=9601)
+        runner = FixedChildRunner(
+            ProcessRegistry(killpg=deaf_killpg), process, key_source=lambda: "seat-key"
+        )
+
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            runner.run_process(["fake-agy"], cwd=".", timeout=0.01)
+
+        self.assertEqual(
+            PROCESS_TREE_TERMINATION_FAILED,
+            getattr(caught.exception, "process_outcome", None),
+        )
+        # 有界 drain 仍然成立，沒有回到無界等待。
+        self.assertFalse(process.unbounded_drain.is_set())
+        self.assertEqual(2, process.communicate_calls)
+
+    def test_run_process_carries_the_reclaimed_verdict_on_its_timeout(self):
+        process = TimedOutProcess(9602)
+        runner = FixedChildRunner(
+            ProcessRegistry(killpg=FakeKillpg(FakeProcessGroup(9602))),
+            process,
+            key_source=lambda: "seat-key",
+        )
+
+        with self.assertRaises(subprocess.TimeoutExpired) as caught:
+            runner.run_process(["fake-agy"], cwd=".", timeout=0.01)
+
+        self.assertEqual(
+            PROCESS_GROUP_RECLAIMED,
+            getattr(caught.exception, "process_outcome", None),
+        )
+
+    def test_a_timeout_whose_tree_was_not_reclaimed_is_refused_permanently(self):
+        with self.assertRaises(AntigravityTreeTermination) as caught:
+            self.invoke(
+                raising_timeout_runner(PROCESS_TREE_TERMINATION_FAILED), "unreclaimed"
+            )
+
+        self.assertIsInstance(caught.exception, AntigravityError)
+        self.assertEqual(PROCESS_TREE_TERMINATION_FAILED, str(caught.exception))
+
+    def test_a_timeout_whose_tree_was_reclaimed_stays_a_plain_timeout(self):
+        with self.assertRaises(AntigravityTimeout):
+            self.invoke(raising_timeout_runner(PROCESS_GROUP_RECLAIMED), "reclaimed")
+
+    def test_an_injected_runner_timeout_without_a_verdict_stays_a_plain_timeout(self):
+        with self.assertRaises(AntigravityTimeout):
+            self.invoke(raising_timeout_runner(), "plain")
 
 
 if __name__ == "__main__":

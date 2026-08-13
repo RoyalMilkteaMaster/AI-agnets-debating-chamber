@@ -29,7 +29,7 @@ from pathlib import Path
 from .question import ASSET_CLASS_OPEN, ASSET_CLASSES, OVERALL_MARKET_ASSET
 from .seats import CODE_ROOT
 
-PHASES = ("research", "debate", "vote")
+PHASES = ("research", "opening", "debate", "vote")
 PROVIDERS = ("gpt", "claude", "gemini")
 RESEARCH_UPSTREAM_COMMIT = "2ab958093e83e0ec752e6c1c5932da465bf23e0c"
 RESEARCH_GIT_BLOB_SHA = "0ba594a07f306479baa67104381f48e209ab6aae"
@@ -57,6 +57,10 @@ _PHASE_TASK = {
     "research": (
         "任務：依你的專責範圍蒐集證據卡。每張證據卡必須包含來源、發布與取得時間、"
         "來源等級、原始數值或短摘錄，以及你對可信度與限制的公開說明。"
+    ),
+    "opening": (
+        "任務：只依本席已採用且已封套的 research evidence，產生新的獨立開場立場。"
+        "不得把 research envelope、證據摘要或既有文字直接當成投票輸出。"
     ),
     "debate": (
         "任務：閱讀本回合可見的證據後提出你的公開論點，並以 evidence ID 支持或反駁。"
@@ -286,6 +290,7 @@ def build_seat_prompt(
     debate_snapshot=(),
     research_snapshot=None,
     evidence_view=(),
+    adopted_evidence=None,
 ):
     """Return the prompt for ``seat`` in ``phase``."""
     if phase not in PHASES:
@@ -306,9 +311,18 @@ def build_seat_prompt(
         focus=_seat_focus(seat, getattr(scope, "asset_class", ASSET_CLASS_OPEN)),
         output_dir=seat.output_dir,
     )
-    seat_section += "\n".join(
-        _snapshot_block("本席證據視圖", evidence_view, shared=False)
-    )
+    if phase == "opening" and adopted_evidence is not None:
+        seat_section += "\n".join(
+            _snapshot_block(
+                "本席已採用 Research Evidence Envelope／Seal",
+                (adopted_evidence,),
+                shared=False,
+            )
+        )
+    else:
+        seat_section += "\n".join(
+            _snapshot_block("本席證據視圖", evidence_view, shared=False)
+        )
     return SeatPrompt(
         seat_id=seat.seat_id,
         phase=phase,
@@ -423,6 +437,17 @@ def _shared_section(scope, phase, evidence_snapshot, debate_snapshot, research_s
             "- direction 只能是 support、oppose、neutral；source_tier 只能是 1、2、3。",
             _asset_field_rule(scope),
             "- 回傳結構化 EvidenceCard，不新增研究或投票席。",
+        ]
+    elif phase == "opening":
+        lines += [
+            "",
+            "## 獨立 Opening 操作規則",
+            "- 本席 research 結果已採用並以 envelope SHA-256 封套；只可讀取該封套。",
+            "- 全場 Evidence snapshot 尚未發布；不得讀取、等待或推測其他席證據。",
+            "- 禁止再上網搜尋、補件、新增證據或建立任何 agent。",
+            "- Opening 必須是新的 provider output；不得把 research envelope 或摘要改名交回。",
+            "- 只能引用本席封套內的 evidence ID，不得虛構資料。",
+            "- public_reason 必須使用繁體中文。",
         ]
     else:
         lines += [

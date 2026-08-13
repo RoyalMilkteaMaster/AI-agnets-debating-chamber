@@ -14,18 +14,27 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .clock import iso_utc
-from .contract_validator import CONTRACT_VERSION, RUN_RULES_FIELD, run_rules_record
+from .contract_validator import (
+    CONTRACT_VERSION,
+    RUN_RULES_FIELD,
+    run_rules_record,
+    validate_run_manifest,
+    validate_seat_evidence,
+)
 from .debate_rules import debate_rules
 from .debate_state_machine import (
     DebateError,
     DebateStateMachine,
     LateMessageError,
+    snapshot_digest,
+    stances_for,
 )
 from .prompt_builder import build_seat_prompt, elapsed_label, load_research_snapshot
 from .question import ASSET_CLASS_OPEN
 from .real_provider import (
     DEBATE_FAILURE_MESSAGE,
     DEBATE_RESULT_MESSAGE,
+    EVIDENCE_CARD_SCHEMA,
     PROVIDER_LINEAGE_MESSAGE,
     DebateDispatch,
 )
@@ -55,6 +64,27 @@ REPORT_ATTEMPTS_NAME = "diagnostics/report-attempts.json"
 # 停在下一道牆前 5 秒，剩下時間留給 relay 與計票。Opening 必須使用完整第一輪
 # 視窗；實測 59.080 秒的合法回覆不可被提早 5 秒取消。
 RELAY_MARGIN_MS = 5_000
+
+# An Opening has no budget of its own.  Its one absolute wall is the opening
+# turn's ``collect_until_ms`` — the first-ballot wall that already cancels
+# anything still pending — so a late adoption inherits only the time that is
+# actually left, and the emitted deadline, the invocation timeout and the
+# await/cancel loop all name the same instant.
+OPENING_OUTPUT_MALFORMED = "opening_output_malformed"
+OPENING_OUTPUT_SCHEMA_INVALID = "opening_output_schema_invalid"
+OPENING_SEAT_ID_MISMATCH = "opening_seat_id_mismatch"
+
+OPENING_OUTPUT_FIELDS = frozenset(
+    {
+        "seat_id",
+        "stance",
+        "public_reason",
+        "evidence_ids",
+        "conflicting_evidence_ids",
+        "uncertainty_reason",
+        "change_trigger",
+    }
+)
 
 # 主迴圈最多晚一個 poll 才看到硬停牆；紀錄成牆後零碎毫秒會讓這次強制停止
 # 對不上它自己執行的規則，也過不了 run_verifier 的 stop 語意檢查。
@@ -133,9 +163,19 @@ def revote_schema(stances):
 def validate_opening_shape(value):
     """Refuse a shape that could never become a public position."""
     _require_object(value, "初始立場")
+    missing = sorted(OPENING_OUTPUT_FIELDS - set(value))
+    unknown = sorted(set(value) - OPENING_OUTPUT_FIELDS)
+    if missing:
+        raise ValueError("初始立場缺少必要欄位：{}".format("、".join(missing)))
+    if unknown:
+        raise ValueError("初始立場含未知欄位：{}".format("、".join(unknown)))
+    _require_text(value, "seat_id")
     _require_text(value, "stance")
     _require_text(value, "public_reason")
     _require_id_list(value, "evidence_ids")
+    _require_nullable_id_list(value, "conflicting_evidence_ids")
+    _require_nullable_text(value, "uncertainty_reason")
+    _require_nullable_text(value, "change_trigger")
     return value
 
 
@@ -164,6 +204,22 @@ def _require_id_list(record, field):
         raise ValueError("{} 必須為至少一個 ID 的陣列".format(field))
     if any(not isinstance(item, str) or not item.strip() for item in value):
         raise ValueError("{} 只能包含非空字串".format(field))
+
+
+def _require_nullable_id_list(record, field):
+    value = record.get(field)
+    if value is None:
+        return
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        raise ValueError("{} 必須為字串陣列或 null".format(field))
+
+
+def _require_nullable_text(record, field):
+    value = record.get(field)
+    if value is not None and not isinstance(value, str):
+        raise ValueError("{} 必須為字串或 null".format(field))
 
 
 @dataclass(frozen=True)
@@ -306,32 +362,20 @@ class DebateDriver:
         self.runner = runner
         self.results_queue = results_queue
         self.package = package
-        self.evidence_records = list(evidence_records)
+        self.evidence_records = list(evidence_records or ())
         self.sleeper = sleeper
         self.err = err
-        # 這一場的封存時刻由題型決定，唯一權威是 research_deadlines；
-        # 狀態機再拿它跟該 run 真正的 seal 對帳，對不上就 fail closed。
-        self.machine = DebateStateMachine(
-            run=run,
-            clock=self.clock,
-            gateway=None,
-            question_type=package.question_type,
-            evidence_records=self.evidence_records,
-            evidence_snapshot_sha256=snapshot_sha256,
-            start_monotonic_ms=start_monotonic_ms,
-            started_at_utc=started_at_utc,
-            debate_start_ms=self.deadlines.seal_ms,
-            rules=self.rules,
-        )
+        self.started_at_utc = started_at_utc
         self.snapshot_sha256 = snapshot_sha256
         self.start_monotonic_ms = start_monotonic_ms
+        self.stances = stances_for(package.question_type)
         self.turns = build_turns(
-            self.machine.stances, self.deadlines.seal_ms, self.rules
+            self.stances, self.deadlines.seal_ms, self.rules
         )
         # 立場詞彙只有一個權威：題型 → 狀態機的 stance 映射；標籤以題目包記下的
         # 為準，缺席時才由題型與資產推導，避免舊 run 或半落地的欄位讓辯論失語。
         self.stance_labels = resolve_stance_labels(
-            self.machine.stances,
+            self.stances,
             getattr(package, "assets", ()) or (),
             getattr(package, "stance_labels", None),
         )
@@ -344,11 +388,20 @@ class DebateDriver:
         self.lineage = {}
         self.notes = []
         self.dispatched = []
+        self.opening_adoptions = {}
+        self.opening_results = {}
+        self.opening_lineage = {}
+        self.early_opening_enabled = evidence_records is None and snapshot_sha256 is None
+        self.machine = None
+        if not self.early_opening_enabled:
+            self._build_machine()
 
     # -- public API ---------------------------------------------------------
 
     def run_debate(self):
         """Return the persisted ``votes.json`` content for this run."""
+        if self.machine is None:
+            raise DebateError("Evidence snapshot 尚未封存，不得發布 Opening。")
         self._opening_wave()
         for turn in tuple(self.turns.values())[1:]:
             self._wait_until(turn.relay_from_ms)
@@ -361,17 +414,227 @@ class DebateDriver:
     def elapsed_ms(self):
         return max(0, self.clock.monotonic_ms() - self.start_monotonic_ms)
 
+    def activate_after_seal(self, evidence_records, snapshot_sha256):
+        """Open the state machine on the verified global seal, exactly once."""
+        if self.machine is not None:
+            return False
+        self.evidence_records = list(evidence_records)
+        self.snapshot_sha256 = snapshot_sha256
+        self._build_machine()
+        for seat_id in SEAT_IDS:
+            if seat_id in self.positions:
+                self._publish_position(seat_id, self.positions[seat_id])
+        return True
+
+    def _build_machine(self):
+        # The state machine remains the only publication gate.  Construction
+        # verifies RunStore's immutable global seal and refuses an early clock.
+        self.machine = DebateStateMachine(
+            run=self.run,
+            clock=self.clock,
+            gateway=None,
+            question_type=self.package.question_type,
+            evidence_records=self.evidence_records,
+            evidence_snapshot_sha256=self.snapshot_sha256,
+            start_monotonic_ms=self.start_monotonic_ms,
+            started_at_utc=self.started_at_utc,
+            debate_start_ms=self.deadlines.seal_ms,
+            rules=self.rules,
+        )
+        return self.machine
+
+    def start_early_opening(self, adoption):
+        """Dispatch one Opening from the scheduler's valid adopted edge."""
+        seat_id = getattr(adoption, "seat_id", None)
+        elapsed = self.elapsed_ms
+        if self.machine is not None or elapsed >= self.deadlines.seal_ms:
+            self._opening_event(
+                "opening_dispatch_rejected", elapsed, adoption,
+                failure_code="opening_illegal_state",
+            )
+            return False
+        if seat_id in self.opening_adoptions:
+            self._opening_event(
+                "opening_dispatch_rejected", elapsed, adoption,
+                failure_code="opening_already_dispatched",
+            )
+            return False
+        if elapsed >= self.turns["opening"].collect_until_ms:
+            self._opening_event(
+                "opening_dispatch_rejected", elapsed, adoption,
+                failure_code="opening_deadline_expired",
+            )
+            return False
+        if not self._valid_adoption(adoption):
+            self._opening_event(
+                "opening_dispatch_rejected", elapsed, adoption,
+                failure_code="adopted_evidence_not_sealed",
+            )
+            return False
+
+        self.opening_adoptions[seat_id] = adoption
+        started = elapsed
+        dispatch = DebateDispatch(
+            dispatch_id="{}-opening".format(seat_id),
+            seat_id=seat_id,
+            prompt=self._opening_prompt(seat_id, adoption),
+            schema=self.turns["opening"].schema,
+            validator=self.turns["opening"].validator,
+            timeout_seconds=self._timeout_seconds(self.turns["opening"]),
+            phase="opening",
+            research_attempt_id=adoption.attempt_id,
+            provider=adoption.actual_provider,
+            requested_model=adoption.requested_model,
+            research_actual_model=adoption.actual_model,
+            adopted_evidence_sha256=adoption.adopted_evidence_sha256,
+            opening_started_elapsed_ms=started,
+            opening_deadline_elapsed_ms=self.turns["opening"].collect_until_ms,
+        )
+        self._opening_event(
+            "opening_dispatch_requested", started, adoption,
+            dispatch_id=dispatch.dispatch_id,
+            opening_started_elapsed_ms=dispatch.opening_started_elapsed_ms,
+            opening_deadline_elapsed_ms=dispatch.opening_deadline_elapsed_ms,
+        )
+        if not self._start(dispatch, self.turns["opening"]):
+            return False
+        self.pending[dispatch.dispatch_id] = PendingDispatch(
+            dispatch_id=dispatch.dispatch_id,
+            seat_id=seat_id,
+            turn=self.turns["opening"],
+            replies=self.positions,
+            on_reply=self._receive_opening,
+        )
+        self._opening_event(
+            "opening_invocation_started", started, adoption,
+            dispatch_id=dispatch.dispatch_id,
+            opening_deadline_elapsed_ms=dispatch.opening_deadline_elapsed_ms,
+        )
+        return True
+
+    def _valid_adoption(self, adoption):
+        records = tuple(getattr(adoption, "records", ()) or ())
+        if (
+            getattr(adoption, "run_id", None) != self.run.run_id
+            or getattr(adoption, "seat_id", None) not in self.seats
+            or not records
+            or not self._safe_attempt_id(getattr(adoption, "attempt_id", None))
+            or not getattr(adoption, "actual_provider", None)
+            or not getattr(adoption, "actual_model", None)
+            or not getattr(adoption, "requested_model", None)
+        ):
+            return False
+        authoritative_records = self._authoritative_adoption_records(adoption)
+        if authoritative_records is None or records != authoritative_records:
+            return False
+        return (
+            snapshot_digest(authoritative_records)
+            == adoption.adopted_evidence_sha256
+        )
+
+    @staticmethod
+    def _safe_attempt_id(attempt_id):
+        return (
+            isinstance(attempt_id, str)
+            and bool(attempt_id)
+            and attempt_id not in (".", "..")
+            and Path(attempt_id).name == attempt_id
+            and "/" not in attempt_id
+            and "\\" not in attempt_id
+        )
+
+    def _authoritative_adoption_records(self, adoption):
+        """Read the RunStore adoption pointer and its validated payload back."""
+        seat_id = adoption.seat_id
+        attempt_id = adoption.attempt_id
+        adopted_path = self.run.path / "agents" / seat_id / "adopted.json"
+        expected_validated = (
+            "agents/{}/attempts/{}/validated.json".format(seat_id, attempt_id)
+        )
+        try:
+            adopted = json.loads(adopted_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        expected_adopted = {
+            "run_id": self.run.run_id,
+            "seat_id": seat_id,
+            "attempt_id": attempt_id,
+            "validated_path": expected_validated,
+        }
+        if adopted != expected_adopted:
+            return None
+        try:
+            validated = json.loads(
+                (self.run.path / expected_validated).read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(validated, dict)
+            or set(validated) != {"schema_version", "records"}
+            or validated.get("schema_version") != CONTRACT_VERSION
+            or not isinstance(validated.get("records"), list)
+            or not validated["records"]
+        ):
+            return None
+        authoritative_records = tuple(validated["records"])
+        required_card_fields = set(EVIDENCE_CARD_SCHEMA["required"])
+        if any(
+            not isinstance(record, dict) or set(record) != required_card_fields
+            for record in authoritative_records
+        ):
+            return None
+        try:
+            validate_seat_evidence(seat_id, authoritative_records)
+        except (TypeError, ValueError):
+            return None
+        if any(
+            record.get("run_id") != self.run.run_id
+            or record.get("seat_id") != seat_id
+            or record.get("attempt_id") != attempt_id
+            or record.get("phase") != "research"
+            for record in authoritative_records
+        ):
+            return None
+        return authoritative_records
+
+    def accept_provider_message(self, message):
+        """Consume only an in-flight early Opening message during research."""
+        kind = message[0]
+        if kind == PROVIDER_LINEAGE_MESSAGE:
+            payload = message[2]
+            if payload.get("phase") != "opening":
+                return False
+            self._accept(message)
+            return True
+        if kind in (DEBATE_RESULT_MESSAGE, DEBATE_FAILURE_MESSAGE):
+            pending = self.pending.get(message[1])
+            if pending is None or pending.turn.slug != "opening":
+                return False
+            self._accept(message)
+            return True
+        return False
+
     # -- waves --------------------------------------------------------------
 
     def _opening_wave(self):
         turn = self.turns["opening"]
-        dispatch_ids = self._dispatch(
-            SEAT_IDS,
-            turn,
-            self._opening_prompt,
-            self.positions,
-            self._publish_position,
-        )
+        if self.early_opening_enabled:
+            # Every adopted seat already spent its exactly-one dispatch at the
+            # adopted edge.  Do not create a second post-seal invocation.
+            dispatch_ids = [
+                dispatch_id
+                for dispatch_id, pending in self.pending.items()
+                if pending.turn.slug == "opening"
+            ]
+        else:
+            dispatch_ids = self._dispatch(
+                SEAT_IDS,
+                turn,
+                self._opening_prompt,
+                self.positions,
+                self._publish_position,
+            )
         self._await(dispatch_ids, turn)
 
     def _free_debate(self, turn):
@@ -425,10 +688,29 @@ class DebateDriver:
         try:
             started = self.runner.start_debate(dispatch)
         except Exception as exc:  # external process boundary
-            self._note(dispatch.seat_id, turn.slug, "dispatch_error:{}".format(exc))
+            if dispatch.phase == "opening":
+                self._note(
+                    dispatch.seat_id,
+                    turn.slug,
+                    "dispatch_error:{}".format(type(exc).__name__),
+                )
+                self._opening_failure(
+                    self.opening_adoptions.get(dispatch.seat_id),
+                    dispatch.dispatch_id,
+                    "provider_start_failed",
+                    error_type=type(exc).__name__,
+                )
+            else:
+                self._note(dispatch.seat_id, turn.slug, "dispatch_error:{}".format(exc))
             return False
         if not started:
             self._note(dispatch.seat_id, turn.slug, "no_debate_channel_for_seat")
+            if dispatch.phase == "opening":
+                self._opening_failure(
+                    self.opening_adoptions.get(dispatch.seat_id),
+                    dispatch.dispatch_id,
+                    "provider_channel_unavailable",
+                )
             return False
         self.dispatched.append(dispatch.dispatch_id)
         return True
@@ -456,6 +738,19 @@ class DebateDriver:
         for dispatch_id in sorted(self._still_pending(dispatch_ids)):
             dispatch = self.pending.pop(dispatch_id)
             self._note(dispatch.seat_id, dispatch.turn.slug, reason)
+            if (
+                dispatch.turn.slug == "opening"
+                and dispatch.seat_id in self.opening_adoptions
+            ):
+                self._opening_failure(
+                    self.opening_adoptions.get(dispatch.seat_id),
+                    dispatch_id,
+                    (
+                        "opening_deadline_missed"
+                        if reason == "deadline_missed"
+                        else "opening_cancelled_before_reply"
+                    ),
+                )
             self._cancel(dispatch_id)
 
     def _drain(self):
@@ -470,55 +765,172 @@ class DebateDriver:
     def _accept(self, message):
         kind = message[0]
         if kind == PROVIDER_LINEAGE_MESSAGE:
-            self.lineage[message[1]] = message[2]
-            return
+            payload = message[2]
+            if payload.get("phase") == "opening":
+                dispatch_id = payload.get("dispatch_id")
+                pending = self.pending.get(dispatch_id)
+                adoption = (
+                    self.opening_adoptions.get(pending.seat_id)
+                    if pending is not None
+                    else None
+                )
+                if pending is None or adoption is None:
+                    return False
+                expected = {
+                    "seat_id": pending.seat_id,
+                    "dispatch_id": dispatch_id,
+                    "research_attempt_id": adoption.attempt_id,
+                    "provider": adoption.actual_provider,
+                    "requested_provider": adoption.actual_provider,
+                    "requested_model": adoption.requested_model,
+                    "actual_model": adoption.actual_model,
+                    "adopted_evidence_sha256": adoption.adopted_evidence_sha256,
+                }
+                if message[1] != pending.seat_id or any(
+                    payload.get(field) != value for field, value in expected.items()
+                ):
+                    self.pending.pop(dispatch_id, None)
+                    self._opening_failure(
+                        adoption,
+                        dispatch_id,
+                        "opening_lineage_binding_mismatch",
+                    )
+                    self._cancel(dispatch_id)
+                    return True
+                self.opening_lineage[dispatch_id] = dict(payload)
+                self.lineage[message[1]] = payload
+                self._opening_event(
+                    "opening_invocation_lineage_recorded",
+                    self.elapsed_ms,
+                    adoption,
+                    dispatch_id=dispatch_id,
+                    opening_actual_provider=payload.get("provider"),
+                    opening_actual_model=payload.get("actual_model"),
+                )
+                return True
+            self.lineage[message[1]] = payload
+            return True
         if kind not in (DEBATE_RESULT_MESSAGE, DEBATE_FAILURE_MESSAGE):
-            return  # 研究階段殘留的訊息；證據封存後不再採用
-        dispatch = self.pending.pop(message[1], None)
+            return False  # 研究階段殘留的訊息；證據封存後不再採用
+        dispatch = self.pending.get(message[1])
         if dispatch is None:
-            return
-        if kind == DEBATE_FAILURE_MESSAGE:
-            self._note(
-                dispatch.seat_id,
-                dispatch.turn.slug,
-                "{}:{}".format(message[2], message[3]),
+            return False
+        if (
+            kind == DEBATE_RESULT_MESSAGE
+            and dispatch.turn.slug == "opening"
+            and dispatch.seat_id in self.opening_adoptions
+            and message[1] not in self.opening_lineage
+        ):
+            self.pending.pop(message[1], None)
+            self._opening_failure(
+                self.opening_adoptions.get(dispatch.seat_id),
+                message[1],
+                "opening_actual_lineage_missing",
             )
-            return
-        payload = self._parse(dispatch.seat_id, dispatch.turn, message[2])
+            self._cancel(message[1])
+            return True
+        self.pending.pop(message[1], None)
+        if kind == DEBATE_FAILURE_MESSAGE:
+            if dispatch.turn.slug == "opening" and dispatch.seat_id in self.opening_adoptions:
+                # Provider text can contain stderr, command fragments or secrets.
+                # Opening artifacts retain the stable failure kind only.
+                self._note(dispatch.seat_id, dispatch.turn.slug, str(message[2]))
+                self._opening_failure(
+                    self.opening_adoptions[dispatch.seat_id],
+                    message[1],
+                    str(message[2]),
+                )
+            else:
+                self._note(
+                    dispatch.seat_id,
+                    dispatch.turn.slug,
+                    "{}:{}".format(message[2], message[3]),
+                )
+            return True
+        payload, failure_code = self._parse(
+            dispatch.seat_id, dispatch.turn, message[2]
+        )
         if payload is None:
-            return
+            if (
+                dispatch.turn.slug == "opening"
+                and dispatch.seat_id in self.opening_adoptions
+            ):
+                self._opening_failure(
+                    self.opening_adoptions.get(dispatch.seat_id),
+                    dispatch.dispatch_id,
+                    failure_code,
+                )
+            return True
         dispatch.replies[dispatch.seat_id] = payload
         if dispatch.on_reply is not None:
             dispatch.on_reply(dispatch.seat_id, payload)
+        return True
 
     def _parse(self, seat_id, turn, raw_text):
         try:
             payload = json.loads(raw_text)
+        except (TypeError, ValueError):
+            self._note(seat_id, turn.slug, OPENING_OUTPUT_MALFORMED)
+            return None, OPENING_OUTPUT_MALFORMED
+        try:
             turn.validator(payload)
-        except (TypeError, ValueError) as exc:
-            self._note(seat_id, turn.slug, "unusable_output:{}".format(exc))
-            return None
+            if payload.get("stance") not in turn.schema["properties"]["stance"]["enum"]:
+                raise ValueError("stance 不在本回合 enum")
+        except (KeyError, TypeError, ValueError):
+            self._note(seat_id, turn.slug, OPENING_OUTPUT_SCHEMA_INVALID)
+            return None, OPENING_OUTPUT_SCHEMA_INVALID
         if payload.get("seat_id") != seat_id:
-            self._note(seat_id, turn.slug, "seat_id_mismatch")
-            return None
-        return payload
+            self._note(seat_id, turn.slug, OPENING_SEAT_ID_MISMATCH)
+            return None, OPENING_SEAT_ID_MISMATCH
+        return payload, None
 
     def _cancel(self, dispatch_id):
-        try:
-            self.runner.cancel(dispatch_id)
-            self.runner.terminate(dispatch_id)
-        except Exception as exc:  # cancellation must never end the debate
-            print("警告：辯論 turn 收尾未完全成功：{}".format(exc), file=self.err)
+        """Reclaim one dispatch; cancel and terminate are independent tries.
+
+        Sharing one ``try`` let a refused cancel skip the terminate entirely,
+        which is the half that actually reclaims the process group. Each is
+        best effort, each may warn, neither prevents the other.
+        """
+        for stop in (self.runner.cancel, self.runner.terminate):
+            try:
+                stop(dispatch_id)
+            except Exception as exc:  # cancellation must never end the debate
+                print("警告：辯論 turn 收尾未完全成功：{}".format(exc), file=self.err)
 
     def _timeout_seconds(self, turn):
-        return max(1.0, (turn.collect_until_ms - self.elapsed_ms) / 1000.0)
+        """Give a call exactly what its own wall leaves, never a second more.
+
+        The adapter takes float seconds, so a sub-second remainder needs no
+        floor: rounding 500ms up to 1.0s would hand the provider a budget that
+        ends past the wall. At or after the wall this is 0.0 and the caller's
+        own dispatch guards are what fail closed.
+        """
+        return max(0.0, (turn.collect_until_ms - self.elapsed_ms) / 1000.0)
 
     # -- relaying -----------------------------------------------------------
 
     def _publish_position(self, seat_id, payload):
         """Publish an opening immediately; it is already eligible at a wall."""
+        if self.machine is None or seat_id in self.published:
+            return None
         if self._relay(self._position_message(seat_id)) is not None:
             self.published += (seat_id,)
+
+    def _receive_opening(self, seat_id, payload):
+        adoption = self.opening_adoptions[seat_id]
+        self.opening_results[seat_id] = {
+            "received_elapsed_ms": self.elapsed_ms,
+            "research_attempt_id": adoption.attempt_id,
+            "adopted_evidence_sha256": adoption.adopted_evidence_sha256,
+        }
+        self._opening_event(
+            "opening_result_received",
+            self.elapsed_ms,
+            adoption,
+            dispatch_id="{}-opening".format(seat_id),
+        )
+        if self.machine is not None:
+            self._publish_position(seat_id, payload)
 
     def _relay(self, content):
         """Return the recorded entry, or None when the machine refused it."""
@@ -532,7 +944,7 @@ class DebateDriver:
 
     def _position_message(self, seat_id):
         payload = self.positions[seat_id]
-        return self._message(
+        message = self._message(
             seat_id,
             position_message_id(seat_id),
             "position",
@@ -540,6 +952,17 @@ class DebateDriver:
             payload,
             stance_change_reason=None,
         )
+        adoption = self.opening_adoptions.get(seat_id)
+        if adoption is not None:
+            message.update(
+                research_attempt_id=adoption.attempt_id,
+                opening_dispatch_id="{}-opening".format(seat_id),
+                opening_provider=adoption.actual_provider,
+                opening_requested_model=adoption.requested_model,
+                research_actual_model=adoption.actual_model,
+                adopted_evidence_sha256=adoption.adopted_evidence_sha256,
+            )
+        return message
 
     def _vote_message(self, seat_id, payload, round_number):
         return self._message(
@@ -630,7 +1053,7 @@ class DebateDriver:
         "被說服時必須改票並寫出改票原因，目標是達到下一輪門檻（{votes} 票）。"
     )
 
-    def _opening_prompt(self, seat_id):
+    def _opening_prompt(self, seat_id, adoption=None):
         turn = self.turns["opening"]
         lines = self._proposition_lines() + [
             "## 本回合：{}（round 0，{}）".format(
@@ -644,7 +1067,30 @@ class DebateDriver:
             "- 第一輪開票會採用開票當下這一席最新公開立場；本回合後不必另交票才有效。",
             self.CONCLUSION_FIRST_RULE,
         ]
-        return self._prompt(seat_id, lines, (), private_evidence=True)
+        if adoption is None:
+            return self._prompt(seat_id, lines, (), private_evidence=True)
+        adopted_envelope = {
+            "run_id": adoption.run_id,
+            "seat_id": adoption.seat_id,
+            "research_attempt_id": adoption.attempt_id,
+            "attempt_kind": adoption.attempt_kind,
+            "provider": adoption.actual_provider,
+            "requested_model": adoption.requested_model,
+            "actual_model": adoption.actual_model,
+            "adopted_at_utc": adoption.adopted_at_utc,
+            "adopted_elapsed_ms": adoption.adopted_elapsed_ms,
+            "adopted_evidence_sha256": adoption.adopted_evidence_sha256,
+            "records": list(adoption.records),
+        }
+        prompt = build_seat_prompt(
+            self.package,
+            self.seats[seat_id],
+            "opening",
+            adopted_evidence=adopted_envelope,
+        )
+        return prompt.text + "\n".join(
+            lines + self._shared_rules(seat_id, adoption.records)
+        )
 
     def _persuasion_rule(self, turn):
         """State the purpose against the next ballot wall's threshold."""
@@ -679,7 +1125,7 @@ class DebateDriver:
         proposition = getattr(self.package, "proposition", None)
         if not isinstance(proposition, str) or not proposition.strip():
             return []
-        affirmative, negative = self.machine.stances[0], self.machine.stances[1]
+        affirmative, negative = self.stances[0], self.stances[1]
         return [
             "## 本場命題：{}（正方={}，反方={}）".format(
                 proposition.strip(),
@@ -720,7 +1166,7 @@ class DebateDriver:
             + "除該物件外不要輸出任何其他文字。",
             "- stance 只能是 {}。".format(
                 "、".join(
-                    self._stance_text(stance) for stance in self.machine.stances
+                    self._stance_text(stance) for stance in self.stances
                 )
             ),
             "- public_reason 與 stance_change_reason 必須使用繁體中文。",
@@ -775,6 +1221,48 @@ class DebateDriver:
             file=self.err,
         )
         return note
+
+    def _opening_event(self, event, elapsed, adoption, **details):
+        """Append sanitized Opening lifecycle evidence; never prompt/stderr text."""
+        record = {
+            "schema_version": CONTRACT_VERSION,
+            "run_id": self.run.run_id,
+            "phase": "opening",
+            "event": event,
+            "seat_id": getattr(adoption, "seat_id", None),
+            "attempt_id": getattr(adoption, "attempt_id", None),
+            "research_attempt_id": getattr(adoption, "attempt_id", None),
+            "attempt_kind": getattr(adoption, "attempt_kind", None),
+            "provider": getattr(adoption, "actual_provider", None),
+            "requested_model": getattr(adoption, "requested_model", None),
+            "research_actual_model": getattr(adoption, "actual_model", None),
+            "adopted_evidence_sha256": getattr(
+                adoption, "adopted_evidence_sha256", None
+            ),
+            "created_at_utc": iso_utc(
+                self.started_at_utc + timedelta(milliseconds=elapsed)
+            ),
+            "elapsed_ms": elapsed,
+            **details,
+        }
+        self.run.append_event(record)
+        return record
+
+    def _opening_failure(
+        self, adoption, dispatch_id, failure_code, *, elapsed=None, **details
+    ):
+        """Append one terminal, sanitized failure for one Opening invocation."""
+        return self._opening_event(
+            "opening_invocation_failed",
+            self.elapsed_ms if elapsed is None else elapsed,
+            adoption,
+            dispatch_id=dispatch_id,
+            opening_invocation_id=dispatch_id,
+            failure_code=failure_code,
+            terminal_outcome="failed",
+            failure_state="terminal",
+            **details,
+        )
 
 
 # -- Core report ------------------------------------------------------------
@@ -1210,11 +1698,16 @@ def build_provider_lineage(certificate, seats):
     }
 
 
-def manifest_seats(lineage, completion_ms):
+def manifest_seats(lineage, completion_ms, votes):
     """Return the frozen seven seats plus what this run actually observed."""
+    attempts_by_seat = {
+        row["seat_id"]: list(row["attempt_ids"])
+        for row in votes["votes"]
+    }
     return [
         {
             "seat_id": seat["seat_id"],
+            "attempt_ids": attempts_by_seat.get(seat["seat_id"], []),
             "provider": seat["provider"],
             "target_model": seat["target_model"],
             "actual_model": lineage.get(seat["seat_id"], {}).get("actual_model"),
@@ -1308,6 +1801,7 @@ def run_after_seal(
     sleeper,
     err,
     core_author=None,
+    debate_driver=None,
 ):
     """Drive debate, votes, Core report and finalize; return the handshake.
 
@@ -1316,21 +1810,28 @@ def run_after_seal(
     依規則 A 寫出合法的燈號、卻被規則 B 判成「信心高於資料上限」而錯拒，一份完
     全合法的報告變成 red_audit，而且輸出裡沒有欄位記得是哪一份規則做的判斷。
     """
-    rules = debate_rules()
-    driver = DebateDriver(
-        run=run,
-        clock=clock,
-        runner=runner,
-        results_queue=results_queue,
-        package=package,
-        evidence_records=evidence_records,
-        snapshot_sha256=seal["sha256"],
-        start_monotonic_ms=start_monotonic_ms,
-        started_at_utc=started_at_utc,
-        sleeper=sleeper,
-        err=err,
-        rules=rules,
-    )
+    rules = debate_driver.rules if debate_driver is not None else debate_rules()
+    driver = debate_driver
+    if driver is None:
+        driver = DebateDriver(
+            run=run,
+            clock=clock,
+            runner=runner,
+            results_queue=results_queue,
+            package=package,
+            evidence_records=evidence_records,
+            snapshot_sha256=seal["sha256"],
+            start_monotonic_ms=start_monotonic_ms,
+            started_at_utc=started_at_utc,
+            sleeper=sleeper,
+            err=err,
+            rules=rules,
+        )
+    else:
+        # The pre-seal instance already owns every Opening invocation.  It now
+        # receives the immutable global seal and becomes the ordinary driver.
+        driver.rules = rules
+        driver.activate_after_seal(evidence_records, seal["sha256"])
     votes = driver.run_debate()
     sources = {
         "evidence": list(evidence_records),
@@ -1360,7 +1861,7 @@ def run_after_seal(
         asset_class=package.asset_class,
     )
     completion_ms = seat_completion_ms(research_events)
-    seats = manifest_seats(driver.lineage, completion_ms)
+    seats = manifest_seats(driver.lineage, completion_ms, votes)
     report_completed_ms = max(0, clock.monotonic_ms() - start_monotonic_ms)
     manifest = build_manifest(
         run=run,
@@ -1380,6 +1881,7 @@ def run_after_seal(
         report_completed_ms=report_completed_ms,
         rules=rules,
     )
+    validate_run_manifest(manifest)
     # manifest 必須是這一段最後寫下的東西。它是磁碟上「這場 run 完成了」的
     # 唯一標記（run_index.FINALIZED_MARKER_NAME），而標記只有在它之前的每一步
     # 都成功時才寫得下去，這件事才成立——latest.json 若排在它後面失敗，磁碟上

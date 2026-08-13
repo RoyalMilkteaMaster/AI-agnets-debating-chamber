@@ -1,0 +1,16 @@
+{
+  "elapsed_ms": 13349,
+  "executable_sha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04",
+  "finished_at_utc": "2026-08-12T22:39:43.216161Z",
+  "kind": "provider-canary",
+  "malformed_event_count": 0,
+  "model": "gpt-5.6-sol",
+  "provider": "codex",
+  "schema_version": "hoya.wsl-release-acceptance.v1",
+  "search_activity_count": 1,
+  "search_invocations": 1,
+  "search_parse_status": "matched",
+  "started_at_utc": "2026-08-12T22:39:30.193699Z",
+  "status": "PASS",
+  "structured_output_sha256": "f9c571747b8814a3ec0806882c57260120e545d9b73bcdd7dedbcc2400dc6bc5"
+}

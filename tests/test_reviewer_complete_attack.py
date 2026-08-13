@@ -344,6 +344,7 @@ class ReviewerCompleteLocalAttackTest(unittest.TestCase):
         manifest["artifacts"][relative] = {
             "path": relative,
             "sha256": cls._sha((run_dir / relative).read_bytes()),
+            "source": "reviewer-complete-attack-test-fixture",
         }
 
     @staticmethod

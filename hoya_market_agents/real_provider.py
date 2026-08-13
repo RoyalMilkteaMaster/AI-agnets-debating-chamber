@@ -82,9 +82,10 @@ Live research proof
 A seat only counts when its provider proves it researched live in this run:
 Claude must report a ``claude-opus`` model and at least one web_search/web_fetch
 server tool call, Antigravity must show a completed ``search_web`` step
-(``require_search=True``), and Codex must print at least one ``web search:``
-line in its transcript. Anything else is published as ``provider_error`` instead
-of being adopted as evidence.
+(``require_search=True``), and Codex must emit a matching JSONL
+``item.started`` plus non-error ``item.completed`` for the same ``web_search``
+item id. Anything else is published as ``research_proof_missing`` instead of
+being adopted as evidence.
 
 Search after the seal
 ---------------------
@@ -99,27 +100,49 @@ Claude's reported ``web_search_requests``, Codex's search invocations and
 is published as ``provider_error`` with ``post_seal_search_detected``; it is
 never adopted.
 
-Model lanes
------------
-``PRIMARY_MODELS`` comes from the frozen roster. No provider CLI in this system
-can honestly serve a second model, so production config leaves every optional
-replacement empty. Recovery is one same-model retry only; it never emits a fake
-Sonnet or other unavailable-model dispatch.
+Model and provider lanes
+------------------------
+``PRIMARY_MODELS`` and ``SEAT_PROVIDERS`` both come from the frozen roster —
+3 Codex, 3 Claude, 1 Antigravity. No provider CLI in this system can honestly
+serve a second model, so ``REPLACEMENT_MODELS`` stays empty and a same-provider
+retry buys nothing when the provider itself is what failed. Recovery is instead
+one ``BACKUP_CANDIDATES`` attempt on **another** provider, running that
+provider's own fixed model; there is no second backup, and no fake Sonnet or
+other unavailable-model dispatch. A backup is attempt lineage only: the seat
+keeps its id, its focus and its roster provider.
+
+Provider discovery
+------------------
+A provider executable is whatever this WSL ``PATH`` resolves (ADR 0009), via
+:mod:`hoya_market_agents.provider_cli`. ``start`` resolves it before dispatching
+and publishes ``provider_cli_missing`` at once when it cannot, so a seat spends
+its recovery window on a backup instead of on a timeout for a CLI that was never
+installed. ``which`` is the injectable seam an offline test uses to decide what
+this shell can see.
 """
 
 import json
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .antigravity_adapter import MODEL as ANTIGRAVITY_MODEL
 from .antigravity_adapter import (
     AntigravityAdapter,
+    AntigravityEnvelopeError,
     AntigravityError,
+    AntigravityNotReady,
     AntigravityPostSealSearch,
+    AntigravityResearchProofMissing,
+    AntigravitySchemaError,
     AntigravityTimeout,
+    AntigravityTreeTermination,
 )
+from .claude_adapter import CLAUDE_MODEL_ALIAS
 from .claude_adapter import (
     ClaudeAdapter,
     ClaudeAttemptRequest,
@@ -127,7 +150,16 @@ from .claude_adapter import (
     TerminatingRunner,
 )
 from .clock import iso_utc
-from .codex_exec_adapter import CodexExecAdapter, CodexExecError
+from .codex_exec_adapter import (
+    CODEX_MODEL,
+    CodexExecAdapter,
+    CodexExecEmptyOutputError,
+    CodexExecError,
+    CodexExecOutputError,
+    CodexExecProcessError,
+    CodexExecTimeout,
+    CodexExecTreeTerminationError,
+)
 from .contract_validator import (
     CONTRACT_VERSION,
     DIRECTIONS,
@@ -136,10 +168,29 @@ from .contract_validator import (
     validate_evidence_card,
 )
 from .prompt_builder import build_seat_prompt
+from .provider_cli import (
+    PROVIDER_ANTIGRAVITY,
+    PROVIDER_CLAUDE,
+    PROVIDER_CODEX,
+    ProviderCliMissing,
+    require_provider_cli,
+)
 from .question import normalize_asset
-from .research_scheduler import research_deadlines
+from .recovery_state_machine import ProviderCandidate
+from .research_scheduler import (
+    PROCESS_TREE_TERMINATION_FAILED,
+    PROVIDER_CLI_MISSING,
+    PROVIDER_EMPTY_OUTPUT,
+    PROVIDER_MALFORMED_OUTPUT,
+    PROVIDER_OUTPUT_REJECTED,
+    PROVIDER_PROCESS_ERROR,
+    PROVIDER_START_FAILED,
+    PROVIDER_TIMEOUT,
+    RESEARCH_PROOF_MISSING,
+    research_deadlines,
+)
 from .run_store import _remove_trailing_commas
-from .seats import load_roster
+from .seats import SEAT_IDS, load_roster
 from .system_preflight import load_frozen_roster
 
 # 三個分組是 roster ``provider`` 欄的投影，順序就是 roster 的席位順序；roster 是
@@ -159,9 +210,10 @@ CLAUDE_TIMEOUT_SECONDS = (
 NO_RESEARCH_PROOF = "no_live_research_proof"
 # 封存之後的呼叫已經關掉搜尋能力；還是搜到，就代表這份回覆不是只依快照產生。
 POST_SEAL_SEARCH = "post_seal_search_detected"
-# All seven seats now run locally in one pool; the spare slot covers the
-# same-session Claude resume that shares its worker with the first attempt.
-LOCAL_WORKER_COUNT = 8
+# 每席最多一個 primary 與一個 backup，兩者都必須能同時待在合法平行窗口內
+# （Spec R-008）；pool 小於這個數字就會讓 backup 排到收件牆之後才開始。
+RESEARCH_ATTEMPT_CAPACITY = 2 * len(SEAT_IDS)
+LOCAL_WORKER_COUNT = RESEARCH_ATTEMPT_CAPACITY
 RESUME_ATTEMPT_SUFFIX = "-resume"
 
 CODEX_MODE_CLI = "cli"
@@ -171,11 +223,113 @@ CODEX_MODES = (CODEX_MODE_CLI, CODEX_MODE_INBOX)
 DEBATE_RESULT_MESSAGE = "debate_result"
 DEBATE_FAILURE_MESSAGE = "debate_failure"
 PROVIDER_LINEAGE_MESSAGE = "provider_lineage"
+# 研究階段的同名訊息。dispatch 詞彙分開，drain loop 才不必猜這是哪個階段的
+# lineage，而 research lineage 走的是 scheduler.record_lineage，不是 debate 的。
+RESEARCH_LINEAGE_MESSAGE = "research_lineage"
 
 REPLACEMENT_MODELS = {
     seat_id: None
     for seat_id in (*CODEX_SEAT_IDS, *CLAUDE_SEAT_IDS, *ANTIGRAVITY_SEAT_IDS)
 }
+
+# 每個 provider 家族只有一顆能誠實派發的模型；backup 用的就是它，不另立第二套
+# 模型設定，也不會出現「換 provider 卻沿用原模型名」這種對不上的 lineage。
+PROVIDER_MODELS = {
+    PROVIDER_CODEX: CODEX_MODEL,
+    PROVIDER_CLAUDE: CLAUDE_MODEL_ALIAS,
+    PROVIDER_ANTIGRAVITY: ANTIGRAVITY_MODEL,
+}
+
+
+def load_seat_providers(roster=None):
+    """Return the frozen ``seat_id -> provider family`` mapping."""
+    roster = roster or load_frozen_roster()
+    return {seat["seat_id"]: seat["provider"] for seat in roster["seats"]}
+
+
+#: roster 的 ``provider`` 欄投影：3 Codex／3 Claude／1 Antigravity，順序同 roster。
+SEAT_PROVIDERS = load_seat_providers()
+
+# backup 候選順序是固定的，且只取第一個與本席 primary 不同的 provider：一席只
+# 准一個 backup，所以「順序」實際上只決定那一個是誰，不會退到第二順位。
+BACKUP_PROVIDER_ORDER = (PROVIDER_CODEX, PROVIDER_CLAUDE, PROVIDER_ANTIGRAVITY)
+
+
+def backup_candidate(provider, order=BACKUP_PROVIDER_ORDER):
+    """The one approved other-provider fallback for a seat on ``provider``."""
+    for candidate in order:
+        if candidate != provider:
+            return ProviderCandidate(
+                provider=candidate, model=PROVIDER_MODELS[candidate]
+            )
+    return None
+
+
+BACKUP_CANDIDATES = {
+    seat_id: backup_candidate(provider)
+    for seat_id, provider in SEAT_PROVIDERS.items()
+}
+
+# -- stable failure codes, carried rather than re-derived ---------------------
+#
+# 每個 adapter 邊界都已經知道出了什麼事——是逾時、是整組回收不掉、是交了白卷、
+# 還是交了看不懂的東西。以前這些都在 publish 時折成三個籠統的 failure kind，
+# scheduler 再折一次，於是 research_proof_missing 與 process_tree_termination_failed
+# 這種「永遠不可採用」的終局，跟一次普通的 provider 雜訊變成同一個 code。
+# 下面三張表是唯一的轉換處：型別／狀態進去，穩定 code 出來，沒有任何一步去讀
+# 人看的訊息文字。
+
+CODEX_FAILURE_CODES = (
+    # 由具體到一般：第一個吻合的型別決定 code。
+    (CodexExecTreeTerminationError, PROCESS_TREE_TERMINATION_FAILED),
+    (CodexExecTimeout, PROVIDER_TIMEOUT),
+    (CodexExecProcessError, PROVIDER_PROCESS_ERROR),
+    (CodexExecEmptyOutputError, PROVIDER_EMPTY_OUTPUT),
+    (CodexExecOutputError, PROVIDER_MALFORMED_OUTPUT),
+)
+
+# Claude 邊界本來就分得很細（``empty_output``／``malformed_output``／
+# ``invalid_schema``…），只是 ``scheduler_failure_kind`` 把它們全折成
+# provider_error。這裡直接讀 status，那些區分才活得下來。
+CLAUDE_STATUS_FAILURE_CODES = {
+    "timeout": PROVIDER_TIMEOUT,
+    "process_error": PROVIDER_PROCESS_ERROR,
+    "empty_output": PROVIDER_EMPTY_OUTPUT,
+    "malformed_output": PROVIDER_MALFORMED_OUTPUT,
+    "invalid_schema": PROVIDER_MALFORMED_OUTPUT,
+    PROCESS_TREE_TERMINATION_FAILED: PROCESS_TREE_TERMINATION_FAILED,
+}
+
+ANTIGRAVITY_FAILURE_CODES = (
+    (AntigravityTreeTermination, PROCESS_TREE_TERMINATION_FAILED),
+    (AntigravityTimeout, PROVIDER_TIMEOUT),
+    (AntigravityResearchProofMissing, RESEARCH_PROOF_MISSING),
+    (AntigravityNotReady, PROVIDER_START_FAILED),
+    (AntigravityEnvelopeError, PROVIDER_MALFORMED_OUTPUT),
+    (AntigravitySchemaError, PROVIDER_MALFORMED_OUTPUT),
+)
+
+
+def _code_for_type(error, table):
+    for error_type, code in table:
+        if isinstance(error, error_type):
+            return code
+    return PROVIDER_OUTPUT_REJECTED
+
+
+def codex_failure_code(error):
+    """The stable code one ``codex exec`` failure keeps all the way through."""
+    return _code_for_type(error, CODEX_FAILURE_CODES)
+
+
+def antigravity_failure_code(error):
+    """The stable code one ``agy`` failure keeps all the way through."""
+    return _code_for_type(error, ANTIGRAVITY_FAILURE_CODES)
+
+
+def claude_failure_code(status):
+    """The stable code for one Claude attempt's own machine-readable status."""
+    return CLAUDE_STATUS_FAILURE_CODES.get(status, PROVIDER_OUTPUT_REJECTED)
 
 EVIDENCE_CARD_SCHEMA = {
     "type": "object",
@@ -260,6 +414,26 @@ RESEARCH_ENVELOPE_SCHEMA = {
 }
 
 
+def research_envelope_schema(run_id, attempt):
+    """Return this one attempt's own envelope schema, pinned to its lineage.
+
+    :data:`RESEARCH_ENVELOPE_SCHEMA` is a template and stays one: every call
+    deep-copies it, so fourteen invocations building schemas at the same moment
+    share no nested object and cannot overwrite each other's ``enum``. The four
+    single-value enums make the run, the seat and the attempt part of the
+    output contract, which is the earliest point a provider can be refused for
+    answering as somebody else. ``RealEvidenceGateway`` still validates the same
+    lineage afterwards: this is an earlier refusal, never a replacement for it.
+    """
+    schema = deepcopy(RESEARCH_ENVELOPE_SCHEMA)
+    schema["properties"]["seat_id"]["enum"] = [attempt.seat_id]
+    card = schema["properties"]["evidence_cards"]["items"]["properties"]
+    card["run_id"]["enum"] = [run_id]
+    card["seat_id"]["enum"] = [attempt.seat_id]
+    card["attempt_id"]["enum"] = [attempt.attempt_id]
+    return schema
+
+
 class RealProviderError(RuntimeError):
     """Raised when an attempt cannot be dispatched honestly."""
 
@@ -278,6 +452,14 @@ class DebateDispatch:
     schema: dict
     validator: object
     timeout_seconds: float
+    phase: str = "debate"
+    research_attempt_id: str = None
+    provider: str = None
+    requested_model: str = None
+    research_actual_model: str = None
+    adopted_evidence_sha256: str = None
+    opening_started_elapsed_ms: int = None
+    opening_deadline_elapsed_ms: int = None
 
 
 def build_attempt_prompt(question_scope_or_package, seat, run_id, attempt, checkpoint=None):
@@ -403,6 +585,7 @@ class RealSeatRunner:
         codex_adapter=None,
         codex_mode=CODEX_MODE_CLI,
         executor=None,
+        which=shutil.which,
     ):
         if codex_mode not in CODEX_MODES:
             raise RealProviderError(
@@ -414,6 +597,9 @@ class RealSeatRunner:
         self.results_queue = results_queue
         self.question_scope_or_package = question_scope_or_package
         self.inbox_requests_dir = Path(inbox_requests_dir)
+        # 這個 WSL shell 看得到哪些 Provider 命令。注入假的 ``which`` 就等於
+        # 決定了這一場的 PATH，離線測試因此不必依賴機器上真的裝了什麼。
+        self.which = which
         # 三個 provider 共用一個 registry，收件牆才能停掉還在跑的真實進程。
         self.process_registry = ProcessRegistry()
         self._worker_attempt = threading.local()
@@ -460,12 +646,25 @@ class RealSeatRunner:
         return getattr(self._worker_attempt, "key", None) or threading.get_ident()
 
     def start(self, attempt, checkpoint):
-        """Dispatch one attempt, returning literal ``True`` once it is away."""
+        """Dispatch one attempt, returning literal ``True`` once it is away.
+
+        A provider this WSL ``PATH`` cannot resolve is refused here rather than
+        at the end of a full research timeout: the seat would otherwise lose its
+        whole recovery window waiting for a CLI that was never installed. The
+        refusal is published on the same queue as any other failure, so the
+        scheduler starts the backup and neither the run nor the web app stops.
+        """
         seat = self._seat(attempt.seat_id)
-        self._require_primary_model(attempt)
-        if attempt.seat_id in CODEX_SEAT_IDS:
+        provider = self._provider_for(attempt)
+        self._require_provider_model(attempt, provider)
+        if not self._provider_cli_available(attempt, provider):
+            # 沒有命令就沒有進程，所以這裡回報「沒有啟動」——回 True 會讓
+            # scheduler 記下一次不存在的啟動，summary 與 Live 之後都會宣稱這席
+            # 開始研究過。失敗訊息已經送上 queue，recovery 照常由它觸發。
+            return False
+        if provider == PROVIDER_CODEX:
             self._write_dispatch_request(attempt)
-        worker = self._worker_for(attempt.seat_id)
+        worker = self._worker_for(provider)
         if worker is None:
             return True  # inbox 模式：外部 Codex bridge 擁有這一席
         prompt = self._prompt(seat, attempt, checkpoint)
@@ -473,17 +672,46 @@ class RealSeatRunner:
         self._submit(attempt, worker, prompt, work_dir)
         return True
 
-    def _worker_for(self, seat_id):
+    def _provider_for(self, attempt):
+        """Which provider family runs this attempt: its own, else the seat's.
+
+        A backup carries its own provider; a primary — and any attempt built by
+        a caller that predates the column — falls back to the roster, so the
+        seat's identity still decides and nothing has to guess.
+        """
+        return attempt.provider or SEAT_PROVIDERS[attempt.seat_id]
+
+    def _provider_cli_available(self, attempt, provider):
+        """Publish ``provider_cli_missing`` and refuse if the CLI is not on PATH."""
+        try:
+            require_provider_cli(provider, self.which)
+        except ProviderCliMissing as exc:
+            self._publish(
+                ("failure", attempt.attempt_id, PROVIDER_CLI_MISSING, str(exc))
+            )
+            return False
+        return True
+
+    def _worker_for(self, provider):
         """Pick the provider worker, or ``None`` when an external channel owns it."""
-        if seat_id in CODEX_SEAT_IDS:
+        if provider == PROVIDER_CODEX:
             return None if self.codex_mode == CODEX_MODE_INBOX else self._run_codex
-        if seat_id in ANTIGRAVITY_SEAT_IDS:
+        if provider == PROVIDER_ANTIGRAVITY:
             return self._run_antigravity
         return self._run_claude
 
     def start_debate(self, dispatch):
         """Dispatch one debate turn; ``False`` means this seat has no local channel."""
-        worker = self._debate_worker_for(dispatch.seat_id)
+        provider = dispatch.provider or SEAT_PROVIDERS[dispatch.seat_id]
+        if dispatch.requested_model is not None:
+            expected_model = PROVIDER_MODELS[provider]
+            if dispatch.requested_model != expected_model:
+                raise RealProviderError(
+                    "Opening lineage model {} 不屬於 provider {}（預期 {}）。".format(
+                        dispatch.requested_model, provider, expected_model
+                    )
+                )
+        worker = self._debate_worker_for(dispatch.seat_id, provider=provider)
         if worker is None:
             return False  # inbox 模式沒有辯論回填通道，該席誠實缺席
         work_dir = self._new_work_dir(dispatch.seat_id, dispatch.dispatch_id)
@@ -552,7 +780,7 @@ class RealSeatRunner:
             attempt_dir=work_dir,
             resume=False,
             timeout_seconds=self._research_timeout_seconds(),
-            json_schema=RESEARCH_ENVELOPE_SCHEMA,
+            json_schema=research_envelope_schema(self.run.run_id, attempt),
             validator=validate_research_envelope_shape,
         )
         result = self.claude_adapter.run(request)
@@ -562,14 +790,26 @@ class RealSeatRunner:
             attempt.attempt_id
         ):
             result = self._resume_claude(request, attempt)
-        failure_kind = result.scheduler_failure_kind
-        if failure_kind is not None:
-            message = _failure_message(result)
-            self._publish(("failure", attempt.attempt_id, failure_kind, message))
+        self._publish_research_lineage(attempt, PROVIDER_CLAUDE, result.actual_model)
+        if result.scheduler_failure_kind is not None:
+            # status 是 Claude 邊界自己的機器值，訊息只是給人看的附註。
+            self._publish(
+                (
+                    "failure",
+                    attempt.attempt_id,
+                    claude_failure_code(result.status),
+                    _failure_message(result),
+                )
+            )
             return
         unproven = _claude_research_proof_problem(result)
         if unproven is not None:
-            self._publish(("failure", attempt.attempt_id, "provider_error", unproven))
+            code = (
+                RESEARCH_PROOF_MISSING
+                if unproven == NO_RESEARCH_PROOF
+                else PROVIDER_OUTPUT_REJECTED
+            )
+            self._publish(("failure", attempt.attempt_id, code, unproven))
             return
         self._publish(("result", attempt.attempt_id, _dumps(result.structured_output)))
 
@@ -594,14 +834,24 @@ class RealSeatRunner:
         # 所以這裡只要一個 except，不必依症狀分支。
         try:
             result = self.codex_adapter.invoke(
-                prompt, RESEARCH_ENVELOPE_SCHEMA, work_dir
+                prompt, research_envelope_schema(self.run.run_id, attempt), work_dir
             )
         except CodexExecError as exc:
-            self._publish(("failure", attempt.attempt_id, exc.failure_kind, str(exc)))
+            self._publish(
+                ("failure", attempt.attempt_id, codex_failure_code(exc), str(exc))
+            )
             return
+        self._publish_research_lineage(
+            attempt, PROVIDER_CODEX, getattr(self.codex_adapter, "model", None)
+        )
         if result.search_invocations < 1:
             self._publish(
-                ("failure", attempt.attempt_id, "provider_error", NO_RESEARCH_PROOF)
+                (
+                    "failure",
+                    attempt.attempt_id,
+                    RESEARCH_PROOF_MISSING,
+                    NO_RESEARCH_PROOF,
+                )
             )
             return
         self._publish(("result", attempt.attempt_id, _dumps(result.structured_output)))
@@ -610,21 +860,28 @@ class RealSeatRunner:
         try:
             # require_search：沒有成功的 search_web 就不是真研究，直接 fail closed。
             result = self.antigravity_adapter.invoke(
-                prompt, RESEARCH_ENVELOPE_SCHEMA, work_dir, require_search=True
+                prompt,
+                research_envelope_schema(self.run.run_id, attempt),
+                work_dir,
+                require_search=True,
             )
-        except AntigravityTimeout as exc:
-            self._publish(("failure", attempt.attempt_id, "timeout", str(exc)))
-            return
         except AntigravityError as exc:
-            self._publish(("failure", attempt.attempt_id, "provider_error", str(exc)))
+            # 一個 except：型別本身就是機器值，不必依症狀分支。
+            self._publish(
+                ("failure", attempt.attempt_id, antigravity_failure_code(exc), str(exc))
+            )
             return
+        self._publish_research_lineage(
+            attempt, PROVIDER_ANTIGRAVITY, result.actual_model
+        )
         self._publish(("result", attempt.attempt_id, _dumps(result.structured_output)))
 
-    def _debate_worker_for(self, seat_id):
-        """Pick the debate worker, or ``None`` when no local channel owns the seat."""
-        if seat_id in CODEX_SEAT_IDS:
+    def _debate_worker_for(self, seat_id, provider=None):
+        """Pick the adopted provider lane, falling back to the roster lane."""
+        provider = provider or SEAT_PROVIDERS[seat_id]
+        if provider == PROVIDER_CODEX:
             return None if self.codex_mode == CODEX_MODE_INBOX else self._debate_codex
-        if seat_id in ANTIGRAVITY_SEAT_IDS:
+        if provider == PROVIDER_ANTIGRAVITY:
             return self._debate_antigravity
         return self._debate_claude
 
@@ -668,7 +925,11 @@ class RealSeatRunner:
         try:
             # 辯論階段不得再上網：搜尋能力直接關閉，只讀已 sealed 的快照。
             result = self.codex_adapter.invoke(
-                dispatch.prompt, dispatch.schema, work_dir, allow_search=False
+                dispatch.prompt,
+                dispatch.schema,
+                work_dir,
+                allow_search=False,
+                timeout_seconds=dispatch.timeout_seconds,
             )
         except CodexExecError as exc:
             self._publish_debate_failure(dispatch, exc.failure_kind, str(exc))
@@ -676,7 +937,7 @@ class RealSeatRunner:
         self._publish_lineage(
             dispatch, "codex", getattr(self.codex_adapter, "model", None), result.elapsed_ms
         )
-        if result.search_invocations > 0:
+        if result.search_activity_count > 0 or result.malformed_event_count > 0:
             # 能力關了還搜到，代表這份回覆不是只依快照產生：拒收，不當證據。
             self._publish_debate_failure(dispatch, "provider_error", POST_SEAL_SEARCH)
             return
@@ -687,7 +948,11 @@ class RealSeatRunner:
             # agy 沒有關閉工具的旗標，能力層關不掉；改在結果層攔：
             # 封存後只要真的執行過 search_web，這份回覆一律不收。
             result = self.antigravity_adapter.invoke(
-                dispatch.prompt, dispatch.schema, work_dir, allow_search=False
+                dispatch.prompt,
+                dispatch.schema,
+                work_dir,
+                allow_search=False,
+                timeout_seconds=dispatch.timeout_seconds,
             )
         except AntigravityTimeout as exc:
             self._publish_debate_failure(dispatch, "timeout", str(exc))
@@ -716,6 +981,30 @@ class RealSeatRunner:
             (DEBATE_FAILURE_MESSAGE, dispatch.dispatch_id, failure_kind, message)
         )
 
+    def _publish_research_lineage(self, attempt, provider, actual_model):
+        """Say which provider and model actually answered this research attempt.
+
+        Published before the result or failure it belongs to, and silenced by
+        cancellation exactly like them — which is where research parts company
+        with a debate turn. A cancelled turn's lineage still describes a seat
+        that is going to speak again; a cancelled research attempt has already
+        been given its terminal outcome by the scheduler, so anything more from
+        that worker would only re-open the queue the cutoff sweep just closed.
+        """
+        self._publish(
+            (
+                RESEARCH_LINEAGE_MESSAGE,
+                attempt.attempt_id,
+                {
+                    "seat_id": attempt.seat_id,
+                    "attempt_id": attempt.attempt_id,
+                    "attempt_kind": attempt.kind,
+                    "provider": provider,
+                    "actual_model": actual_model,
+                },
+            )
+        )
+
     def _publish_lineage(self, dispatch, provider, actual_model, elapsed_ms):
         """Model provenance is true even for a cancelled turn, so it bypasses cancel."""
         self.results_queue.put(
@@ -723,11 +1012,16 @@ class RealSeatRunner:
                 PROVIDER_LINEAGE_MESSAGE,
                 dispatch.seat_id,
                 {
+                    "phase": dispatch.phase,
                     "seat_id": dispatch.seat_id,
                     "dispatch_id": dispatch.dispatch_id,
                     "provider": provider,
+                    "requested_provider": dispatch.provider,
+                    "requested_model": dispatch.requested_model,
                     "actual_model": actual_model,
                     "elapsed_ms": elapsed_ms,
+                    "research_attempt_id": dispatch.research_attempt_id,
+                    "adopted_evidence_sha256": dispatch.adopted_evidence_sha256,
                 },
             )
         )
@@ -743,6 +1037,7 @@ class RealSeatRunner:
             "attempt_id": attempt_id,
             "kind": attempt.kind,
             "reason": attempt.reason,
+            "provider": self._provider_for(attempt),
             "model": attempt.model,
             "parent_attempt_id": attempt.parent_attempt_id,
             "requested_at_utc": iso_utc(datetime.now(timezone.utc)),
@@ -808,14 +1103,20 @@ class RealSeatRunner:
             return None
         return None
 
-    def _require_primary_model(self, attempt):
-        primary = PRIMARY_MODELS[attempt.seat_id]
-        if attempt.model == primary:
+    def _require_provider_model(self, attempt, provider):
+        """Refuse any model this provider family cannot honestly serve.
+
+        A backup changes the provider, so the model it is allowed to claim is
+        that provider's own fixed one — never the seat's primary model wearing
+        another CLI's name.
+        """
+        expected = PROVIDER_MODELS[provider]
+        if attempt.model == expected:
             return
         raise RealProviderError(
-            "席位 {} 的替補模型 {} 沒有可派發的真實 provider 通道（primary 為 {}）；"
-            "fail closed，不以 primary 模型冒名執行。".format(
-                attempt.seat_id, attempt.model, primary
+            "席位 {} 的 attempt 模型 {} 沒有可派發的真實 provider 通道"
+            "（{} 家族固定為 {}）；fail closed，不以其他模型冒名執行。".format(
+                attempt.seat_id, attempt.model, provider, expected
             )
         )
 

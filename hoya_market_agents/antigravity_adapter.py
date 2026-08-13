@@ -21,8 +21,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .claude_adapter import PROCESS_TREE_TERMINATION_FAILED
+from .provider_cli import PROVIDER_ANTIGRAVITY, provider_cli_argv0
 
-CLI_PATH = Path("/home/leslie/.local/bin/agy")
+
+# WSL 的 ``PATH`` 說了算（ADR 0009）：這裡不得凍結任何一位開發者家目錄下的路徑。
+CLI_PATH = Path(provider_cli_argv0(PROVIDER_ANTIGRAVITY))
 MODEL = "gemini-3.1-pro-high"
 EFFORT = "high"
 SEARCH_TOOL = "search_web"
@@ -73,6 +77,19 @@ class AntigravityLateResult(AntigravityError):
 
 class AntigravityPostSealSearch(AntigravityError):
     """The seat ran a live search on a call that had to stay inside the seal."""
+
+
+class AntigravityResearchProofMissing(AntigravityNotReady):
+    """研究呼叫要求檢索證明，這個 session 卻沒有成功的 ``search_web``。
+
+    仍然是 :class:`AntigravityNotReady` 的一種，所以既有的處理與測試不變；分出
+    子型別只是為了讓「這席沒有研究證明」不再和「CLI 根本沒裝好」共用同一個穩定
+    failure code——兩者要修的東西完全不同。
+    """
+
+
+class AntigravityTreeTermination(AntigravityError):
+    """整組回收不了：這次 invocation 的回覆永遠不可採用。"""
 
 
 @dataclass(frozen=True)
@@ -141,7 +158,11 @@ class AntigravityAdapter:
         version = self._simple_command("--version").strip()
         if not version:
             raise AntigravityNotReady("agy version 無法辨識")
-        models = {line.strip() for line in self._simple_command("models").splitlines()}
+        models = {
+            line.split("\t", 1)[0].strip()
+            for line in self._simple_command("models").splitlines()
+            if line.strip()
+        }
         if self.model not in models:
             raise AntigravityNotReady("指定模型不存在：{}".format(self.model))
 
@@ -176,8 +197,18 @@ class AntigravityAdapter:
         late_check=None,
         require_search=False,
         allow_search=True,
+        timeout_seconds=None,
     ):
         self._require_cli()
+        """``timeout_seconds`` overrides this call only; never the adapter.
+
+        Debate turns share one adapter, so a per-call budget must stay a
+        local: writing it onto ``self`` would let one seat's wall follow
+        another seat's concurrent call.
+        """
+        timeout_seconds = (
+            self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
         attempt_dir = self._attempt_dir(attempt_dir)
         schema_path, schema_sha256 = _write_schema(attempt_dir, schema)
         raw_path = attempt_dir / "raw-envelope.jsonl"
@@ -196,7 +227,7 @@ class AntigravityAdapter:
             "--json-schema",
             str(schema_path),
             "--print-timeout",
-            "{}s".format(self.timeout_seconds),
+            "{}s".format(timeout_seconds),
             "--mode",
             "plan",
             "--sandbox",
@@ -206,14 +237,25 @@ class AntigravityAdapter:
         ]
         try:
             completed = self.runner(
-                argv, cwd=attempt_dir, timeout=self.timeout_seconds + 10
+                argv, cwd=attempt_dir, timeout=timeout_seconds + 10
             )
         except subprocess.TimeoutExpired as exc:
+            # 逾時的樹如果連回收都證明不了，那個終局比逾時強：逾時可以重試，
+            # 回收失敗永遠不可採用。
+            if getattr(exc, "process_outcome", None) == PROCESS_TREE_TERMINATION_FAILED:
+                raise AntigravityTreeTermination(
+                    PROCESS_TREE_TERMINATION_FAILED
+                ) from exc
             raise AntigravityTimeout(
-                "Antigravity 超過 {} 秒".format(self.timeout_seconds)
+                "Antigravity 超過 {} 秒".format(timeout_seconds)
             ) from exc
         finally:
             _persist_sanitized_log(raw_log_path, log_path)
+
+        if getattr(completed, "process_outcome", None) == PROCESS_TREE_TERMINATION_FAILED:
+            # 整組證明不了回收就永遠不可採用：envelope 不 parse、模型與 search_web
+            # 都不再判定，這次呼叫不會產生任何可採用的輸出。
+            raise AntigravityTreeTermination(PROCESS_TREE_TERMINATION_FAILED)
 
         raw = completed.stdout or ""
         _write_once(raw_path, raw.encode("utf-8"))
@@ -287,7 +329,7 @@ def _require_search_policy(parsed, allow_search, require_search):
     if not parsed.search_available:
         raise AntigravityNotReady("Antigravity session 未提供 search_web")
     if require_search and not parsed.search_succeeded:
-        raise AntigravityNotReady("Antigravity search_web smoke 未成功")
+        raise AntigravityResearchProofMissing("Antigravity search_web smoke 未成功")
 
 
 def parse_envelope(raw):

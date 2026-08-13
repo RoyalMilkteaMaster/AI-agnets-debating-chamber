@@ -8,7 +8,12 @@ from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
-from .contract_validator import ContractViolationError, RUN_RULES_FIELD, load_run_rules
+from .contract_validator import (
+    ContractViolationError,
+    RUN_RULES_FIELD,
+    load_run_rules,
+    validate_run_manifest,
+)
 from .debate_rules import DebateRules, DebateRulesError
 from .debate_state_machine import UNANIMOUS_BLIND_PASS
 from .report_contract import (
@@ -161,10 +166,11 @@ def verify_run(data_root, run_id):
     if manifest.get("run_id") != run_id:
         raise RunVerificationError("manifest run_id 不一致。")
     try:
+        validate_run_manifest(manifest)
         rules = load_run_rules(manifest)
     except (ContractViolationError, DebateRulesError) as exc:
         raise RunVerificationError(
-            "manifest 的規則快照無法載入：{}".format(exc)
+            "manifest 不符合 canonical contract：{}".format(exc)
         ) from exc
     rules_record = manifest.get(RUN_RULES_FIELD)
     artifact_index = manifest.get("artifacts")
@@ -264,6 +270,8 @@ def verify_run(data_root, run_id):
             rules=rules,
         )
         _verify_competition_timeline(run_dir, manifest, debate, votes, timeline, rules)
+    else:
+        _verify_public_attempt_lineage_without_timeline(evidence, debate, vote_records)
     operational_advisories = []
     if declares_real:
         authorization = _verify_real_provider_lineage(root, manifest)
@@ -285,6 +293,28 @@ def verify_run(data_root, run_id):
             _read_json(run_dir / "report.json"),
             receipt_payloads,
         )
+
+    manifest_attempts = {
+        row["seat_id"]: row["attempt_ids"] for row in seats
+    }
+    legacy_singular_votes = (
+        provider_mode == "fake"
+        and timeline is None
+        and competition_ready is not True
+    )
+    vote_attempts = {}
+    for row in vote_records:
+        attempt_ids = row.get("attempt_ids")
+        if legacy_singular_votes and "attempt_ids" not in row:
+            attempt_id = row.get("attempt_id")
+            attempt_ids = (
+                [attempt_id]
+                if isinstance(attempt_id, str) and attempt_id.strip()
+                else None
+            )
+        vote_attempts[row["seat_id"]] = attempt_ids
+    if manifest_attempts != vote_attempts:
+        raise RunVerificationError("manifest seats 的 attempt_ids 與 votes.json 不一致。")
 
     return {
         "schema_version": "1.0.0",
@@ -865,6 +895,50 @@ def _verify_attempt_lineage(debate, votes):
             )
 
 
+def _verify_public_attempt_lineage_without_timeline(evidence, debate, vote_records):
+    """Keep no-timeline bundles honest about attempts visible in public records."""
+    rows = {row.get("seat_id"): row for row in vote_records if isinstance(row, dict)}
+    for seat_id in SEAT_IDS:
+        row = rows.get(seat_id, {})
+        attempt_ids = row.get("attempt_ids")
+        if isinstance(attempt_ids, list):
+            public = []
+            for record in debate:
+                if record.get("seat_id") != seat_id:
+                    continue
+                attempt_id = record.get("attempt_id")
+                if isinstance(attempt_id, str) and attempt_id and attempt_id not in public:
+                    public.append(attempt_id)
+            if attempt_ids != public:
+                raise RunVerificationError(
+                    "{} 的 attempt lineage 與公開 debate 不一致。".format(seat_id)
+                )
+            evidence_attempts = {
+                record.get("attempt_id")
+                for record in evidence
+                if record.get("seat_id") == seat_id
+            }
+            if not evidence_attempts or not evidence_attempts.issubset(set(public)):
+                raise RunVerificationError(
+                    "{} 的 evidence attempt lineage 無法回查公開 debate。".format(seat_id)
+                )
+            continue
+        singular = row.get("attempt_id")
+        evidence_attempts = {
+            record.get("attempt_id") for record in evidence if record.get("seat_id") == seat_id
+        }
+        debate_attempts = {
+            record.get("attempt_id") for record in debate if record.get("seat_id") == seat_id
+        }
+        if (
+            not isinstance(singular, str)
+            or not singular
+            or evidence_attempts != {singular}
+            or debate_attempts != {singular}
+        ):
+            raise RunVerificationError(
+                "{} 的 legacy public attempt lineage 不一致。".format(seat_id)
+            )
 def _canonical_numbering_problem(seat_id, attempts):
     """Every formal attempt must be exactly ``"{seat_id}-a{n}"`` for its position.
 

@@ -381,6 +381,19 @@ class ScriptedPool(debate_fixtures.ScriptedDebateRunner):
 
     def start(self, attempt, checkpoint):
         self.results_queue.put(
+            (
+                "research_lineage",
+                attempt.attempt_id,
+                {
+                    "seat_id": attempt.seat_id,
+                    "attempt_id": attempt.attempt_id,
+                    "attempt_kind": attempt.kind,
+                    "provider": attempt.provider,
+                    "actual_model": attempt.model,
+                },
+            )
+        )
+        self.results_queue.put(
             ("result", attempt.attempt_id, self._envelope(attempt))
         )
         return True

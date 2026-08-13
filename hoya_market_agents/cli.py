@@ -33,6 +33,12 @@ from .codex_bridge import (
     verify_codex_preflight,
 )
 from .fake_provider import FakeProvider
+from .provider_cli import (
+    PROVIDER_ANTIGRAVITY,
+    PROVIDER_CLAUDE,
+    PROVIDER_CODEX,
+    provider_cli_argv0,
+)
 from .question import UnsupportedQuestionError
 from .report_contract import ReportContractError, canonical_sha256, validate_market_report
 from .report_audit_renderer import render_debate_html
@@ -621,10 +627,11 @@ def _real_system_checks(args, preflight_id):
 
 def _apply_local_observations(checks, artifact_root):
     versions = {}
+    # 版本觀測問的是「這個 WSL shell 現在用的是哪一支 CLI」（ADR 0009），
+    # 所以命令一律由當前 PATH 解析，不寫死任何一位開發者的家目錄。
     commands = {
-        "codex": ["/home/leslie/.local/bin/codex", "--version"],
-        "claude": ["/home/leslie/.local/bin/claude", "--version"],
-        "antigravity": ["/home/leslie/.local/bin/agy", "--version"],
+        provider: [provider_cli_argv0(provider), "--version"]
+        for provider in (PROVIDER_CODEX, PROVIDER_CLAUDE, PROVIDER_ANTIGRAVITY)
     }
     for provider, command in commands.items():
         try:

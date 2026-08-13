@@ -2,7 +2,10 @@
 
 import io
 import json
+import os
 import re
+import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -12,10 +15,14 @@ from pathlib import Path
 from hoya_market_agents.claude_adapter import (
     CLAUDE_MODEL_ALIAS,
     CLAUDE_SEAT_SESSIONS,
+    PROCESS_GROUP_NOT_RUNNING,
+    PROCESS_GROUP_RECLAIMED,
+    PROCESS_TREE_TERMINATION_FAILED,
     ClaudeAdapter,
     ClaudeAttemptRequest,
     ProcessOutput,
     ProcessRegistry,
+    TerminatingRunner,
     mask_session_id,
     run_claude_preflight,
     validate_smoke_output,
@@ -126,13 +133,21 @@ class CapabilityRunner:
         )
 
 
-def completed(stdout="", stderr="", returncode=0, elapsed_ms=10, timed_out=False):
+def completed(
+    stdout="",
+    stderr="",
+    returncode=0,
+    elapsed_ms=10,
+    timed_out=False,
+    process_outcome=None,
+):
     return ProcessOutput(
         returncode=returncode,
         stdout=stdout,
         stderr=stderr,
         elapsed_ms=elapsed_ms,
         timed_out=timed_out,
+        process_outcome=process_outcome,
     )
 
 
@@ -565,75 +580,589 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertEqual("", stderr.getvalue())
 
 
-class RecordingProcess:
-    """``Popen`` duck type recording which signal the registry delivered."""
+JOIN_TIMEOUT_SECONDS = 10
+# 證明「另一條執行緒真的被鎖擋住」只需要一個有界的觀察窗；拿掉鎖的話它會在
+# 這段時間內跑完，斷言就轉紅。這不是用 sleep 猜競態。
+RECLAIM_BLOCK_SECONDS = 0.2
 
-    def __init__(self):
-        self.terminated = False
-        self.killed = False
 
-    def terminate(self):
-        self.terminated = True
+class FakeProcessGroup:
+    """One controllable POSIX process group behind a ``Popen`` duck type.
 
-    def kill(self):
-        self.killed = True
+    ``pid`` is the group id: every provider invocation is spawned with
+    ``start_new_session=True``, so its root leads its own session and group.
+    ``poll`` reports the root alone — the answer that must never be mistaken for
+    the whole group having been reclaimed.
+    """
+
+    def __init__(
+        self, pgid, *, survives_term=False, survives_kill=False, root_exited=False
+    ):
+        self.pid = pgid
+        self.survives_term = survives_term
+        self.survives_kill = survives_kill
+        self.root_exited = root_exited
+        self.alive = True
+        self.signals = []
+        self.finished = threading.Event()
 
     def poll(self):
-        return 0 if self.terminated or self.killed else None
+        return 0 if self.root_exited or not self.alive else None
+
+    def wait(self, timeout=None):
+        """``Popen.wait`` duck type: a worker blocks here until the group dies."""
+        self.finished.wait(timeout)
+        return self.poll()
+
+    def exit_cleanly(self):
+        """整個 group 自己收工：root 退出，也沒有留下任何子孫。"""
+        self.root_exited = True
+        self._gone()
+
+    def deliver(self, number):
+        self.signals.append(number)
+        if number == signal.SIGKILL and self.survives_kill:
+            return
+        if number == signal.SIGTERM and self.survives_term:
+            return
+        self._gone()
+
+    def _gone(self):
+        self.alive = False
+        self.finished.set()
 
 
-class DeafProcess(RecordingProcess):
-    """A process that cannot be signalled; stopping is always best effort."""
+class FakeKillpg:
+    """``os.killpg`` over fake groups; signal 0 is the only liveness proof."""
 
-    def terminate(self):
-        raise OSError("no such process")
+    def __init__(self, *groups):
+        self.groups = {group.pid: group for group in groups}
+        self.calls = []
 
-    def kill(self):
-        raise OSError("no such process")
+    def __call__(self, pgid, number):
+        self.calls.append((pgid, number))
+        group = self.groups.get(pgid)
+        if group is None or not group.alive:
+            raise ProcessLookupError(pgid)
+        if number:
+            group.deliver(number)
+
+    def delivered(self):
+        return [number for _, number in self.calls if number]
+
+
+def deaf_killpg(pgid, number):
+    """A group this process may not signal: nothing about it can be proven."""
+    raise PermissionError(pgid)
 
 
 class ProcessRegistryTest(unittest.TestCase):
-    """終止與註冊會在兩條執行緒上競速：terminate 先到也必須停得掉後到的進程。"""
+    """終止與註冊會在兩條執行緒上競速：terminate 先到也必須停得掉後到的整組。"""
 
-    def setUp(self):
-        self.registry = ProcessRegistry()
+    def registry(self, *groups):
+        self.killpg = FakeKillpg(*groups)
+        return ProcessRegistry(killpg=self.killpg)
 
     def test_a_process_tracked_after_terminate_is_stopped_immediately(self):
-        late = RecordingProcess()
+        late = FakeProcessGroup(4101)
+        registry = self.registry(late)
 
-        self.assertFalse(self.registry.terminate("official-events-a1"))
-        self.assertIs(late, self.registry.track("official-events-a1", late))
+        self.assertFalse(registry.terminate("official-events-a1", grace_seconds=0))
+        self.assertIs(late, registry.track("official-events-a1", late, grace_seconds=0))
 
-        self.assertTrue(late.terminated)
-        # 這個進程確實是被截止收尾停掉的，release 必須照實回報。
-        self.assertTrue(self.registry.release("official-events-a1", late))
+        self.assertFalse(late.alive)
+        # 這個 group 確實是被截止收尾停掉的，release 必須照實回報。
+        self.assertTrue(registry.release("official-events-a1", late))
 
     def test_a_retry_after_a_delivered_terminate_is_stopped_too(self):
-        first = RecordingProcess()
-        self.registry.track("news-a1", first)
+        first = FakeProcessGroup(4102)
+        resumed = FakeProcessGroup(4103)
+        registry = self.registry(first, resumed)
+        registry.track("news-a1", first)
 
-        self.assertTrue(self.registry.terminate("news-a1"))
-        self.registry.release("news-a1", first)
-        resumed = RecordingProcess()
-        self.registry.track("news-a1", resumed)
+        self.assertTrue(registry.terminate("news-a1", grace_seconds=0))
+        registry.release("news-a1", first)
+        registry.track("news-a1", resumed, grace_seconds=0)
 
-        self.assertTrue(first.terminated)
-        self.assertTrue(resumed.terminated)
+        self.assertFalse(first.alive)
+        self.assertFalse(resumed.alive)
 
     def test_terminating_one_key_never_poisons_another_seat(self):
-        self.registry.terminate("news-a1")
-        untouched = RecordingProcess()
+        untouched = FakeProcessGroup(4104)
+        registry = self.registry(untouched)
+        registry.terminate("news-a1", grace_seconds=0)
 
-        self.registry.track("social-macro-a1", untouched)
+        registry.track("social-macro-a1", untouched)
+        untouched.exit_cleanly()
 
-        self.assertFalse(untouched.terminated)
-        self.assertFalse(self.registry.release("social-macro-a1", untouched))
+        self.assertFalse(registry.release("social-macro-a1", untouched))
+        self.assertEqual([], self.killpg.delivered())
+        self.assertEqual(
+            PROCESS_GROUP_NOT_RUNNING, registry.outcome("social-macro-a1")
+        )
 
-    def test_a_late_process_that_cannot_be_signalled_never_raises(self):
-        self.registry.terminate("derivatives-a1")
-        deaf = DeafProcess()
+    def test_a_late_group_that_cannot_be_signalled_never_raises(self):
+        registry = ProcessRegistry(killpg=deaf_killpg)
+        deaf = FakeProcessGroup(4105)
+        registry.terminate("derivatives-a1", grace_seconds=0)
 
-        self.assertIs(deaf, self.registry.track("derivatives-a1", deaf))
+        self.assertIs(deaf, registry.track("derivatives-a1", deaf, grace_seconds=0))
+        self.assertEqual(
+            PROCESS_TREE_TERMINATION_FAILED, registry.outcome("derivatives-a1")
+        )
+
+
+class ProcessGroupReclaimTest(unittest.TestCase):
+    """回收的對象是整個 group：root 不是整棵樹，root poll 也不是消失的證明。"""
+
+    def reclaim(self, group, key="news-a1"):
+        self.killpg = FakeKillpg(group)
+        registry = ProcessRegistry(killpg=self.killpg)
+        registry.track(key, group)
+        stopped = registry.terminate(key, grace_seconds=0)
+        return registry, stopped
+
+    def test_terminate_signals_the_whole_group_and_never_escalates_needlessly(self):
+        group = FakeProcessGroup(5101)
+
+        registry, stopped = self.reclaim(group)
+
+        self.assertTrue(stopped)
+        self.assertEqual([signal.SIGTERM], group.signals)
+        self.assertEqual(PROCESS_GROUP_RECLAIMED, registry.outcome("news-a1"))
+
+    def test_a_group_that_ignores_sigterm_is_killed_and_still_reclaimed(self):
+        group = FakeProcessGroup(5102, survives_term=True)
+
+        registry, stopped = self.reclaim(group)
+
+        self.assertTrue(stopped)
+        self.assertEqual([signal.SIGTERM, signal.SIGKILL], group.signals)
+        self.assertEqual(PROCESS_GROUP_RECLAIMED, registry.outcome("news-a1"))
+
+    def test_a_group_that_cannot_be_proven_gone_fails_closed(self):
+        group = FakeProcessGroup(5103, survives_term=True, survives_kill=True)
+
+        registry, stopped = self.reclaim(group)
+
+        self.assertFalse(stopped)
+        self.assertEqual(
+            PROCESS_TREE_TERMINATION_FAILED, registry.outcome("news-a1")
+        )
+
+    def test_an_exited_root_is_not_proof_that_the_group_is_gone(self):
+        # root 先退出、子孫還活著：只看 root PID 會回報「沒有東西需要回收」。
+        group = FakeProcessGroup(5104, root_exited=True)
+
+        registry, stopped = self.reclaim(group)
+
+        self.assertTrue(stopped)
+        self.assertEqual([signal.SIGTERM], group.signals)
+        self.assertEqual(PROCESS_GROUP_RECLAIMED, registry.outcome("news-a1"))
+
+    def test_the_same_invocation_answers_the_same_verdict_every_time(self):
+        group = FakeProcessGroup(5105)
+
+        registry, stopped = self.reclaim(group)
+        repeated = registry.terminate("news-a1", grace_seconds=0)
+
+        self.assertTrue(stopped)
+        # 同一代重問得到同一個答案，而且不會再送第二次訊號。
+        self.assertTrue(repeated)
+        self.assertEqual([signal.SIGTERM], group.signals)
+        self.assertEqual(
+            [PROCESS_GROUP_RECLAIMED] * 3,
+            [registry.outcome("news-a1") for _ in range(3)],
+        )
+
+
+class InvocationGenerationTest(unittest.TestCase):
+    """同一個 attempt key 的第二次 invocation 是新的一代，不沿用前代終局。"""
+
+    def test_a_resume_never_inherits_the_previous_generation_outcome(self):
+        first = FakeProcessGroup(6101)
+        second = FakeProcessGroup(6102)
+        killpg = FakeKillpg(first, second)
+        registry = ProcessRegistry(killpg=killpg)
+
+        registry.track("onchain-a1", first)
+        first.exit_cleanly()
+        self.assertFalse(registry.release("onchain-a1", first))
+        self.assertEqual(
+            PROCESS_GROUP_NOT_RUNNING, registry.outcome("onchain-a1", 1)
+        )
+
+        # cancel 落在第一代收工之後、第二代註冊之前。
+        registry.terminate("onchain-a1", grace_seconds=0)
+        registry.track("onchain-a1", second, grace_seconds=0)
+
+        self.assertEqual(
+            PROCESS_GROUP_NOT_RUNNING, registry.outcome("onchain-a1", 1)
+        )
+        self.assertEqual(PROCESS_GROUP_RECLAIMED, registry.outcome("onchain-a1", 2))
+        self.assertFalse(second.alive)
+
+    def test_an_invocation_that_never_ran_has_no_outcome(self):
+        registry = ProcessRegistry(killpg=FakeKillpg())
+
+        self.assertIsNone(registry.outcome("never-started"))
+        self.assertFalse(registry.terminate("never-started", grace_seconds=0))
+        self.assertIsNone(registry.outcome("never-started"))
+
+
+class ReclaimLockTest(unittest.TestCase):
+    """同 key 的回收共用一把鎖並在鎖內重讀終局；不同 key 不得被序列化。"""
+
+    def start(self, target):
+        thread = threading.Thread(target=target)
+        thread.start()
+        self.addCleanup(thread.join, JOIN_TIMEOUT_SECONDS)
+        return thread
+
+    def test_a_clean_finish_is_not_rewritten_by_a_cancel_waiting_on_the_lock(self):
+        group = FakeProcessGroup(7101)
+        entered = threading.Event()
+        gate = threading.Event()
+        calls = []
+
+        def killpg(pgid, number):
+            calls.append(number)
+            if number == 0 and not entered.is_set():
+                entered.set()
+                gate.wait(JOIN_TIMEOUT_SECONDS)
+            raise ProcessLookupError(pgid)  # worker 已乾淨收工，整組都不在了
+
+        registry = ProcessRegistry(killpg=killpg)
+        registry.track("social-macro-a1", group)
+        group.exit_cleanly()
+
+        settled = self.start(lambda: registry.release("social-macro-a1", group))
+        self.assertTrue(entered.wait(JOIN_TIMEOUT_SECONDS))
+        cancelled = []
+        late = self.start(
+            lambda: cancelled.append(
+                registry.terminate("social-macro-a1", grace_seconds=0)
+            )
+        )
+        late.join(RECLAIM_BLOCK_SECONDS)
+        self.assertTrue(late.is_alive())  # terminate 只能在 reclaim lock 外面等
+        gate.set()
+        settled.join(JOIN_TIMEOUT_SECONDS)
+        late.join(JOIN_TIMEOUT_SECONDS)
+
+        self.assertEqual([False], cancelled)
+        self.assertEqual(
+            PROCESS_GROUP_NOT_RUNNING, registry.outcome("social-macro-a1")
+        )
+        self.assertNotIn(signal.SIGTERM, calls)
+
+    def test_the_same_key_never_reclaims_two_generations_at_once(self):
+        first = FakeProcessGroup(7201)
+        second = FakeProcessGroup(7202)
+        killpg = FakeKillpg(first, second)
+        entered = threading.Event()
+        gate = threading.Event()
+        active = []
+        peak = []
+
+        def gated(pgid, number):
+            if number:
+                active.append(pgid)
+                peak.append(len(active))
+                entered.set()
+                gate.wait(JOIN_TIMEOUT_SECONDS)
+                try:
+                    killpg(pgid, number)
+                finally:
+                    active.pop()
+                return
+            killpg(pgid, number)
+
+        registry = ProcessRegistry(killpg=gated)
+        registry.track("derivatives-a1", first)
+
+        cancelling = self.start(
+            lambda: registry.terminate("derivatives-a1", grace_seconds=0)
+        )
+        self.assertTrue(entered.wait(JOIN_TIMEOUT_SECONDS))
+        tracking = self.start(
+            lambda: registry.track("derivatives-a1", second, grace_seconds=0)
+        )
+        tracking.join(RECLAIM_BLOCK_SECONDS)
+        # poisoned track 的回收必須進同一把鎖，否則它會和 cancel 同時動手。
+        self.assertTrue(tracking.is_alive())
+        gate.set()
+        cancelling.join(JOIN_TIMEOUT_SECONDS)
+        tracking.join(JOIN_TIMEOUT_SECONDS)
+
+        self.assertEqual([1, 1], peak)
+        self.assertFalse(first.alive)
+        self.assertFalse(second.alive)
+
+    def test_two_different_keys_reclaim_in_parallel(self):
+        first = FakeProcessGroup(7301)
+        second = FakeProcessGroup(7302)
+        killpg = FakeKillpg(first, second)
+        barrier = threading.Barrier(2, timeout=JOIN_TIMEOUT_SECONDS)
+        serialised = []
+
+        def paired(pgid, number):
+            if number:
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    serialised.append(pgid)
+            killpg(pgid, number)
+
+        registry = ProcessRegistry(killpg=paired)
+        registry.track("onchain-a1", first)
+        registry.track("news-a1", second)
+
+        threads = [
+            self.start(lambda: registry.terminate("onchain-a1", grace_seconds=0)),
+            self.start(lambda: registry.terminate("news-a1", grace_seconds=0)),
+        ]
+        for thread in threads:
+            thread.join(JOIN_TIMEOUT_SECONDS)
+
+        self.assertEqual([], serialised)
+        self.assertFalse(first.alive)
+        self.assertFalse(second.alive)
+
+
+class UnreclaimedTreeAdapterTest(unittest.TestCase):
+    """整組回收不了時，adapter 邊界必須先 fail closed（Reviewer A-1 第二次）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.code_root = root / "code"
+        self.data_root = root / "data"
+        self.code_root.mkdir()
+        self.data_root.mkdir()
+        self.validator_calls = []
+
+    def request(self, seat_id="official-events"):
+        attempt_dir = self.data_root / "agents" / seat_id / "a1"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        return ClaudeAttemptRequest(
+            seat_id=seat_id,
+            attempt_id="{}-a1".format(seat_id),
+            prompt="Return the public smoke result.",
+            attempt_dir=attempt_dir,
+            timeout_seconds=12,
+            validator=self.validator_calls.append,
+        )
+
+    def run_with(self, output):
+        adapter = ClaudeAdapter(
+            runner=ScriptedRunner([output]),
+            code_root=self.code_root,
+            data_root=self.data_root,
+        )
+        return adapter.run(self.request())
+
+    def test_a_clean_looking_result_is_refused_when_the_tree_was_not_reclaimed(self):
+        # runner 沒有逾時、CLI 也回了合法 JSON，唯一的問題是整組證明不了回收。
+        result = self.run_with(
+            completed(
+                envelope("official-events"),
+                returncode=0,
+                timed_out=False,
+                process_outcome=PROCESS_TREE_TERMINATION_FAILED,
+            )
+        )
+
+        self.assertNotEqual("ok", result.status)
+        self.assertEqual(PROCESS_TREE_TERMINATION_FAILED, result.status)
+        self.assertEqual(PROCESS_TREE_TERMINATION_FAILED, result.error)
+        self.assertIsNone(result.structured_output)
+        self.assertIsNotNone(result.scheduler_failure_kind)
+        # 連 parse 與 validator 都不准跑：這份輸出永遠不可採用。
+        self.assertEqual([], self.validator_calls)
+
+    def test_a_reclaimed_tree_still_admits_its_structured_output(self):
+        result = self.run_with(
+            completed(
+                envelope("official-events"),
+                returncode=0,
+                process_outcome=PROCESS_GROUP_RECLAIMED,
+            )
+        )
+
+        self.assertEqual("ok", result.status)
+        self.assertIsNotNone(result.structured_output)
+        self.assertEqual(1, len(self.validator_calls))
+
+
+class UnreclaimableProcess:
+    """``Popen`` duck type：逾時後整組回收不了，子孫還握著管道不放。"""
+
+    def __init__(self, pid=9401):
+        self.pid = pid
+        self.communicate_calls = 0
+        self.unbounded_drain = threading.Event()
+
+    def communicate(self, input=None, timeout=None):
+        self.communicate_calls += 1
+        if self.communicate_calls == 1:
+            raise subprocess.TimeoutExpired(["fake-cli"], timeout)
+        if timeout is None:
+            # 無界 drain：孫代還握著 stdout，這裡永遠等不到 EOF。
+            self.unbounded_drain.set()
+            threading.Event().wait(30)
+            raise AssertionError("無界 drain 不該被呼叫")
+        raise subprocess.TimeoutExpired(
+            ["fake-cli"], timeout, output="partial-stdout", stderr="partial-stderr"
+        )
+
+    def poll(self):
+        return None
+
+
+class FixedChildRunner(TerminatingRunner):
+    """The real runner with only the spawn syscall replaced."""
+
+    def __init__(self, registry, process, key_source=None):
+        super().__init__(registry, key_source=key_source)
+        self.process = process
+
+    def _spawn(self, args, cwd):
+        return self.process
+
+
+class TerminatingRunnerFailurePathTest(unittest.TestCase):
+    """整組證明不了回收時，worker 不得卡在無界 drain 上（Reviewer B-1）。"""
+
+    def test_an_unreclaimable_tree_drains_within_a_bound_and_reports_the_failure(self):
+        process = UnreclaimableProcess()
+        registry = ProcessRegistry(killpg=deaf_killpg)
+        runner = FixedChildRunner(registry, process, key_source=lambda: "seat-key")
+        outputs = []
+        worker = threading.Thread(
+            target=lambda: outputs.append(
+                runner.run(
+                    ["fake-cli"], input_text="", cwd=".", timeout_seconds=0.01
+                )
+            ),
+            daemon=True,
+        )
+
+        worker.start()
+        worker.join(JOIN_TIMEOUT_SECONDS)
+
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(process.unbounded_drain.is_set())
+        self.assertEqual(2, process.communicate_calls)
+        [output] = outputs
+        self.assertTrue(output.timed_out)
+        self.assertIsNone(output.returncode)
+        self.assertEqual("partial-stdout", output.stdout)
+        self.assertEqual("partial-stderr", output.stderr)
+        # 回收失敗必須以機器可讀的終局傳到 runner 邊界，不是靠訊息字串反推。
+        self.assertEqual(PROCESS_TREE_TERMINATION_FAILED, output.process_outcome)
+        self.assertEqual(PROCESS_TREE_TERMINATION_FAILED, registry.outcome("seat-key"))
+
+
+# 假 CLI：印出自己的 pid／pgid／sid，並在退出前先把 root→child→grandchild
+# 整棵樹建立起來，讓測試不必猜時序。descend 的兩層會一直睡下去，只有整組回收
+# 才停得掉。這個 fixture 不接觸任何真實 Provider。
+PREFLIGHT_TREE_CLI = """\
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+if sys.argv[1] == "descend":
+    home = Path(sys.argv[2])
+    depth = int(sys.argv[3])
+else:
+    home = Path({markers!r}) / str(os.getpid())
+    home.mkdir(parents=True)
+    depth = 2
+(home / str(os.getpid())).write_text("x", encoding="utf-8")
+if depth:
+    subprocess.Popen(
+        [sys.executable, __file__, "descend", str(home), str(depth - 1)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+if sys.argv[1] == "descend":
+    time.sleep(600)
+    sys.exit(0)
+deadline = time.monotonic() + 10
+while time.monotonic() < deadline and len(list(home.iterdir())) < 3:
+    time.sleep(0.01)
+print(os.getpid(), os.getpgid(0), os.getsid(0))
+"""
+
+
+class PreflightProcessGroupTest(unittest.TestCase):
+    """正式 preflight 的預設 runner 必須與研究呼叫走同一套 group 契約（B-2）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.code_root = root / "code"
+        self.data_root = root / "data"
+        self.code_root.mkdir()
+        self.markers = root / "markers"
+        self.markers.mkdir()
+        self.cli = root / "fake-claude"
+        self.cli.write_text(
+            PREFLIGHT_TREE_CLI.format(markers=str(self.markers)), encoding="utf-8"
+        )
+        self.cli.chmod(0o755)
+        self.addCleanup(self.reap_survivors)
+
+    def spawned_pids(self):
+        return [
+            int(path.name)
+            for home in sorted(self.markers.iterdir())
+            for path in sorted(home.iterdir())
+        ]
+
+    def reap_survivors(self):
+        for pid in self.spawned_pids():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    def run_preflight(self):
+        return run_claude_preflight(
+            seats=3,
+            cli_path=self.cli,
+            code_root=self.code_root,
+            data_root=self.data_root,
+            environ={},
+        )
+
+    def test_the_default_preflight_runner_spawns_its_own_session_and_group(self):
+        report = self.run_preflight()
+
+        pid, pgid, sid = (int(value) for value in report["cli_version"].split())
+        self.assertEqual((pid, pid), (pgid, sid))
+        self.assertNotEqual(os.getpgid(0), pgid)
+
+    def test_the_default_preflight_runner_leaves_no_surviving_process_tree(self):
+        self.run_preflight()
+
+        pids = self.spawned_pids()
+        self.assertEqual(6, len(pids))  # 兩次 CLI 呼叫，各 root＋child＋grandchild
+        survivors = []
+        for pid in pids:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                continue
+            survivors.append(pid)
+        self.assertEqual([], survivors)
 
 
 if __name__ == "__main__":
