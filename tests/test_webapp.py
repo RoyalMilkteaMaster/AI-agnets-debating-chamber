@@ -1208,6 +1208,36 @@ class RunDetailTest(PageFixture, unittest.TestCase):
             self.assertIn("{}-01".format(seat_id), body)
             self.assertIn("https://example.invalid/{}".format(seat_id), body)
 
+    def test_a_safe_source_is_a_link_the_reader_can_follow(self):
+        """可溯源性：每張證據卡的 http(s) 來源都要是可點擊的連結，
+        點下去直達原始資料，而不是要求讀者自己複製網址。"""
+        body = self.detail().body
+
+        for seat_id in SEAT_IDS:
+            self.assertIn(
+                '<a class="source-link" href="https://example.invalid/{}" '
+                'target="_blank" rel="noopener noreferrer">'.format(seat_id),
+                body,
+            )
+
+    def test_a_source_that_is_not_http_stays_text_instead_of_a_link(self):
+        """不是 http(s) 的來源一律不建連結（fail closed），文字照樣顯示。"""
+        run_id = "20260805T020000Z-btc-aaaa11"
+        question = "BTC 有沒有奇怪來源"
+        write_run(self.data_root, run_id, question)
+        date_dir, name = run_dir_parts(run_id, question)
+        evidence = Path(self.data_root) / "runs" / date_dir / name / "evidence.jsonl"
+        card = json.loads(evidence.read_text(encoding="utf-8").splitlines()[0])
+        card["source_url"] = "javascript:alert(1)"
+        evidence.write_text(
+            json.dumps(card, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+
+        body = self.get("/run/{}".format(run_id)).body
+
+        self.assertNotIn('href="javascript:', body)
+        self.assertIn("javascript:alert(1)", body)
+
     def test_the_transcript_is_linked_and_the_link_serves_it(self):
         body = self.detail().body
         self.assertIn('href="/run/{}/debate.html"'.format(self.RUN_ID), body)

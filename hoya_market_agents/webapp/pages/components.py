@@ -111,7 +111,7 @@ from ...prompt_builder import market_scopes
 
 from ...question import ASSET_CLASS_OPEN, ASSET_CLASSES
 
-from ...report_contract import CONFIDENCE_ICONS, CONFIDENCE_LEVELS
+from ...report_contract import CONFIDENCE_ICONS, CONFIDENCE_LEVELS, is_safe_source_url
 
 from ...report_renderer import decorative_hairline
 
@@ -546,10 +546,23 @@ def _evidence_card(card):
                 _e(_EMPTY if tier is None else tier),
                 _e(card.get("source_origin") or _EMPTY),
             ),
-            '<p class="source"><code>{}</code></p>'.format(_e(url)),
+            _source_html(url),
             "</li>",
         ]
     )
+
+def _source_html(url):
+    """可溯源性：http(s) 來源給讀者一個可點的連結；其他一律留純文字（fail closed）。
+
+    安全判準是 :func:`report_contract.is_safe_source_url` —— 與正式報告、
+    辯論逐字稿同一個權威，不在這裡另訂第二套。
+    """
+    if url and is_safe_source_url(url):
+        return (
+            '<p class="source"><a class="source-link" href="{0}" target="_blank" '
+            'rel="noopener noreferrer">開啟原始來源：{0}</a></p>'
+        ).format(_e(url))
+    return '<p class="source"><code>{}</code></p>'.format(_e(url))
 
 def _document(title, header, sections, scripts=(), footer=READ_ONLY_FOOTER):
     """Wrap one page.
