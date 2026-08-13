@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2026-08-13 工作區清理盤點報告</title>
+<style>
+  :root { --ink:#1a1a2e; --muted:#5c5c70; --line:#d8d8e4; --bg:#ffffff; --card:#f6f6fa;
+          --keep:#0a7a3d; --del:#b3261e; --arch:#8a5a00; --warn-bg:#fdecea; --warn-line:#b3261e; }
+  * { box-sizing:border-box; }
+  body { margin:0 auto; max-width:960px; padding:1.5rem 1rem 4rem; font-family:"Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif;
+         color:var(--ink); background:var(--bg); line-height:1.7; }
+  h1 { font-size:1.5rem; border-bottom:3px solid var(--ink); padding-bottom:.5rem; }
+  h2 { font-size:1.2rem; margin-top:2.5rem; border-left:6px solid var(--ink); padding-left:.6rem; }
+  h3 { font-size:1.05rem; margin-top:1.5rem; }
+  nav.toc { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.8rem 1.2rem; }
+  nav.toc ol { margin:.3rem 0; padding-left:1.4rem; }
+  nav.toc a { color:var(--ink); }
+  nav.toc a:focus-visible, a:focus-visible { outline:3px solid #4455dd; outline-offset:2px; }
+  table { border-collapse:collapse; width:100%; margin:1rem 0; font-size:.92rem; }
+  th, td { border:1px solid var(--line); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+  th { background:var(--card); }
+  code, pre { font-family:Consolas,"Courier New",monospace; }
+  code { background:var(--card); padding:.1rem .3rem; border-radius:4px; font-size:.9em; }
+  pre.tree { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:1rem; overflow-x:auto;
+             font-size:.85rem; line-height:1.55; }
+  .keep { color:var(--keep); font-weight:bold; }
+  .del  { color:var(--del);  font-weight:bold; }
+  .arch { color:var(--arch); font-weight:bold; }
+  .warn { background:var(--warn-bg); border:2px solid var(--warn-line); border-radius:8px; padding:.8rem 1.2rem; margin:1rem 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.8rem 1.2rem; margin:1rem 0; }
+  details { margin:.8rem 0; }
+  summary { cursor:pointer; font-weight:bold; }
+  .mermaid { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.6rem; margin:1rem 0; }
+  @media print { nav.toc { display:none; } body { max-width:100%; } }
+  @media (max-width:640px) { table { display:block; overflow-x:auto; } }
+</style>
+</head>
+<body>
+<h1>工作區清理盤點報告（2026-08-13）</h1>
+<p>範圍：<code>D:\workstationD\AI agnets debating chamber</code> 整個工作區根目錄。目的：清掉不需要的臨時檔與殘留物，同時保證辯論室系統照常能跑。</p>
+
+<nav class="toc" aria-label="目錄">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#summary">決策摘要</a></li>
+    <li><a href="#current">現況架構與資料流</a></li>
+    <li><a href="#candidates">問題與清理候選</a></li>
+    <li><a href="#plans">改善方案</a></li>
+    <li><a href="#verify">保留功能、驗證與待決策事項</a></li>
+  </ol>
+</nav>
+
+<h2 id="summary">1. 決策摘要</h2>
+
+<div class="warn">
+  <strong>最重要的一件事：<code>AI-agnets-debating-chamber</code>（主 repo）不能刪。</strong><br>
+  你平常確實是在 <code>AI-agnets-debating-chamber-wsl-runtime</code> 裡跑系統，但那個資料夾只是主 repo 的 <strong>git worktree（分身）</strong>——
+  它的 <code>.git</code> 是一個 132 位元組的指標檔，內容直接指回主 repo：<br>
+  <code>gitdir: .../AI-agnets-debating-chamber/.git/worktrees/AI-agnets-debating-chamber-wsl-runtime</code><br>
+  刪掉主 repo：① wsl-runtime 的 git 立刻整個壞掉；② 主 repo 裡還有 <strong>57 筆尚未提交的修改</strong>（Windows 可靠性工作，GitHub 上沒有），會永久遺失。
+</div>
+
+<table>
+  <caption style="text-align:left;font-weight:bold;">一眼看懂</caption>
+  <tr><th>問題</th><th>答案</th></tr>
+  <tr><td>值得大重構嗎？</td><td>不需要。三個根目錄（程式／資料／執行）分工清楚，架構健康。只需要「最小清理」。</td></tr>
+  <tr><td>可以刪什麼？</td><td class="del">外層 6 個 ticket01-*.tmp、old-folder-cleanup.log、主 repo 的 .pytest_cache、各處 __pycache__（會自動再生）。</td></tr>
+  <tr><td>絕對不能刪什麼？</td><td class="keep">主 repo（git 資料庫＋未提交工作）、wsl-runtime（正式執行環境）、_data（run 是唯一事實來源）、backups/（文件明訂的還原點）、.claude/。</td></tr>
+  <tr><td>最大三項風險</td><td>① 誤刪主 repo → worktree 斷鏈＋未提交工作遺失。② 刪 backups/ → 拆掉多份結案報告記載的回復路徑。③ 刪 <code>_data/preflight/latest-ready.json</code> → 違反 CONTEXT.md「不主動刪除」的明文約定。</td></tr>
+  <tr><td>需要你決定</td><td>採不採用「方案一：最小清理」（見第 4 節）；backups/ 維持原樣或另行處置。</td></tr>
+</table>
+<p>你也可以只保留這份報告、不做任何清理；報告本身不會改動任何程式或資料。</p>
+
+<h2 id="current">2. 現況架構與資料流</h2>
+
+<table>
+  <caption style="text-align:left;font-weight:bold;">現況 Snapshot（盤點當下）</caption>
+  <tr><th>項目</th><th>內容</th></tr>
+  <tr><td>掃描根</td><td><code>D:\workstationD\AI agnets debating chamber</code>（含全部子目錄；未展開 <code>.git</code> 內部、<code>__pycache__</code> 內容與 runs 逐檔）</td></tr>
+  <tr><td>程式碼根（Code Root）</td><td><code>AI-agnets-debating-chamber</code>，分支 <code>agent/pre-windows-reliability-backup-20260811</code>，HEAD <code>85b0553</code>（與 GitHub 同分支一致）。<strong>工作樹有 57 筆未提交項目</strong>（39 個修改＋新增檔），屬使用者進行中的 Windows 可靠性工作，本次盤點獨立標示、不列垃圾。</td></tr>
+  <tr><td>執行根（Runtime Root）</td><td><code>AI-agnets-debating-chamber-wsl-runtime</code>：主 repo 的 git worktree，分支 <code>agent/wsl-only-runtime-onboarding</code>，HEAD <code>c99a0b1</code>（＝GitHub 的 <code>origin/main</code>）。<strong>工作樹乾淨</strong>（<code>git status --porcelain</code> 無輸出），只有可再生的 <code>__pycache__</code>。正式運行環境只有 WSL。</td></tr>
+  <tr><td>資料根（Data Root）</td><td><code>AI-agnets-debating-chamber_data</code>（23.2 MB）：runs／inbox／logs／preflight／outcome-sweep-cursor.json。run artifact 是唯一事實來源。</td></tr>
+  <tr><td>已執行的基準驗證</td><td>唯讀 git 查詢（<code>rev-parse</code>／<code>status --porcelain --ignored</code>／<code>worktree list</code>／<code>branch -a</code>）、全工作區引用搜尋（ripgrep）、目錄與檔案內容盤點。</td></tr>
+  <tr><td>引用的既有驗收證據</td><td>wsl-only-runtime-onboarding 工作包 2026-08-13 結案：真實驗收 run <code>20260813T032513Z-btc-acca1e</code> 7/7 有效票、verify-run VERIFIED；證據在 <code>docs/work/wsl-only-runtime-onboarding/</code>（completion-report.html、acceptance/evidence/，位於 wsl-runtime 工作樹）。</td></tr>
+  <tr><td>本次未執行</td><td><code>python3 -m unittest</code> 與 acceptance 閘門未重跑。理由：主 repo 57 筆未提交修改屬進行中工作，測試紅綠不代表清理影響；且盤點角色唯讀，歷史上曾有測試因接縫缺陷誤刪工作區檔案（已修正，見 <code>backups/ticket01-legacy-shortcuts-20260813/README.txt</code>），不冒此險。清理後的驗證方式見第 5 節。</td></tr>
+</table>
+
+<h3>現況文字樹</h3>
+<pre class="tree">AI agnets debating chamber/                    # 工作區根（本次掃描範圍）
+├─ AI-agnets-debating-chamber/                 # 主 git repo：git 物件庫所在；57 筆未提交修改（進行中工作）
+│  ├─ hoya_market_agents/                      # 辯論室核心：run 控制、七席調度、Provider 接介、報告產出
+│  │  └─ webapp/                               # 網頁伺服器（127.0.0.1:8765）、直播頁、按日輪替日誌
+│  ├─ scripts/                                 # Windows／WSL 啟動、停止與捷徑安裝腳本
+│  ├─ tests/                                   # stdlib unittest 測試（不用 pytest）
+│  ├─ config/                                  # debate_rules.json 等規則的唯一來源
+│  ├─ docs/                                    # 規劃、ADR、工作包紀錄、本報告
+│  ├─ .pytest_cache/                           # 【刪除候選】pytest 殘留快取；專案實際用 unittest
+│  └─ START-HERE.ps1 ／ START-HERE.sh          # Windows 側入口（未提交，進行中工作）
+├─ AI-agnets-debating-chamber-wsl-runtime/     # 正式 WSL 執行環境＝主 repo 的 worktree（.git 是指標檔）
+├─ AI-agnets-debating-chamber_data/            # 資料根
+│  ├─ runs/                                    # 依日期的 run artifact（唯一事實來源）＋index.db（可重建索引）
+│  ├─ inbox/  logs/  preflight/                # 題目收件、正式日誌、預檢與啟動保留紀錄
+│  └─ outcome-sweep-cursor.json                # 事後驗證掃描游標
+├─ backups/                                    # 文件明訂的工作區級備份位置（還原點）
+│  ├─ hoya-bit-*-20260805.zip ×4               # 舊 repo／資料整包備份（post-competition-refit Phase 0）
+│  ├─ wp-b3e957c6-t07-entry-files-20260810/    # 已退役入口檔備份（SHA-256 三方驗證後才刪的原檔）
+│  └─ ticket01-legacy-shortcuts-20260813/      # 誤刪舊捷徑的重建檔＋事故說明 README
+├─ .claude/                                    # Claude Code 本機設定（settings.local.json）
+├─ ticket01-*.tmp ×6                           # 【刪除候選】已結案工作包的派工提示與審查交接稿
+└─ old-folder-cleanup.log                      # 【刪除候選】單行 TIMEOUT 殘留紀錄（46 位元組）</pre>
+
+<h3>架構與資料流</h3>
+<pre class="mermaid">
+flowchart LR
+  U["使用者"] -->|"START-HERE.sh（WSL 正式）<br>START-HERE.ps1（Windows，進行中）"| L["統一啟動器<br>scripts/"]
+  L --> W["webapp 伺服器<br>127.0.0.1:8765"]
+  W --> C["hoya_market_agents 核心<br>（七席辯論、run 控制）"]
+  C -->|讀規則| R["config/debate_rules.json"]
+  C -->|派工| P["Provider CLI<br>（codex／claude／antigravity，WSL ~/.local/bin）"]
+  C -->|寫 run artifact| D[("_data/runs/")]
+  W -->|按日輪替 jsonl| G[("_data/logs/")]
+  W -->|回看歷史| D
+</pre>
+<p>文字版：使用者從 <code>START-HERE.sh</code>（WSL 正式入口）啟動 → <code>scripts/</code> 啟動器帶起 webapp 伺服器 → 核心程式讀 <code>config/</code> 規則、呼叫 Provider CLI 做七席研究與辯論 → run 結果寫進 <code>_data/runs/</code>（唯一事實來源）→ webapp 從同處回放歷史並把日誌寫到 <code>_data/logs/</code>。外層那些 .tmp 與 .log 殘留檔<strong>完全不在這條資料流上</strong>（全工作區引用搜尋為零）。</p>
+
+<table>
+  <caption style="text-align:left;font-weight:bold;">責任表</caption>
+  <tr><th>模組／位置</th><th>責任</th><th>資料所有權</th><th>公開介面</th></tr>
+  <tr><td><code>hoya_market_agents/</code></td><td>run 生命週期、七席調度、證據與投票、報告</td><td>寫 <code>_data/runs/</code></td><td><code>python3 -m hoya_market_agents webapp</code></td></tr>
+  <tr><td><code>hoya_market_agents/webapp/</code></td><td>網頁介面、直播（SSE）、健康檢查、停機</td><td>寫 <code>_data/logs/</code>（log.py 按日輪替）</td><td>HTTP <code>127.0.0.1:8765</code>、<code>/health</code></td></tr>
+  <tr><td><code>scripts/</code>＋<code>START-HERE.*</code></td><td>跨平臺啟動／停止／捷徑</td><td>寫 <code>_data/logs/launch.log</code>、launch-handshakes</td><td>PowerShell／Bash 一行入口</td></tr>
+  <tr><td><code>config/</code></td><td>辯論規則、席位名冊、市場範圍的唯一來源</td><td>唯讀（程式不得複製字面值）</td><td>JSON 檔</td></tr>
+  <tr><td><code>backups/</code></td><td>刪除性變更前的整包備份（architecture.md 第 539 行明訂）</td><td>人工管理，程式不讀</td><td>無</td></tr>
+</table>
+
+<table>
+  <caption style="text-align:left;font-weight:bold;">根目錄表</caption>
+  <tr><th>角色</th><th>實際路徑</th><th>擁有者／狀態</th></tr>
+  <tr><td>程式碼根</td><td><code>...\AI-agnets-debating-chamber</code></td><td>git（HEAD 85b0553＋57 筆未提交＝使用者進行中工作）</td></tr>
+  <tr><td>執行根（正式）</td><td><code>...\AI-agnets-debating-chamber-wsl-runtime</code></td><td>git worktree（c99a0b1，乾淨；git 資料庫住在程式碼根）</td></tr>
+  <tr><td>資料根</td><td><code>...\AI-agnets-debating-chamber_data</code></td><td>執行期程式寫入；run artifact 不可重建</td></tr>
+  <tr><td>備份</td><td><code>...\backups</code></td><td>人工；多份結案文件記載為回復路徑</td></tr>
+  <tr><td>工具設定</td><td><code>...\.claude\settings.local.json</code></td><td>Claude Code 本機設定</td></tr>
+</table>
+
+<h2 id="candidates">3. 問題與清理候選</h2>
+
+<table>
+  <tr><th>項目</th><th>類型</th><th>現況與證據</th><th>建議</th><th>可能影響</th><th>回復方式</th></tr>
+  <tr>
+    <td><code>ticket01-*.tmp</code> ×6（工作區根）</td><td>流程殘留</td>
+    <td>已結案 wsl-only-runtime-onboarding 工作包 Ticket 01 的派工提示與 Reviewer A／B 交接稿（內文含當時基準 SHA <code>e05bf49</code>）。工作包 2026-08-13 結案；全工作區搜尋 <code>ticket01-</code> 只命中 backups 資料夾名與工作包文件，<strong>沒有任何程式或腳本讀這些 .tmp</strong>。正式紀錄已在 <code>docs/work/wsl-only-runtime-onboarding/</code>。</td>
+    <td class="del">刪除候選</td><td>無（不在任何資料流上）</td><td>刪了即無；正式內容另存於工作包文件。極保守可先 zip 進 backups/。</td>
+  </tr>
+  <tr>
+    <td><code>old-folder-cleanup.log</code>（工作區根）</td><td>流程殘留</td>
+    <td>46 位元組、僅一行 <code>TIMEOUT time=2026-08-11T13:16:38</code>。全工作區搜尋 <code>old-folder-cleanup</code> 與 <code>TIMEOUT time=</code> 只命中檔案自身——<strong>沒有任何程式產生或讀取它</strong>（產生者已不可考，列為未知事實）。</td>
+    <td class="del">刪除候選</td><td>無</td><td>不需回復</td>
+  </tr>
+  <tr>
+    <td><code>AI-agnets-debating-chamber\.pytest_cache\</code></td><td>工具快取</td>
+    <td>pytest 執行殘留（內含自帶 .gitignore 而被 git 忽略）。專案測試一律 stdlib unittest（memory 與工作包文件皆載明），pytest 非正式流程。</td>
+    <td class="del">刪除候選</td><td>無；若再跑 pytest 會自動重建</td><td>自動再生</td>
+  </tr>
+  <tr>
+    <td>各處 <code>__pycache__\</code>（兩個工作樹共 9 處）</td><td>直譯器快取</td>
+    <td>git 已忽略（.gitignore：<code>__pycache__/</code>）。Python 執行時自動重建。</td>
+    <td class="del">刪除候選</td><td>無；下次執行自動重建（首跑稍慢）</td><td>自動再生</td>
+  </tr>
+  <tr>
+    <td><code>backups\</code>（12.2 MB：4 個 zip＋2 個資料夾）</td><td>備份還原點</td>
+    <td><code>docs/planning/architecture.md:539</code> 明訂「刪除前先 zip 整包備份到 backups\」；<code>wp-b3e957c6</code> 完成報告與驗收矩陣把 <code>backups/wp-b3e957c6-t07-entry-files-20260810/</code> 記載為唯一回復路徑（三檔 SHA-256 對照）；<code>ticket01-legacy-shortcuts-20260813/README.txt</code> 記錄誤刪捷徑事故與重建檔。</td>
+    <td class="keep">保留（原樣）</td><td>刪除會拆掉結案文件記載的回復路徑</td><td>—</td>
+  </tr>
+  <tr>
+    <td><code>AI-agnets-debating-chamber\</code>（主 repo 整體）</td><td>使用者疑問「已不用可否刪」</td>
+    <td>wsl-runtime 的 <code>.git</code> 指標檔直接指向本 repo 的 <code>.git/worktrees/...</code>（已讀檔核實）；且工作樹有 57 筆未提交修改（Windows 可靠性工作），GitHub 上只有已提交部分（origin 同分支＝85b0553）。</td>
+    <td class="keep">保留（不可刪）</td><td>刪除＝wsl-runtime git 斷鏈＋未提交工作永久遺失</td><td>斷鏈可用 <code>git worktree repair</code> 搶救，未提交修改無法回復</td>
+  </tr>
+  <tr>
+    <td><code>_data\preflight\latest-ready.json</code></td><td>已退役快取</td>
+    <td>CONTEXT.md（READY 條目）：2026-08-11 起正式流程不讀取，但「既有檔案不主動刪除」為明文約定。</td>
+    <td class="keep">保留</td><td>刪除違反既有文件約定</td><td>—</td>
+  </tr>
+  <tr>
+    <td><code>_data\</code> 其餘全部、<code>.claude\</code>、兩個工作樹內全部受 git 管理內容</td><td>—</td>
+    <td>run artifact 是唯一事實來源；logs 為正式日誌；.claude 為工具設定；git 管理內容非清理對象。</td>
+    <td class="keep">保留</td><td>—</td><td>—</td>
+  </tr>
+</table>
+
+<p><strong>正式 Logging 結論：</strong>已有健全的正式 Log——<code>hoya_market_agents/webapp/log.py</code> 將 <code>_data/logs/webapp.jsonl</code> 按日輪替成 <code>webapp-YYYY-MM-DD.jsonl</code>，另有 <code>launch.log</code> 與 launch-handshakes。本次清理不涉及 Logging，不需新增 Logger。</p>
+
+<h2 id="plans">4. 改善方案</h2>
+
+<table>
+  <tr><th>方案</th><th>主要改動</th><th>優點</th><th>代價與風險</th><th>驗證與回滾</th><th>建議</th></tr>
+  <tr>
+    <td><strong>方案一：最小清理</strong></td>
+    <td>刪除工作區根的 6 個 <code>ticket01-*.tmp</code>＋<code>old-folder-cleanup.log</code>；刪除 <code>.pytest_cache</code> 與各處 <code>__pycache__</code>。<strong>其餘一律不動。</strong></td>
+    <td>外層立刻乾淨（根目錄剩 5 個資料夾）；零程式改動；快取自動再生</td>
+    <td>幾乎為零：7 個殘留檔查無任何引用；快取可再生</td>
+    <td>清理前後各跑一次第 5 節驗證表；.tmp 刪除不可逆（可先 zip 進 backups/）</td>
+    <td class="keep">推薦</td>
+  </tr>
+  <tr>
+    <td>方案二：保守版</td>
+    <td>同方案一，但先把 6 個 .tmp 壓成 <code>backups/ticket01-tmp-20260813.zip</code> 再刪</td>
+    <td>完全可回復</td>
+    <td>多留一份沒人會再讀的交接稿（正式紀錄已在 docs/work）</td>
+    <td>同上；回滾＝解壓 zip</td>
+    <td>可選（怕後悔就選這個）</td>
+  </tr>
+  <tr>
+    <td>不做任何清理</td>
+    <td>只保留本報告</td>
+    <td>零風險</td>
+    <td>外層維持雜亂</td>
+    <td>—</td>
+    <td>可選</td>
+  </tr>
+</table>
+<p><strong>不提出重建方案：</strong>三根目錄分離、worktree 分工、規則單一來源與日誌輪替都運作正常（證據見第 2 節），沒有重建價值，硬湊只會增加風險。</p>
+
+<h3>目標文字樹（方案一執行後的工作區根）</h3>
+<pre class="tree">AI agnets debating chamber/
+├─ AI-agnets-debating-chamber/                 # 保留（主 repo；未提交工作照舊）
+├─ AI-agnets-debating-chamber-wsl-runtime/     # 保留（正式 WSL 執行環境）
+├─ AI-agnets-debating-chamber_data/            # 保留（資料根）
+├─ backups/                                    # 保留（還原點，原樣不動）
+├─ .claude/                                    # 保留（工具設定）
+├─ ticket01-*.tmp ×6                           # 移除候選 ←本次刪除
+└─ old-folder-cleanup.log                      # 移除候選 ←本次刪除
+（另：兩個工作樹內的 .pytest_cache 與 __pycache__ 一併移除，會自動再生）</pre>
+
+<h2 id="verify">5. 保留功能、驗證與待決策事項</h2>
+
+<table>
+  <tr><th>必須保留的行為</th><th>修改前證據</th><th>修改後重跑方式</th><th>通過標準</th><th>未知或限制</th></tr>
+  <tr>
+    <td>WSL 辯論室可啟動、可跑完整 run</td>
+    <td>2026-08-13 結案驗收：run <code>20260813T032513Z-btc-acca1e</code> 7/7 有效票、verify-run VERIFIED（<code>docs/work/wsl-only-runtime-onboarding/acceptance/evidence/</code>）</td>
+    <td>WSL：<code>bash docs/work/wsl-only-runtime-onboarding/acceptance/run.sh offline</code>；或 <code>./START-HERE.sh</code> 啟動後開首頁</td>
+    <td>驗收腳本 PASS；webapp 正常開啟</td>
+    <td>offline 閘門不派真 Provider，屬預期</td>
+  </tr>
+  <tr>
+    <td>主 repo 進行中工作不受影響</td>
+    <td>本報告記錄的 <code>git status</code> 快照：57 筆未提交項目、HEAD <code>85b0553</code></td>
+    <td>同命令：<code>git status --porcelain | measure -Line</code>、<code>git rev-parse HEAD</code></td>
+    <td>清單與 HEAD 與清理前一致</td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td>worktree 連結完好</td>
+    <td><code>git worktree list</code> 顯示兩行（85b0553／c99a0b1）；wsl-runtime <code>.git</code> 指標檔內容已核實</td>
+    <td>同命令再跑一次</td>
+    <td>輸出兩行不變、無 prunable 警告</td>
+    <td>—</td>
+  </tr>
+  <tr>
+    <td>歷史 run 可回看</td>
+    <td><code>_data/runs/</code> 現有 5 個日期目錄＋index.db（本次全程未寫入）</td>
+    <td>開 webapp 歷史頁抽查任一舊 run</td>
+    <td>頁面正常、資料齊全</td>
+    <td>index.db 為可重建索引，非事實來源</td>
+  </tr>
+</table>
+
+<h3>待決策與備忘</h3>
+<ul>
+  <li><strong>尚未確認的事實：</strong><code>old-folder-cleanup.log</code> 的產生者查無出處（全工作區零引用），不影響刪除判斷。</li>
+  <li><strong>回滾重點：</strong>.tmp 與 .log 一刪即無（方案二可先 zip）；快取類全部自動再生；本次不動任何 git 管理內容與 _data，無資料遷移。</li>
+  <li><strong>需要你採用或拒絕：</strong>① 方案一或方案二擇一（或不做）；② backups/ 建議維持原樣。</li>
+  <li><strong>你可以只保留本報告</strong>，不繼續產生重構 Spec 與 Tickets。</li>
+</ul>
+
+<details>
+  <summary>附：本次盤點實際執行的唯讀命令</summary>
+  <pre>git -C AI-agnets-debating-chamber rev-parse HEAD                     → 85b0553...
+git -C AI-agnets-debating-chamber status --porcelain=v1              → 57 行
+git -C AI-agnets-debating-chamber status --ignored --porcelain=v1    → .pytest_cache/ 與 __pycache__/ 等 6 處
+git -C AI-agnets-debating-chamber-wsl-runtime status --porcelain=v1  → 空（乾淨）
+git worktree list                                                    → 兩行（85b0553／c99a0b1）
+git rev-parse origin/agent/pre-windows-reliability-backup-20260811   → 85b0553（已提交部分在 GitHub）
+git rev-parse origin/main                                            → c99a0b1
+Get-Content AI-agnets-debating-chamber-wsl-runtime\.git              → gitdir: 指向主 repo .git/worktrees/...
+ripgrep：ticket01-｜old-folder-cleanup｜backups[/\]｜TIMEOUT time=    → .tmp／.log 零程式引用；backups 為文件明訂還原點
+目錄盤點：外層／backups／docs/work／_data／config／scripts 逐層列出</pre>
+</details>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  if (window.mermaid) { mermaid.initialize({ startOnLoad: true, securityLevel: 'strict' }); }
+</script>
+</body>
+</html>
