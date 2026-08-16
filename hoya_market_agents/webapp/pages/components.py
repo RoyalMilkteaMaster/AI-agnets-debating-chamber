@@ -530,38 +530,73 @@ SHUTDOWN_FOOTER = (
 )
 
 
+def evidence_view(card):
+    """One sealed evidence card, read down to the fields a reader is shown.
+
+    Public because the card reaches a reader two ways — this module renders it
+    into the run detail page and the live room, and ``server._room_payload``
+    sends it into a room that is still going — and both have to show the same
+    card. Reading the record twice would be two readings: which field stands in
+    for a missing one, and above all whether the source may be a link, would
+    each have a second answer, and the panel a reader watched live would stop
+    matching the one they get by reloading.
+
+    ``source_href`` is that judgement, already made: the URL when
+    :func:`report_contract.is_safe_source_url` allows it and ``None`` otherwise
+    — the same authority the report and the transcript use. ``source_url`` is
+    the text either way, because a source that cannot be a link is still a
+    source worth naming. The browser is handed the verdict, never the rule.
+    """
+    url = card.get("source_url") or ""
+    url = url if isinstance(url, str) else str(url)
+    tier = card.get("source_tier")
+    return {
+        "evidence_id": _shown(card.get("evidence_id"), _EMPTY),
+        "seat_id": _shown(card.get("seat_id"), ""),
+        "statement": _shown(card.get("statement"), _EMPTY),
+        "excerpt": _shown(card.get("excerpt"), _EMPTY),
+        "source_tier": _EMPTY if tier is None else str(tier),
+        "source_origin": _shown(card.get("source_origin"), _EMPTY),
+        "source_url": url,
+        "source_href": url if is_safe_source_url(url) else None,
+    }
+
+def _shown(value, fallback):
+    """What one recorded field reads as, or the stand-in for it not being there."""
+    return str(value) if value else fallback
+
 def _evidence_card(card):
     """Render the evidence-card shape shared by run detail and the live room."""
-    url = card.get("source_url") or ""
-    tier = card.get("source_tier")
+    view = evidence_view(card)
     return "".join(
         [
             "<li>",
             '<p class="evidence-id">{}<span class="hint">{}</span></p>'.format(
-                _e(card.get("evidence_id") or _EMPTY), _e(card.get("seat_id") or "")
+                _e(view["evidence_id"]), _e(view["seat_id"])
             ),
-            "<p>{}</p>".format(_e(card.get("statement") or _EMPTY)),
-            "<blockquote>{}</blockquote>".format(_e(card.get("excerpt") or _EMPTY)),
+            "<p>{}</p>".format(_e(view["statement"])),
+            "<blockquote>{}</blockquote>".format(_e(view["excerpt"])),
             '<p class="hint">來源等級 {}・{}</p>'.format(
-                _e(_EMPTY if tier is None else tier),
-                _e(card.get("source_origin") or _EMPTY),
+                _e(view["source_tier"]), _e(view["source_origin"])
             ),
-            _source_html(url),
+            _source_html(view["source_url"], view["source_href"]),
             "</li>",
         ]
     )
 
-def _source_html(url):
+def _source_html(url, href):
     """可溯源性：http(s) 來源給讀者一個可點的連結；其他一律留純文字（fail closed）。
 
     安全判準是 :func:`report_contract.is_safe_source_url` —— 與正式報告、
-    辯論逐字稿同一個權威，不在這裡另訂第二套。
+    辯論逐字稿同一個權威，不在這裡另訂第二套。這裡連呼叫它都不再做一次：
+    ``href`` 是 :func:`evidence_view` 判完的結果 —— 可點時就是 ``url`` 本身，
+    不可點時是 ``None`` —— 所以伺服器渲染與即時繪製讀的是同一次判定。
     """
-    if url and is_safe_source_url(url):
+    if href:
         return (
             '<p class="source"><a class="source-link" href="{0}" target="_blank" '
             'rel="noopener noreferrer">開啟原始來源：{0}</a></p>'
-        ).format(_e(url))
+        ).format(_e(href))
     return '<p class="source"><code>{}</code></p>'.format(_e(url))
 
 def _document(title, header, sections, scripts=(), footer=READ_ONLY_FOOTER):

@@ -827,6 +827,23 @@ def phase_label(elapsed_ms, timeline, state):
     return passed[-1]["label"] if passed else "尚未開始"
 
 
+def current_rule_index(elapsed_ms, timeline):
+    """Which milestone is in force: the last one the run has passed, or ``-1``.
+
+    The one calculation of it, and it lives here beside :func:`next_milestone`
+    because the two are the same reading of the same timeline from opposite
+    ends. The rules panel marks this index current and dims everything behind
+    it, and the live frame carries the number rather than letting the browser
+    compare ``at_ms`` again — a second implementation of "which one is now" is a
+    second answer, and the page would end up showing both (architecture §4.0.1).
+    """
+    current = -1
+    for index, rule in enumerate(timeline):
+        if elapsed_ms >= rule["at_ms"]:
+            current = index
+    return current
+
+
 def next_milestone(elapsed_ms, timeline):
     """The next milestone the run has not reached, or ``None`` past the last one."""
     for rule in timeline:

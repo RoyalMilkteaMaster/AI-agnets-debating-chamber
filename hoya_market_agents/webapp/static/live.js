@@ -130,9 +130,20 @@
   var debateLink = document.getElementById("live-debate-link");
   var totalRemaining = document.getElementById("live-total-remaining");
   var debateRemaining = document.getElementById("live-debate-remaining");
-  var focusTally = document.querySelector(".focus-bar .focus-tally");
+  var voteHistory = document.getElementById("vote-history-detail-body");
+  var evidencePanel = document.getElementById("evidence-panel-body");
+  var rulesPanel = document.getElementById("rules-detail-body");
+  var phaseBox = document.getElementById("live-phase");
+  var thresholdBox = document.getElementById("live-threshold");
+  var focusHeadline = document.getElementById("focus-headline");
+  var focusTally = document.getElementById("focus-tally");
+  var focusAction = document.getElementById("focus-action");
   var jump = document.getElementById("feed-jump");
   var stream = null;
+  // 這一場的規則時間線。run 內不變，所以只有每條 stream 的第一個 frame 帶它；
+  // 之後的每一幀只說 current 索引走到哪，重畫時配這一份用。換 run 要清掉，否則
+  // 新一場的第一個 frame 到達之前會拿上一場的時刻去畫。
+  var timeline = null;
   var activeRun = feed.dataset.runId || null;
   // 這個分頁是否經歷過換 run 重置：只有重置過的分頁，done 時才需要交還伺服器重畫。
   var surfacesReset = false;
@@ -247,13 +258,115 @@
       cell.append(el("strong", "", entry.count));
       tallyBox.append(cell);
     });
-    syncFocus(entries);
   }
-  function syncFocus(entries) {
-    if (!focusTally || !entries.length) { return; }
-    focusTally.textContent = entries.map(function (entry) {
-      return entry.label + " " + entry.count;
-    }).join("｜");
+  // 票數變化的一列，跟 pages.live_page._vote_history_row 同一個形狀：時刻、席位名、
+  // 立場色的徽章，改票的那一種多一面旗子。哪一種由 before 決定 —— 之前沒有立場就是
+  // 首次表態 —— 而不是由這裡再判斷一次前後立場是否不同：那會變成第二套判準。
+  function historyRow(change) {
+    var changed = change.before !== null && change.before !== undefined;
+    var row = el("li", changed ? "history-row changed" : "history-row");
+    row.append(el("time", "", "T+" + clock(change.elapsed_ms)));
+    row.append(el("span", "history-seat", change.seat_label || "—"));
+    var move = changed
+      ? (change.before_label || "—") + " → " + (change.after_label || "—")
+      : "首次表態：" + (change.after_label || "—");
+    row.append(el("span", "badge " + (change.after_class || "stance-unknown"), move));
+    if (changed) { row.append(el("span", "history-flag", "改票")); }
+    return row;
+  }
+  // 每一幀帶的是這一場累積到現在的全部改票，所以這裡整格重畫，不接在後面追加：
+  // 同一幀畫兩次結果一樣，補送、重連或順序顛倒都不會多出重複的列。
+  // 還沒有人表態時讀的是伺服器標在這一格上的等待字樣（data-reset），不是這裡另外寫
+  // 一句 —— 換 run 重置與整頁渲染的空面板本來就是同一句話。
+  function drawVoteHistory(changes) {
+    if (!voteHistory || !changes) { return; }
+    voteHistory.textContent = "";
+    if (!changes.length) {
+      voteHistory.append(el("p", "hint", voteHistory.dataset.reset || ""));
+      return;
+    }
+    var list = el("ol", "history");
+    changes.forEach(function (change) { list.append(historyRow(change)); });
+    voteHistory.append(list);
+  }
+  // 這一幀沒提到的欄位不動：沉默是「這一幀沒說」，不是「這一格該清空」。
+  function setText(node, words) {
+    if (!node || words === undefined || words === null) { return; }
+    node.textContent = words;
+  }
+  // 規則與時間線的一列，跟 pages.live_page._rule_row 同一個形狀：時刻，加上標籤與
+  // 門檻寫在同一個 span 裡。哪一列是 current 由伺服器算好放進 frame（live.
+  // current_rule_index），不是這裡再比一次 at_ms —— 那會變成第二套「現在走到哪一關」。
+  function ruleRow(rule, index, current) {
+    var row = el("div", index === current
+      ? "rule current" : (index < current ? "rule past" : "rule"));
+    row.append(el("time", "", "T+" + clock(rule.at_ms)));
+    var votes = rule.required_votes ? "（門檻 " + rule.required_votes + " 票）" : "";
+    row.append(el("span", "", rule.label + votes));
+    return row;
+  }
+  // 時間線在 run 內不變，所以只有第一個 frame 帶它；每一幀帶的是 current 索引。
+  // 兩者都到齊才畫得出這一格，而重畫是整格換 —— 同一幀畫兩次結果一樣。
+  function drawRules(current) {
+    if (!rulesPanel || !timeline || current === undefined || current === null) {
+      return;
+    }
+    rulesPanel.textContent = "";
+    var holder = el("div", "rules");
+    timeline.forEach(function (rule, index) {
+      holder.append(ruleRow(rule, index, current));
+    });
+    rulesPanel.append(holder);
+  }
+  // 證據卡的一張，跟 pages.components._evidence_card 同一個形狀：編號與席位、陳述、
+  // 引文、來源等級與來源，最後是來源本身。缺漏欄位補什麼字也是伺服器答好的
+  // （pages.evidence_view），所以不重新整理看到的這一張，和重新整理後伺服器畫出來的
+  // 是同一張。
+  //
+  // 可不可點看 source_href：那是伺服器用 report_contract.is_safe_source_url 判完的
+  // 結果，全專案唯一的來源安全判準。這裡不看 URL 長什麼樣 —— 判一次就是第二套判準，
+  // 而兩套遲早有一邊放行了另一邊擋下的東西。
+  function evidenceCard(card) {
+    var item = el("li");
+    var head = el("p", "evidence-id", card.evidence_id);
+    head.append(el("span", "hint", card.seat_id));
+    item.append(head);
+    item.append(el("p", "", card.statement));
+    item.append(el("blockquote", "", card.excerpt));
+    item.append(el(
+      "p", "hint", "來源等級 " + card.source_tier + "・" + card.source_origin
+    ));
+    var source = el("p", "source");
+    if (card.source_href) {
+      var link = el("a", "source-link", "開啟原始來源：" + card.source_url);
+      link.href = card.source_href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      source.append(link);
+    } else {
+      source.append(el("code", "", card.source_url));
+    }
+    item.append(source);
+    return item;
+  }
+  // 封存過的證據不可變，所以每一條 stream 只會收到一次全量，收到就是最終答案。整格
+  // 重畫、畫兩次結果一樣。沒帶這一格的 frame 不動它 —— 沉默是「這一幀沒說」，而還沒
+  // 封存的那幾幀讀的就是伺服器標在這一格上的等待字樣（data-reset）。
+  function drawEvidence(cards) {
+    if (!evidencePanel || !cards || !cards.length) { return; }
+    evidencePanel.textContent = "";
+    var list = el("ul", "evidence");
+    cards.forEach(function (card) { list.append(evidenceCard(card)); });
+    evidencePanel.append(list);
+  }
+  // 焦點列三格的字全部讀 frame：領先立場、票數字樣與「下一步」都是伺服器用
+  // live.focus_state 算好的同一句話。這裡不從 tally 自己拼票數字樣 —— 拼一次就是
+  // 第二套來源，而重新整理後讀者看到的會是伺服器那一套。
+  function drawFocus(focus) {
+    if (!focus) { return; }
+    setText(focusHeadline, focus.headline);
+    setText(focusTally, focus.tally_text);
+    setText(focusAction, focus.next_label);
   }
   function tick(box) {
     if (!box) { return; }
@@ -375,6 +488,16 @@
     appendMessages(payload.messages || []);
     drawTally(payload.tally);
     drawSeats(payload.seats);
+    // 有帶這一格才重畫。沒帶不等於「這一場沒有改票」，只等於這一幀沒提到它。
+    drawVoteHistory(payload.changes);
+    // 同一條規則：有帶才畫。這一格更嚴 —— 帶了就是封存後的最終全量，一條 stream
+    // 只會帶一次。
+    drawEvidence(payload.evidence);
+    if (payload.rules) { timeline = payload.rules; }
+    drawRules(payload.current_rule_index);
+    setText(phaseBox, payload.phase_label);
+    setText(thresholdBox, payload.threshold_label);
+    drawFocus(payload.focus);
     if (payload.cursor) { feed.dataset.cursor = payload.cursor; }
     if (roundBox && payload.round !== undefined && payload.round !== null) {
       roundBox.textContent = "第 " + payload.round + " 輪";
@@ -394,10 +517,12 @@
   }
 
   // 換 run 時每一格 run-bound surface 讀什麼，是伺服器在 data-reset 上標好的
-  // （pages.live_page._fresh_run_words）。這一場的 frame 只會帶 feed、席位、票數、
-  // 輪次與時鐘，其餘每一格都還是上一場的答案，而且不會有任何 frame 來更正；照標記
-  // 清，房間就不會多出第二套「還不知道」的講法，client 也不必自己藏一份會跟頁面走
-  // 散的 id 清單。
+  // （pages.live_page._fresh_run_words）。這一場的 frame 帶 feed、席位、票數、票數
+  // 變化、規則與時間線、階段、門檻、焦點列、可驗證證據、輪次與時鐘；題目、市場、信心
+  // 燈號與票數說明還是上一場的答案，沒有任何 frame 會來更正。而就算是會被補寫的那幾
+  // 格，第一個 frame 到達之前畫面上也還是上一場的內容 —— 所以照標記清仍然是換 run 的
+  // 第一步。照標記清，房間就不會多出第二套「還不知道」的講法，client 也不必自己藏一份
+  // 會跟頁面走散的 id 清單。
   function resetMarkedSurfaces() {
     var marked = document.querySelectorAll("[data-reset]");
     for (var index = 0; index < marked.length; index += 1) {
@@ -408,6 +533,9 @@
     activeRun = runId;
     resetMarkedSurfaces();
     surfacesReset = true;
+    // 上一場的時間線跟著那一場走。留著它，新一場的第一個 frame 到達之前，一個
+    // current 索引就足以拿舊時刻畫出一格看起來很新的舊答案。
+    timeline = null;
     currentElapsed = 0;
     currentDebateRemaining = null;
     debateStarted = false;
@@ -473,10 +601,11 @@
     tick(totalRemaining);
     if (stateBox) { stateBox.textContent = "已完成"; stateBox.dataset.state = "finished"; }
     source.close();
-    // 換 run 重置過的 run-bound surface（規則與時間線、票數變化、可驗證證據……）
-    // 沒有任何 frame 會補寫。定稿的這一刻交還伺服器重新投影 —— 與手動重新整理
-    // 同義，因此不在 client 建第二套渲染。沒重置過的分頁本來就是伺服器畫的，
-    // reload 只會變成無限重整迴圈，所以用 surfacesReset 擋住。
+    // 換 run 重置過的 run-bound surface 裡，票數變化、規則與時間線、階段、門檻、焦點
+    // 列與可驗證證據都已經由 frame 補寫過（三個摺疊面板都有），但題目、市場、信心燈號
+    // 與票數說明沒有任何 frame 會補寫。定稿的這一刻交還伺服器重新投影 —— 與手動重新
+    // 整理同義，因此不在 client 建第二套渲染。沒重置過的分頁本來就是伺服器畫的，reload
+    // 只會變成無限重整迴圈，所以用 surfacesReset 擋住。
     if (surfacesReset) { location.reload(); }
   });
   source.addEventListener("error", function () {

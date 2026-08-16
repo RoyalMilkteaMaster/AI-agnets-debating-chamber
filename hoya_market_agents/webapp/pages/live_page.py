@@ -2,7 +2,8 @@
 
 from ..live import (
     STATUS_FINISHED, STATUS_RUNNING, TOTAL_WINDOW_MS, UNRECORDED_LABEL,
-    focus_state, next_milestone, phase_label, rule_timeline, threshold_label,
+    current_rule_index, focus_state, next_milestone, phase_label, rule_timeline,
+    threshold_label,
 )
 from .components import (
     ASSET_CLASS_CONTROL_ID, BRIEF_ELLIPSIS, DEBATE_ARTIFACT, LIVE_SCRIPT_PATH,
@@ -13,13 +14,16 @@ from .components import (
 
 # What each run-bound surface says about a run nothing is known about yet.
 #
-# The room can switch which run it watches without reloading, and the frames for
-# the next run carry only its feed, seats, tally, round and clock. Every other
-# surface here was painted for the run that was on screen when the page was
-# drawn, and no frame will ever correct it — so the client blanks each one at the
-# switch, and these are the words it blanks to. They are the page's own empty
-# wording rather than a second vocabulary: the same strings the server writes
-# when it has no question, no votes and no evidence to show.
+# The room can switch which run it watches without reloading, and every surface
+# here was painted for the run that was on screen when the page was drawn. The
+# next run's frames rewrite most of them — the feed, the seats, the tally, the
+# vote history, the rule timeline, the phase, the threshold, the focus bar, the
+# sealed evidence, the round and the clock — but not before the first of those
+# frames lands, and the question, the market, the confidence light and the tally
+# note not at all. So the client blanks each one at the switch, and these are the
+# words it blanks to. They are the page's own empty wording rather than a second
+# vocabulary: the same strings the server writes when it has no question, no
+# votes and no evidence to show.
 WAITING_QUESTION = "等待新的市場題目"
 WAITING_ROUND = "尚未進入辯論"
 WAITING_ASSETS = "市場"
@@ -272,7 +276,9 @@ def _live_metrics(data):
     The total countdown carries ``data-countdown-from`` for the existing client
     clock seam. The debate countdown is projected from the same authoritative
     run elapsed value and becomes terminal once debate opens. The phase and the
-    threshold are snapshot values; neither is advanced between frames.
+    threshold are this render's values and are then advanced by the frames — the
+    server works both out and pushes them when the clock crosses a milestone, so
+    the room never runs the rule authority in the browser (architecture §4.0.1).
     """
     countdowns = [
         ("十七分鐘剩餘時間", data["total_remaining_ms"], "total-remaining"),
@@ -348,18 +354,11 @@ def _live_rules(data):
     authority; only the look is the original's."""
     elapsed = data["elapsed_ms"]
     rules = data["rules"]
-    current = _current_rule_index(elapsed, rules)
+    current = current_rule_index(elapsed, rules)
     rows = "".join(_rule_row(rule, index, current) for index, rule in enumerate(rules))
     return _detail_panel(
         "rules-detail", "規則與時間線", '<div class="rules">{}</div>'.format(rows)
     )
-
-def _current_rule_index(elapsed_ms, rules):
-    current = -1
-    for index, rule in enumerate(rules):
-        if elapsed_ms >= rule["at_ms"]:
-            current = index
-    return current
 
 def _rule_row(rule, index, current):
     if index == current:
@@ -429,10 +428,15 @@ def _detail_panel(panel_id, heading, inner):
 
     The body is marked and the ``<details>`` around it is not. What is folded
     here — the rule timeline, the changes of stance, the sealed evidence — is
-    this run's, and no later frame carries any of it, so a same-page switch can
-    only correct it by blanking it. The summary and the fold are the room's
-    furniture: they say the same thing whichever run is being watched, and a
-    client that blanked them would take the panel's name off it.
+    this run's, and the switch happens before the next run's first frame can
+    say anything, so blanking it is what a same-page switch starts with. All
+    three are then written back by the frames (Spec 即時辯論頁三面板進行中即時
+    更新): the timeline and the changes of stance ride every frame, and the
+    sealed evidence arrives once, on the frame that first finds the snapshot
+    sealed — sealed content never moves again, so once is all it takes. The
+    summary and the fold are the room's furniture: they say the same thing
+    whichever run is being watched, and a client that blanked them would take
+    the panel's name off it.
     """
     words = _fresh_run_words()
     return "\n".join(
@@ -821,4 +825,4 @@ def _reason_tail(reason, brief):
         return reason[len(brief) - len(BRIEF_ELLIPSIS) :]
     return reason[len(brief) :]
 
-__all__ = ('render_live_page', '_live_header', '_live_report_run', '_live_run_bar', '_live_run_options', '_live_focus', '_live_metrics', '_live_layout', '_live_secondary', '_live_rules', '_current_rule_index', '_rule_row', '_live_vote_history', '_vote_history_row', '_live_evidence', '_detail_panel', '_launch_form', '_question_box', '_ask_note', '_asset_class_menu', '_target_box', '_disabled', '_outcome_block', '_live_tally', '_tally_cell', '_live_seats', '_agent_card', '_agent_blurb', '_live_feed', '_message', '_reason', '_reason_tail')
+__all__ = ('render_live_page', '_live_header', '_live_report_run', '_live_run_bar', '_live_run_options', '_live_focus', '_live_metrics', '_live_layout', '_live_secondary', '_live_rules', '_rule_row', '_live_vote_history', '_vote_history_row', '_live_evidence', '_detail_panel', '_launch_form', '_question_box', '_ask_note', '_asset_class_menu', '_target_box', '_disabled', '_outcome_block', '_live_tally', '_tally_cell', '_live_seats', '_agent_card', '_agent_blurb', '_live_feed', '_message', '_reason', '_reason_tail')

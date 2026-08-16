@@ -730,21 +730,41 @@ def webapp_handler_class(
             if run_dir is None:
                 self._frame("waiting", None, {"state": live.STATUS_WAITING})
                 return
+            question = live.read_question(run_dir)
             room, offset, missed, resumed = live.open_room(
                 run_dir,
-                live.read_question(run_dir),
+                question,
                 cursor=self._requested_cursor(query),
                 run_id=run_id,
+            )
+            # Whether this run is already over has to be known *before* the
+            # first frame, not one pass later. Opening a finished run is the
+            # 回看 case: the page arrives already saying 已完成 and naming the
+            # consensus, and a first frame built as though the run were still
+            # going would make the client walk that back to a phase word and a
+            # headline the reader has already been shown past — an ending
+            # un-announced and then re-announced. Read once per stream, not per
+            # frame; the outcome is read only for a run that has one.
+            finished = live.run_finished(run_dir, run_id)
+            # The timeline rides on the first frame of every stream, whichever
+            # kind it is: a reconnecting client is handed a fresh page's worth
+            # of rules because its own page may predate this run.
+            payload = _room_payload(
+                room, missed, run_id, offset, run_dir, question, live_clock,
+                state=live.STATUS_FINISHED if finished else live.STATUS_RUNNING,
+                outcome=live.run_outcome(root, run_id) if finished else None,
+                with_rules=True,
+                with_evidence=True,
             )
             self._frame(
                 "append" if resumed else "snapshot",
                 live.make_cursor(run_id, offset),
-                _room_payload(
-                    room, missed, run_id, offset, run_dir, live.read_question(run_dir),
-                    live_clock,
-                ),
+                payload,
             )
-            self._follow(run_id, run_dir, room, offset)
+            self._follow(
+                run_id, run_dir, room, offset, _timeline_marks(payload),
+                sealed="evidence" in payload,
+            )
 
         def _requested_cursor(self, query):
             """``Last-Event-ID`` wins over ``?after``.
@@ -756,7 +776,24 @@ def webapp_handler_class(
             """
             return self.headers.get("Last-Event-ID") or first_value(query, "after")
 
-        def _follow(self, run_id, run_dir, room, offset):
+        def _follow(self, run_id, run_dir, room, offset, marks, sealed=False):
+            """Push what changes, including what changes because time passed.
+
+            ``marks`` is where the first frame left the run in its own rule
+            timeline. A pass that finds no new event can still find the run in a
+            later phase, past a later vote wall, or on the next milestone — the
+            rules switch on the clock, and the switch is the server's to announce
+            (architecture §4.0.1). Nothing else is pushed on a quiet pass, so a
+            run that is genuinely idle still costs one heartbeat and no frames.
+
+            ``sealed`` is whether this stream has already sent the evidence
+            snapshot. It is the fourth thing that can change with nobody
+            speaking: the run seals its evidence and the 可驗證證據 panel has
+            something to show for the first time. Sealed content never moves
+            again, so the flag rides the stream rather than the run — a client
+            that reconnects opens a new stream and is sent the cards once more,
+            because its own page may predate them.
+            """
             events_path = run_dir / live.EVENTS_RECORD
             started = stream.monotonic()
             last_write = started
@@ -765,23 +802,34 @@ def webapp_handler_class(
                 was_debate_started = room.debate_started
                 fresh = room.ingest([record for _, record in entries])
                 now = stream.monotonic()
-                if fresh or room.debate_started != was_debate_started:
-                    self._frame("append", live.make_cursor(run_id, offset),
-                                _room_payload(
-                                    room, fresh, run_id, offset, run_dir,
-                                    live.read_question(run_dir), live_clock,
-                                ))
-                    last_write = now
                 if not entries and live.run_finished(run_dir):
+                    outcome = live.run_outcome(root, run_id)
                     payload = _room_payload(
                         room, [], run_id, offset, run_dir,
                         live.read_question(run_dir), live_clock,
+                        state=live.STATUS_FINISHED, outcome=outcome,
+                        with_evidence=not sealed,
                     )
-                    payload["outcome"] = live.run_outcome(root, run_id)
+                    payload["outcome"] = outcome
                     payload["state"] = live.STATUS_FINISHED
                     payload["completion"] = live.completion_for(run_dir, run_id)
                     self._frame("done", live.make_cursor(run_id, offset), payload)
                     return
+                payload = _room_payload(
+                    room, fresh, run_id, offset, run_dir,
+                    live.read_question(run_dir), live_clock,
+                    with_evidence=not sealed,
+                )
+                if (
+                    fresh
+                    or room.debate_started != was_debate_started
+                    or _timeline_marks(payload) != marks
+                    or "evidence" in payload
+                ):
+                    marks = _timeline_marks(payload)
+                    sealed = sealed or "evidence" in payload
+                    self._frame("append", live.make_cursor(run_id, offset), payload)
+                    last_write = now
                 if now - last_write >= stream.heartbeat_seconds:
                     self._write(": 保持連線\n\n")
                     last_write = now
@@ -1463,9 +1511,40 @@ def _site_nav_tokens():
 
 
 def _room_payload(
-    room, messages, run_id, offset, run_dir=None, question=None, clock=None
+    room, messages, run_id, offset, run_dir=None, question=None, clock=None,
+    state=live.STATUS_RUNNING, outcome=None, with_rules=False,
+    with_evidence=False,
 ):
-    """What one frame carries: the new messages, and the counts they changed."""
+    """What one frame carries: the new messages, and everything they changed.
+
+    ``messages`` is only what this frame is new about; ``changes`` is the whole
+    vote history this run has accumulated so far. The difference is deliberate:
+    the feed is appended to and the 票數變化 panel is redrawn, so the panel's
+    field has to be complete in every frame or a page that redraws from one
+    would show only the last move. Carrying it whole also makes the redraw
+    idempotent — the same frame applied twice leaves the same rows.
+
+    Where the run stands in its own rule timeline travels the same way, and this
+    is the only place it is worked out: ``current_rule_index``, the phase, the
+    threshold and the focus words all come from the :mod:`live` authorities, so
+    the browser never compares ``at_ms`` for a second opinion about which
+    milestone is in force (architecture §4.0.1). ``rules`` is the exception that
+    proves it — the timeline itself does not move inside a run, so ``with_rules``
+    sends it once per stream rather than in every frame.
+
+    ``with_evidence`` is the same kind of exception for a different reason. The
+    evidence snapshot is sealed: it appears once and is never rewritten, so the
+    frame that carries it is carrying a final answer, and a caller that has
+    already sent it on this stream asks for it no further. The field is left out
+    entirely until the seal exists — the display gate is the one the page
+    already uses (:func:`views._read_evidence`): the file is there *and* a card
+    reads back out of it.
+
+    ``state`` and ``outcome`` are what the run is at the moment the frame is
+    built. They matter only at the end: a finished run's phase is 已完成 and its
+    headline is its consensus, and a ``done`` frame that used the running
+    wording would paint one sentence the reloaded page then contradicts.
+    """
     question = question if isinstance(question, dict) else {}
     elapsed_ms = (
         live.authoritative_elapsed_ms(run_dir, question, clock=clock)
@@ -1473,11 +1552,14 @@ def _room_payload(
         else room.latest_elapsed_ms()
     )
     question_type = question.get("question_type")
-    return {
+    timeline = live.rule_timeline(question_type)
+    tally = room.tally_views()
+    payload = {
         "run_id": run_id,
         "messages": list(messages),
         "seats": room.seat_views(),
-        "tally": room.tally_views(),
+        "tally": tally,
+        "changes": list(room.changes),
         "round": room.latest_round(),
         "elapsed_ms": elapsed_ms,
         "debate_started": room.debate_started or (
@@ -1486,8 +1568,54 @@ def _room_payload(
         "debate_start_remaining_ms": live.debate_start_remaining_ms(
             elapsed_ms, question_type, room.debate_started
         ),
+        "current_rule_index": live.current_rule_index(elapsed_ms, timeline),
+        "phase_label": live.phase_label(elapsed_ms, timeline, state),
+        "threshold_label": live.threshold_label(elapsed_ms, question_type),
+        "focus": live.focus_state(
+            tally,
+            live.next_milestone(elapsed_ms, timeline),
+            state == live.STATUS_FINISHED,
+            outcome,
+        ),
         "cursor": live.make_cursor(run_id, offset),
     }
+    if with_rules:
+        payload["rules"] = timeline
+    if with_evidence and run_dir is not None:
+        evidence = _evidence_views(run_dir)
+        if evidence:
+            payload["evidence"] = evidence
+    return payload
+
+
+def _evidence_views(run_dir):
+    """This run's sealed cards, projected the way both renderers draw them.
+
+    Empty means "not sealed yet" and nothing else: the file may not be there,
+    or it may be there holding no card, and the room says the same thing about
+    both — the panel keeps waiting. Whether one may become a clickable link is
+    :func:`pages.evidence_view`'s answer, so the browser is never handed the
+    rule (:func:`report_contract.is_safe_source_url` is the only one).
+    """
+    cards, _ = views._read_evidence(run_dir)
+    return [pages.evidence_view(card) for card in cards]
+
+
+def _timeline_marks(payload):
+    """Where one frame says the run stands in its rule timeline.
+
+    Three readings of one clock, so comparing them across two passes answers
+    "has the run switched rules while nobody was speaking?" — which is the
+    question :meth:`_follow` has to answer to honour architecture §4.0.1. The
+    focus bar's 下一步 is not in here because it cannot move on its own: it is
+    the first milestone not yet passed, and that changes exactly when the index
+    of the last one passed changes.
+    """
+    return (
+        payload["current_rule_index"],
+        payload["phase_label"],
+        payload["threshold_label"],
+    )
 
 
 def _form_body(handler):

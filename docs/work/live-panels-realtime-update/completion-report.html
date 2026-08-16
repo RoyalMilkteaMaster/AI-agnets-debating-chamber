@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>完成報告 — 即時辯論頁三面板進行中即時更新</title>
+<style>
+  :root { --ink:#202124; --sub:#5f6368; --line:#dadce0; --ok:#188038; --warn:#b06000; --bg:#fff; --soft:#f8f9fa; }
+  * { box-sizing:border-box; }
+  body { margin:0 auto; max-width:960px; padding:32px 24px 64px; background:var(--bg); color:var(--ink);
+         font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif; line-height:1.65; }
+  h1 { font-size:1.55rem; margin:0 0 4px; }
+  h2 { font-size:1.15rem; margin:36px 0 10px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  h3 { font-size:1rem; margin:20px 0 6px; }
+  .sub { color:var(--sub); font-size:.9rem; }
+  .banner { background:#e6f4ea; border:1px solid #ceead6; color:var(--ok); border-radius:8px;
+            padding:14px 18px; margin:18px 0; font-weight:bold; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:.9rem; }
+  th, td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--soft); font-weight:600; }
+  code { background:var(--soft); border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+         font-family:Consolas,Menlo,monospace; font-size:.85em; word-break:break-all; }
+  .ok { color:var(--ok); font-weight:600; }
+  .warn { color:var(--warn); font-weight:600; }
+  ul { padding-left:22px; } li { margin:4px 0; }
+  .small { font-size:.85rem; color:var(--sub); }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+
+<h1>完成報告 — 即時辯論頁三面板進行中即時更新</h1>
+<p class="sub">工作包:docs/work/live-panels-realtime-update ｜ 完成日:2026-08-16 ｜ 基準:main @ <code>be14c5d</code>(全部變更未 commit,留待使用者決定)</p>
+
+<div class="banner">三張 Tickets 全部完成並通過雙 Reviewer 共識。最終驗收:Python 全套 3196 測試 OK(skipped=1)、JS harness 34 場景通過、真實伺服器 SSE 端對端 18/18 通過。</div>
+
+<h2>1. 執行環境與角色配置</h2>
+<p>設定來源:預設路由(專案無 <code>.milktea/agent-settings.yaml</code>)。共同執行環境:WSL2 Ubuntu(repo 於 <code>/mnt/d/workstationD/AI agnets debating chamber/AI-agnets-debating-chamber</code>)。</p>
+<div class="scroll"><table>
+<tr><th>Ticket</th><th>角色</th><th>Agent／CLI</th><th>實際模型</th><th>推理強度</th><th>難度判定</th></tr>
+<tr><td rowspan="3">01 票數變化</td><td>Developer</td><td>Claude Code CLI 2.1.220(headless)</td><td>claude-opus-5(modelUsage 證實)</td><td>high(--effort 設定值;CLI 未回報實際值)</td><td>高:SSE frame 公開契約擴充+跨模組</td></tr>
+<tr><td>Reviewer A(Spec)</td><td>Codex CLI 0.146.0</td><td>gpt-5.6-sol(標頭證實)</td><td>high(標頭證實)</td><td rowspan="2">不適用難度路由(後端預設)</td></tr>
+<tr><td>Reviewer B(Standards)</td><td>Codex CLI 0.146.0</td><td>gpt-5.6-sol</td><td>high</td></tr>
+<tr><td rowspan="3">02 規則時間線</td><td>Developer</td><td>Claude Code CLI 2.1.220</td><td>claude-opus-5</td><td>high(同上)</td><td>高:_follow 推送時機+契約擴充(本包最複雜)</td></tr>
+<tr><td>Reviewer A(Spec)</td><td>Codex CLI 0.146.0</td><td>gpt-5.6-sol</td><td>high</td><td rowspan="2">不適用難度路由</td></tr>
+<tr><td>Reviewer B(Standards)</td><td>Codex CLI 0.146.0</td><td>gpt-5.6-sol</td><td>high</td></tr>
+<tr><td rowspan="3">03 證據揭示</td><td>Developer</td><td>Claude Code CLI 2.1.220</td><td>claude-opus-5</td><td>high(同上)</td><td>高:來源安全判準單一權威+per-stream 狀態</td></tr>
+<tr><td>Reviewer A(Spec)</td><td>Codex CLI 0.146.0</td><td>gpt-5.6-sol</td><td>high</td><td rowspan="2">不適用難度路由</td></tr>
+<tr><td>Reviewer B(Standards)</td><td>Codex CLI 0.146.0</td><td>gpt-5.6-sol</td><td>high</td></tr>
+</table></div>
+<p class="small">附註:Ticket 02 的 Finding 複驗與 Reviewer A delta 確認因 codex headless session 無法沿用,依派工契約改由新的隔離 Agent 承接(交付完整既有證據);三張票的 Developer 修正均沿用原 session。Ponytail full 模式在此平台不存在,三位 Developer 均如實標示後繼續。</p>
+
+<h2>2. 原始需求逐項狀態</h2>
+<div class="scroll"><table>
+<tr><th>需求(Spec 需求與行為)</th><th>狀態</th><th>證據摘要</th></tr>
+<tr><td>1. 規則與時間線:run 開始/換 run 重畫;規則切換 current 前進、已過 past 淡化</td><td class="ok">完成</td><td>frame 首幀帶 <code>rules</code>、每幀帶 <code>current_rule_index</code>;harness rule-timeline 3 場景;E2E 首幀含完整時間線</td></tr>
+<tr><td>2. 票數變化:每筆改票/首次表態即時追加,與伺服器渲染同列格式</td><td class="ok">完成</td><td><code>changes</code> 累積全量、冪等重畫;ProjectionConsistencyTest 逐列比對;E2E 改票後列數 1→2 且帶改票旗標</td></tr>
+<tr><td>3. 可驗證證據:封存後即時顯示證據卡;封存內容不可變</td><td class="ok">完成</td><td><code>evidence</code> per-stream 一次;EvidenceFrameTest 9 案;E2E 封存推播+不重送</td></tr>
+<tr><td>4. 階段/門檻/焦點列隨 frame 更新,字樣一律來自伺服器權威</td><td class="ok">完成</td><td><code>phase_label</code>/<code>threshold_label</code>/<code>focus</code>(含 tally_text)入 frame;client 端 syncFocus 拼字移除</td></tr>
+<tr><td>5. 無事件的規則切換也要推(架構 §4.0.1)</td><td class="ok">完成</td><td>_follow 以 timeline marks 變化為推送條件;注入時鐘測試證實無新發言仍發 frame</td></tr>
+<tr><td>6. 換 run 重置:data-reset 語彙不變,新 run 首幀回填</td><td class="ok">完成</td><td>harness *-refilled-after-run-switch 3 場景;RunLocalResetSurfaceTest</td></tr>
+<tr><td>7. run 結束:done frame 帶同組欄位;surfacesReset → reload 保留</td><td class="ok">完成</td><td>done 路徑測試+變異驗證;finished-run-no-ending-walkback(回看首幀不降級)</td></tr>
+<tr><td>回看已完成 run 渲染逐字相同(保護區)</td><td class="ok">完成</td><td>三票各自 byte-level 證明:T02 規則+metrics cmp 相同;T03 證據卡 57/69 種形狀 diffs:0(Developer 與兩位 Reviewer 各自獨立重驗)</td></tr>
+<tr><td>WSL 全套測試綠+harness 通過</td><td class="ok">完成</td><td>Coordinator 最終獨立重跑:<code>Ran 3196 tests … OK (skipped=1)</code>、harness 34 場景(基準 3174/22 → 最終 3196/34)</td></tr>
+</table></div>
+
+<h2>3. 實際修改內容</h2>
+<div class="scroll"><table>
+<tr><th>檔案</th><th>變更</th></tr>
+<tr><td><code>webapp/server.py</code>(+166)</td><td>_room_payload 擴充為唯一組裝點:<code>changes</code>/<code>current_rule_index</code>/<code>phase_label</code>/<code>threshold_label</code>/<code>focus</code>/首幀 <code>rules</code>/首見 <code>evidence</code>;_follow 四個推送條件(新事件、debate 翻轉、里程碑跨越、證據首見)+per-stream 已送旗標;_stream 首幀 finished 判定(回看不降級)</td></tr>
+<tr><td><code>webapp/live.py</code>(+17)</td><td><code>current_rule_index</code> 權威自 live_page 搬移(逐行相同),伺服器渲染與 frame 讀同一函式</td></tr>
+<tr><td><code>webapp/pages/components.py</code>(+59)</td><td>新增 <code>evidence_view</code>:證據卡唯一判讀(補字+<code>is_safe_source_url</code> 判定→<code>source_href</code>);_evidence_card 改由其渲染,伺服器與即時繪製由構造保證同形</td></tr>
+<tr><td><code>webapp/pages/live_page.py</code>(+48)</td><td>改用搬移後權威;過時 docstring/註解同步(非行為變更)</td></tr>
+<tr><td><code>webapp/static/live.js</code>(+159)</td><td>三面板+階段/門檻/焦點列繪製(historyRow/drawVoteHistory、ruleRow/drawRules/drawFocus、evidenceCard/drawEvidence);「payload 有該欄位才重畫」;全部 createElement/textContent,零 innerHTML,CSP 不變</td></tr>
+<tr><td>測試(+1104)</td><td>Python +19 案(LiveStreamTest 2、ProjectionConsistency 2、RuleTimelineFrameTest 9(含 finished 不降級)、EvidenceFrameTest 9→含 done 路徑 2);harness +12 場景</td></tr>
+</table></div>
+<p><strong>使用者可感受的結果</strong>:辯論進行中不必再重新整理——改票列即時出現在「票數變化」、規則切換時「規則與時間線」current 標記即時前進(無新發言也會)、證據封存後「可驗證證據」立即顯示證據卡,「目前階段」「目前共識門檻」與焦點列同步更新;換 run 重置與 run 結束後整頁行為與從前一致;回看歷史 run 畫面逐字不變。</p>
+
+<h2>4. 驗收方式與 Reviewer 共識</h2>
+<h3>共識歷程</h3>
+<div class="scroll"><table>
+<tr><th>Ticket</th><th>Reviewer A(Spec)</th><th>Reviewer B(Standards)</th><th>Finding 處置</th></tr>
+<tr><td>01</td><td>通過,零 Finding</td><td>通過 🟢,1 建議</td><td>建議(live_page docstring 過時):Developer 主張延後、Reviewer 同源,由 02/03 文件同步完成 → <span class="ok">已結案</span></td></tr>
+<tr><td>02</td><td>通過,零 Finding;修正後 delta 確認仍有效</td><td>初判待修正(1 重要)→ 複驗 🟢</td><td>重要(回看首幀以進行中語意覆寫最終字樣):Developer 重現後承認取捨錯誤並修正;複驗含負向控制(v1 碼+v2 測試=精確 Red)→ <span class="ok">closed</span></td></tr>
+<tr><td>03</td><td>通過,零 Finding(獨立重驗 57 形狀逐字相同)</td><td>通過 🟢,1 建議</td><td>建議(done 路徑無永久測試):Developer 接受,補 2 案+雙向變異驗證;產品碼零改動(diff 產品段雜湊逐位元相同)→ <span class="ok">已結案</span></td></tr>
+</table></div>
+<h3>Snapshot 雜湊鏈(git diff -- hoya_market_agents tests | sha256sum)</h3>
+<ul class="small">
+<li>T01 凍結:<code>e10eb8b9…a88f04</code> → T02 初版:<code>24cd66eb…af5a36</code> → T02 修正:<code>c708b80e…147139</code> → T03:<code>7998e560…35dc7a</code> → 最終(+done 測試):<code>072d6969…70236a</code></li>
+<li>每一站均由 Developer 宣告、Coordinator 獨立重算、兩位 Reviewer 開始與結束各驗證一次。</li>
+</ul>
+<h3>最終驗收(Coordinator 獨立執行)</h3>
+<ul>
+<li><code>python3 -m unittest discover -s tests</code>(WSL):exit 0,<code>Ran 3196 tests, OK (skipped=1)</code>。</li>
+<li><code>node tests/js/live_harness.js</code>:exit 0,34 場景全過。</li>
+<li>SSE 端對端(真實 <code>create_webapp_server</code> 程序、真實 socket、暫存 data root,不碰正式資料):18/18 通過——首幀六欄位齊+無證據、改票即推且列數成長、封存單次推播、<code>javascript:</code> URL 不產生連結、同 stream 不重送。</li>
+</ul>
+<p class="warn">未能完成的驗收形式:本平台無瀏覽器自動化能力(無 playwright/chromium),無法由 Agent 實際點擊走完瀏覽器 UI 流程——此項不宣稱通過,改以上述真實伺服器 SSE 驗證作補充,並請使用者做下方最終視覺確認。</p>
+
+<h2>5. 已知風險與回復方式</h2>
+<ul>
+<li><strong>_follow 每趟組裝 payload</strong>:換取「走到哪一關」單一計算點;實測 0.022ms/次,本機單人可忽略。</li>
+<li><strong>封存前每 0.5 秒一次 <code>is_file()</code> 檢查</strong>:量級與既有 run_finished 相同;封存後旗標關閉不再讀。</li>
+<li><strong>大 run 的封存幀較大</strong>(37 卡實例):每 stream 僅一次;本機 SSE 無交付風險。</li>
+<li><strong><code>evidence_view</code> 單一權威</strong>:未來改補字規則會同時影響 run 詳情頁與即時房間——這正是設計意圖,修改時需知悉。</li>
+<li><strong>focus 欄位含 client 未用的 confidence_level</strong>:刻意不裁切,避免第二種形狀。</li>
+<li><strong>回復方式</strong>:全部變更未 commit,集中於 8 個檔案;如需還原,可先以 <code>git diff &gt; backup.patch</code> 留底再捨棄工作樹修改。各站 diff 備份已存於本次 session scratchpad(<code>ticket01-snapshot.diff</code>、<code>ticket02-snapshot-v2.diff</code>、<code>ticket03-snapshot.diff</code>)。</li>
+<li><strong>環境備註</strong>:全套測試在 /mnt/d(DrvFs)上約需 10 分鐘,為既有現象;與本次變更無關。</li>
+</ul>
+
+<h2>6. 請使用者最終視覺確認</h2>
+<p>啟動 webapp(桌面「開啟辯論室」捷徑,或 WSL 内以既有 Bash 入口啟動)後開啟:</p>
+<ul>
+<li><code>http://127.0.0.1:8765/live</code>(預設埠 8765)</li>
+</ul>
+<ol>
+<li><strong>回看檢查</strong>:用 run 選單切到最近一場已完成 run(如 <code>20260815T163124Z-6739-f14ab0</code>):三個摺疊面板應與改版前完全相同(12 條規則、12 筆改票、37 張證據卡)。</li>
+<li><strong>換 run 重置</strong>:切換 run 時三面板先短暫顯示「尚未投票。」「證據將在證據快照封存後顯示。」等等待字樣,首幀送達即回填。</li>
+<li><strong>直播檢查(下次真實 run 時)</strong>:辯論進行中不重新整理,觀察改票列即時出現、規則 current 標記於里程碑時刻自行前進、封存(一般題 T+6:00)後證據卡自動出現、「目前階段」「目前共識門檻」與焦點列同步變化。</li>
+</ol>
+
+<p class="small">本報告僅使用可重現證據(測試輸出、退出碼、雜湊、E2E 檢查項)。產出:Implement Coordinator(milktea-skills-implement),2026-08-16。</p>
+</body>
+</html>

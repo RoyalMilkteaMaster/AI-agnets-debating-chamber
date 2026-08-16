@@ -823,8 +823,14 @@ class PageFixture:
         self.lock = launch_module.LaunchLock()
         self.build_handler()
 
-    def build_handler(self, stream=None, spawn=None):
-        """Rebuild the handler; a test that needs different pacing calls this."""
+    def build_handler(self, stream=None, spawn=None, live_clock=None):
+        """Rebuild the handler; a test that needs different pacing calls this.
+
+        ``live_clock`` defaults to one fixed instant, which is what every test
+        about one moment of a run wants. A test about a run *moving* — a
+        milestone crossed while nothing is being said — hands in a clock it can
+        step, and drives it from the stream's own ``sleeper`` seam.
+        """
         self.stream = stream or self.single_pass_stream()
         self.handler = webapp_handler_class(
             self.data_root,
@@ -832,7 +838,8 @@ class PageFixture:
             stream=self.stream,
             lock=self.lock,
             spawn=spawn or self.spawn,
-            live_clock=lambda: datetime(2026, 8, 6, 2, 4, tzinfo=timezone.utc),
+            live_clock=live_clock
+            or (lambda: datetime(2026, 8, 6, 2, 4, tzinfo=timezone.utc)),
         )
         return self.handler
 
@@ -4938,6 +4945,68 @@ class LiveStreamTest(PageFixture, unittest.TestCase):
 
         self.assertIn("spot-technical 的公開理由", body)
         self.assertEqual(1, body.count('class="message '))
+
+    def stance_moves(self, payload):
+        return [
+            (change["seat_id"], change["before"], change["after"])
+            for change in payload["changes"]
+        ]
+
+    def test_every_frame_carries_the_whole_vote_history_so_far(self):
+        """票數變化是累積全量，所以任何一幀重畫出來的都是同一份完整清單。
+
+        追加的那一幀只帶新發言，卻要帶整份改票紀錄：面板照著這一格重畫，重畫幾次
+        結果都一樣，客戶端不必自己接續前一幀畫過什麼。
+        """
+        appended = []
+
+        def write_one(_seconds):
+            appended.append(1)
+            if len(appended) == 1:
+                append_events(
+                    self.run_dir, [seat_message("spot-technical", "bearish", 250000)]
+                )
+
+        self.build_handler(
+            stream=self.single_pass_stream(max_seconds=2.5, sleeper=write_one)
+        )
+        append_events(
+            self.run_dir, [seat_message("spot-technical", "bullish", 240000)]
+        )
+
+        frames = self.frames(self.open_stream().body)
+
+        self.assertEqual(["snapshot", "append"], [name for name, _, _ in frames])
+        self.assertEqual(
+            [("spot-technical", None, "bullish")], self.stance_moves(frames[0][2])
+        )
+        self.assertEqual(["spot-technical"], [m["seat_id"] for m in frames[1][2]["messages"]])
+        self.assertEqual(
+            [
+                ("spot-technical", None, "bullish"),
+                ("spot-technical", "bullish", "bearish"),
+            ],
+            self.stance_moves(frames[1][2]),
+        )
+
+    def test_the_closing_frame_carries_the_vote_history_too(self):
+        """定稿那一幀也帶著改票紀錄，所以最後一次重畫不會把面板清空。"""
+        append_events(
+            self.run_dir,
+            [
+                seat_message("spot-technical", "bullish", 240000),
+                seat_message("news", "bearish", 250000),
+            ],
+        )
+        finish_live_run(self.run_dir)
+
+        frames = self.frames(self.open_stream().body)
+
+        self.assertEqual("done", frames[-1][0])
+        self.assertEqual(
+            [("spot-technical", None, "bullish"), ("news", None, "bearish")],
+            self.stance_moves(frames[-1][2]),
+        )
 
 
 class LiveFailureIsolationTest(PageFixture, unittest.TestCase):

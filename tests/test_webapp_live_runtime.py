@@ -9,18 +9,21 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
+from urllib.parse import quote
 
 from hoya_market_agents.research_scheduler import research_deadlines
 from hoya_market_agents.seats import SEAT_IDS
-from hoya_market_agents.webapp import live
+from hoya_market_agents.webapp import live, views
 from hoya_market_agents.webapp import launch as launch_module
 from tests.test_webapp import (
     LIVE_RUN_ID,
     PageFixture,
+    _evidence_card as evidence_record,
     append_events,
     ask_bar_submission,
     seat_message,
     write_live_run,
+    write_run,
 )
 
 
@@ -430,11 +433,15 @@ class CompletionArtifactTest(unittest.TestCase):
 class RunLocalResetSurfaceTest(PageFixture, unittest.TestCase):
     """Every surface a same-page run switch has to blank carries its own reset word.
 
-    The SSE frames for the next run carry messages, seats, tally, round and the
-    clock and nothing else, so every other run-bound surface on the page can only
-    be corrected by the client blanking it. The word it blanks to is the server's
-    projection of a run nothing is known about yet, so the room never invents a
-    second vocabulary for "not known".
+    The SSE frames for the next run carry messages, seats, tally, the vote
+    history, the rule timeline, the phase, the threshold, the focus bar, the
+    sealed evidence, round and the clock; the question, the market, the
+    confidence light and the tally note are the run-bound surfaces left that can
+    only be corrected by the client blanking them. Even the ones a frame does
+    rewrite still show the previous run until that first frame lands, so the
+    blanking is what every switch starts with. The word it blanks to is the
+    server's projection of a run nothing is known about yet, so the room never
+    invents a second vocabulary for "not known".
     """
 
     def setUp(self):
@@ -490,28 +497,492 @@ class RunLocalResetSurfaceTest(PageFixture, unittest.TestCase):
         self.assertEqual(1, len(re.findall(r'\bid="question"', self.page)))
 
 
+def sse_frames(body):
+    """One event stream body, read back as ``(event name, payload)`` per frame."""
+    parsed = []
+    for block in body.split("\n\n"):
+        fields = {}
+        for line in block.splitlines():
+            name, separator, value = line.partition(": ")
+            if separator:
+                fields.setdefault(name, value)
+        if "event" in fields:
+            parsed.append(
+                (
+                    fields["event"],
+                    json.loads(fields["data"]) if "data" in fields else None,
+                )
+            )
+    return parsed
+
+
+class WalkingLiveClock:
+    """The run's wall clock, moved only when a test says so.
+
+    Every frame is built from one reading of it, so a test that jumps it from
+    the stream's ``sleeper`` seam decides exactly which pass sees which instant
+    — which is how a milestone gets crossed with nothing being said.
+    """
+
+    def __init__(self, created, elapsed_ms=0):
+        self.created = created
+        self.elapsed_ms = elapsed_ms
+
+    def __call__(self):
+        return self.created + timedelta(milliseconds=self.elapsed_ms)
+
+    def stepper(self, *jumps):
+        """A ``sleeper`` that moves the clock on to the next listed instant."""
+        remaining = list(jumps)
+
+        def step(_seconds):
+            if remaining:
+                self.elapsed_ms = remaining.pop(0)
+
+        return step
+
+
+class RuleTimelineFrameTest(PageFixture, unittest.TestCase):
+    """Where the run stands in its own rule timeline is the server's answer.
+
+    The timeline, the phase, the threshold and the focus words all come from the
+    :mod:`live` authorities and travel in the frame. The browser is not given a
+    second way to work out which milestone is in force, because two ways is two
+    answers and the page would eventually show both.
+    """
+
+    CREATED = datetime(2026, 8, 6, 2, 0, tzinfo=timezone.utc)
+    FIXED_ELAPSED_MS = 240_000
+
+    def setUp(self):
+        super().setUp()
+        self.run_dir = write_live_run(self.data_root)
+
+    def frames(self, path="/live/events?run=" + LIVE_RUN_ID):
+        return sse_frames(self.get(path).body)
+
+    @staticmethod
+    def standing(elapsed_ms, question_type="market_direction"):
+        """What the authorities say about a run at ``elapsed_ms``."""
+        timeline = live.rule_timeline(question_type)
+        return (
+            live.current_rule_index(elapsed_ms, timeline),
+            live.phase_label(elapsed_ms, timeline, live.STATUS_RUNNING),
+            live.threshold_label(elapsed_ms, question_type),
+            live.next_milestone(elapsed_ms, timeline)["label"],
+        )
+
+    @staticmethod
+    def frame_standing(payload):
+        return (
+            payload["current_rule_index"],
+            payload["phase_label"],
+            payload["threshold_label"],
+            payload["focus"]["next_label"],
+        )
+
+    def test_the_first_frame_carries_the_timeline_and_where_the_run_stands(self):
+        name, payload = self.frames()[0]
+
+        self.assertEqual("snapshot", name)
+        self.assertEqual(
+            json.loads(json.dumps(live.rule_timeline("market_direction"))),
+            payload["rules"],
+        )
+        self.assertEqual(
+            self.standing(self.FIXED_ELAPSED_MS), self.frame_standing(payload)
+        )
+
+    def test_the_focus_words_are_the_authoritys_words_for_this_frames_tally(self):
+        """焦點列的字樣沒有第二個來源。
+
+        client 端不再自己把票數拼成一句話，所以 frame 帶的必須就是 ``focus_state``
+        對這一幀自己的票數說的那一句 —— 否則畫面上會同時存在兩套講法。
+        """
+        append_events(
+            self.run_dir,
+            [
+                seat_message("spot-technical", "bullish", 12_000),
+                seat_message("news", "bullish", 30_000),
+                seat_message("macro", "bearish", 42_000),
+            ],
+        )
+
+        _, payload = self.frames()[0]
+        timeline = live.rule_timeline("market_direction")
+        expected = live.focus_state(
+            payload["tally"],
+            live.next_milestone(payload["elapsed_ms"], timeline),
+            False,
+            None,
+        )
+
+        self.assertEqual(expected["headline"], payload["focus"]["headline"])
+        self.assertEqual(expected["tally_text"], payload["focus"]["tally_text"])
+        self.assertEqual(expected["next_label"], payload["focus"]["next_label"])
+
+    def test_a_crossed_milestone_reaches_the_client_with_nothing_being_said(self):
+        """架構 §4.0.1：規則切換由伺服器推送，不靠瀏覽器自己算時間。
+
+        這一場沒有任何新發言，只有時鐘往前走。跨過里程碑的那兩趟仍然發出 frame，
+        而 current 索引、階段、門檻與「下一步」都往前走了一格。
+        """
+        clock = WalkingLiveClock(self.CREATED, self.FIXED_ELAPSED_MS)
+        self.build_handler(
+            stream=self.single_pass_stream(
+                max_seconds=4, sleeper=clock.stepper(330_000, 430_000)
+            ),
+            live_clock=clock,
+        )
+
+        frames = self.frames()
+
+        self.assertEqual(["snapshot", "append", "append"], [n for n, _ in frames])
+        self.assertEqual([[], [], []], [p["messages"] for _, p in frames])
+        self.assertEqual(
+            [self.standing(ms) for ms in (self.FIXED_ELAPSED_MS, 330_000, 430_000)],
+            [self.frame_standing(p) for _, p in frames],
+        )
+        indexes = [p["current_rule_index"] for _, p in frames]
+        self.assertTrue(indexes[0] < indexes[1] < indexes[2], indexes)
+        thresholds = [p["threshold_label"] for _, p in frames]
+        self.assertEqual("尚未進入投票", thresholds[0])
+        self.assertNotEqual(thresholds[0], thresholds[2])
+
+    def test_the_timeline_is_sent_once_because_it_does_not_move(self):
+        clock = WalkingLiveClock(self.CREATED, self.FIXED_ELAPSED_MS)
+        self.build_handler(
+            stream=self.single_pass_stream(
+                max_seconds=4, sleeper=clock.stepper(330_000, 430_000)
+            ),
+            live_clock=clock,
+        )
+
+        frames = self.frames()
+
+        self.assertIn("rules", frames[0][1])
+        self.assertEqual([False, False], ["rules" in p for _, p in frames[1:]])
+
+    def test_a_pass_that_moves_nothing_sends_no_frame(self):
+        self.build_handler(stream=self.single_pass_stream(max_seconds=4))
+
+        self.assertEqual(["snapshot"], [n for n, _ in self.frames()])
+
+    def test_a_resumed_stream_carries_the_timeline_on_its_first_frame(self):
+        offset = append_events(
+            self.run_dir, [seat_message("spot-technical", "bullish", 12_000)]
+        )
+        cursor = live.make_cursor(LIVE_RUN_ID, offset)
+
+        name, payload = self.frames(
+            "/live/events?run={}&after={}".format(LIVE_RUN_ID, quote(cursor))
+        )[0]
+
+        self.assertEqual("append", name)
+        self.assertEqual(
+            json.loads(json.dumps(live.rule_timeline("market_direction"))),
+            payload["rules"],
+        )
+
+    def test_a_comparison_runs_frame_carries_its_own_later_timeline(self):
+        run_id = "20260806T020000Z-btceth-99aa11"
+        write_live_run(
+            self.data_root,
+            run_id=run_id,
+            question="BTC 和 ETH 哪個未來七天表現較好",
+            assets=("BTC", "ETH"),
+            question_type="two_asset_comparison",
+        )
+
+        _, payload = self.frames("/live/events?run=" + run_id)[0]
+
+        self.assertEqual(
+            json.loads(json.dumps(live.rule_timeline("two_asset_comparison"))),
+            payload["rules"],
+        )
+        self.assertEqual(
+            30_000,
+            research_deadlines("two_asset_comparison").seal_ms
+            - research_deadlines("market_direction").seal_ms,
+        )
+        self.assertEqual(
+            self.standing(self.FIXED_ELAPSED_MS, "two_asset_comparison"),
+            self.frame_standing(payload),
+        )
+
+    @staticmethod
+    def rendered(page, element_id):
+        """What the server drew into one marked cell of the live room."""
+        return re.search(
+            r'id="{}"[^>]*>([^<]*)'.format(re.escape(element_id)), page
+        ).group(1)
+
+    def test_a_finished_runs_stream_never_speaks_as_a_running_one(self):
+        """回看已完成 run：沒有任何一幀可以把定稿字樣降回進行中。
+
+        直接開啟一場已經結束的 run，伺服器畫出來的就已經是「已完成」和它的共識
+        結論。這條 stream 的第一幀若用進行中的語意組裝，client 會照著把那兩格改
+        掉，再由隨後的 done 改回來 —— 讀者看到的是一次沒有發生過的倒退。所以
+        「這一場結束了沒有」要在組第一幀之前就問，而不是下一趟才問。
+        """
+        run_id = "20260801T020000Z-btc-aaaa11"
+        write_run(self.data_root, run_id, "BTC 未來七天會不會漲")
+
+        page = self.get("/live?run=" + run_id).body
+        frames = self.frames("/live/events?run=" + run_id)
+
+        self.assertEqual(["snapshot", "done"], [name for name, _ in frames])
+        # 這一場真的有共識結論，否則「不降級」會因為兩邊本來就一樣而空過。
+        self.assertEqual("consensus", frames[-1][1]["outcome"]["consensus_status"])
+        for name, payload in frames:
+            with self.subTest(frame=name):
+                self.assertEqual(
+                    self.rendered(page, "live-phase"), payload["phase_label"]
+                )
+                self.assertEqual(
+                    self.rendered(page, "focus-headline"),
+                    payload["focus"]["headline"],
+                )
+                self.assertEqual(
+                    self.rendered(page, "live-threshold"),
+                    payload["threshold_label"],
+                )
+
+    def test_the_done_frame_speaks_as_the_finished_run_the_page_would_show(self):
+        """定稿那一幀畫上去的字，必須和重新整理後伺服器畫的是同一句。
+
+        client 收到 done 仍會照這一幀重畫（重置過的分頁隨後才交還伺服器重繪），
+        所以這一幀若用「進行中」的講法作答，讀者會先看到一句和頁面矛盾的話。
+        """
+        write_final_manifest(self.run_dir, report="report")
+
+        name, payload = self.frames()[-1]
+        timeline = live.rule_timeline("market_direction")
+        expected = live.focus_state(
+            payload["tally"],
+            live.next_milestone(payload["elapsed_ms"], timeline),
+            True,
+            payload["outcome"],
+        )
+
+        self.assertEqual("done", name)
+        self.assertEqual(
+            live.phase_label(
+                payload["elapsed_ms"], timeline, live.STATUS_FINISHED
+            ),
+            payload["phase_label"],
+        )
+        self.assertEqual(expected["headline"], payload["focus"]["headline"])
+        self.assertEqual(expected["next_label"], payload["focus"]["next_label"])
+
+
+def sealed_card(seat_id, **overrides):
+    """One line of ``evidence.jsonl`` for this run, with fields overridable."""
+    card = dict(evidence_record(seat_id, LIVE_RUN_ID))
+    card.update(overrides)
+    return card
+
+
+class EvidenceFrameTest(PageFixture, unittest.TestCase):
+    """封存的證據卡由 frame 送達，一條 stream 只送一次。
+
+    顯示閘門沿用既有的那一個（``views._read_evidence``）：檔案在、而且解析得出
+    卡片，才算封存。封存後內容不可變，所以送達一次就是最終答案 —— 之後的每一幀
+    都不再帶它，重連開的新 stream 才自然重送一次。
+
+    來源可不可點是伺服器答的：``report_contract.is_safe_source_url`` 是這個專案
+    唯一的判準，frame 帶的是判完的結果（``source_href``），瀏覽器不再判一次。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.run_dir = write_live_run(self.data_root)
+
+    def frames(self, path="/live/events?run=" + LIVE_RUN_ID):
+        return sse_frames(self.get(path).body)
+
+    def seal(self, *cards):
+        (self.run_dir / views.EVIDENCE_RECORD).write_text(
+            "".join(json.dumps(card, ensure_ascii=False) + "\n" for card in cards),
+            encoding="utf-8",
+        )
+
+    def test_a_run_with_no_sealed_snapshot_sends_no_evidence_field(self):
+        name, payload = self.frames()[0]
+
+        self.assertEqual("snapshot", name)
+        self.assertNotIn("evidence", payload)
+
+    def test_a_file_that_holds_no_card_is_not_a_seal_yet(self):
+        """閘門是既有的那一個：檔案在還不夠，要解析得出卡片。"""
+        (self.run_dir / views.EVIDENCE_RECORD).write_text("", encoding="utf-8")
+
+        self.assertNotIn("evidence", self.frames()[0][1])
+
+    def test_the_first_frame_of_a_stream_carries_every_sealed_card(self):
+        self.seal(sealed_card("spot-technical"), sealed_card("news"))
+
+        _, payload = self.frames()[0]
+
+        self.assertEqual(
+            ["spot-technical-01", "news-01"],
+            [card["evidence_id"] for card in payload["evidence"]],
+        )
+        first = payload["evidence"][0]
+        self.assertEqual("spot-technical", first["seat_id"])
+        self.assertEqual("spot-technical 提交的證據陳述", first["statement"])
+        self.assertEqual("spot-technical 的引文", first["excerpt"])
+        self.assertEqual("1", first["source_tier"])
+        self.assertEqual("example.invalid", first["source_origin"])
+        self.assertEqual(
+            "https://example.invalid/spot-technical", first["source_url"]
+        )
+        self.assertEqual(first["source_url"], first["source_href"])
+
+    def test_the_pass_that_first_sees_the_seal_pushes_it_and_no_later_pass_repeats_it(self):
+        """封存那一趟就發 frame，之後的每一幀都不再帶它。
+
+        第二趟才有證據，第三趟只有新發言 —— 那一幀仍然要發（它有話說），但不能
+        再帶一次封存內容：不可變的東西送兩次只是同一個答案的第二份。
+        """
+        def step(_seconds):
+            if not steps:
+                return
+            steps.pop(0)()
+
+        steps = [
+            lambda: self.seal(sealed_card("spot-technical")),
+            lambda: append_events(
+                self.run_dir, [seat_message("spot-technical", "bullish", 12_000)]
+            ),
+        ]
+        self.build_handler(
+            stream=self.single_pass_stream(max_seconds=4, sleeper=step)
+        )
+
+        frames = self.frames()
+
+        self.assertEqual(["snapshot", "append", "append"], [n for n, _ in frames])
+        self.assertNotIn("evidence", frames[0][1])
+        self.assertEqual([], frames[1][1]["messages"])
+        self.assertEqual(
+            ["spot-technical-01"],
+            [card["evidence_id"] for card in frames[1][1]["evidence"]],
+        )
+        self.assertEqual(1, len(frames[2][1]["messages"]))
+        self.assertNotIn("evidence", frames[2][1])
+
+    def test_a_seal_first_seen_on_the_finishing_pass_rides_the_done_frame(self):
+        """``done`` 是自己的一條分支，封存與結束落在同一趟時由它把卡片帶出去。
+
+        那一趟不會再有下一幀：``_follow`` 送完 done 就 return。所以這條分支若不
+        問「這條 stream 送過了沒有」，這一場的證據就永遠不會到達 client —— 而
+        頁面上那一格會停在等待字樣，直到讀者自己重新整理。
+        """
+        def step(_seconds):
+            if sealed_on_this_pass:
+                return
+            sealed_on_this_pass.append(True)
+            self.seal(sealed_card("spot-technical"))
+            write_final_manifest(self.run_dir, report="report")
+
+        sealed_on_this_pass = []
+        self.build_handler(
+            stream=self.single_pass_stream(max_seconds=4, sleeper=step)
+        )
+
+        frames = self.frames()
+
+        self.assertEqual(["snapshot", "done"], [n for n, _ in frames])
+        self.assertNotIn("evidence", frames[0][1])
+        self.assertEqual(
+            ["spot-technical-01"],
+            [card["evidence_id"] for card in frames[-1][1]["evidence"]],
+        )
+
+    def test_a_done_frame_does_not_repeat_a_seal_this_stream_already_sent(self):
+        """同一條分支的另一半：已經送過的封存，定稿那一幀不再送第二次。
+
+        封存內容不可變，所以第二份和第一份是同一個答案。這一案和上一案一起說完
+        ``done`` 分支要問的那一個問題 —— 少了任一邊，「這條 stream 送過了沒有」
+        都可以被拿掉而不被任何測試攔住。
+        """
+        self.seal(sealed_card("spot-technical"))
+        write_final_manifest(self.run_dir, report="report")
+
+        frames = self.frames()
+
+        self.assertEqual(["snapshot", "done"], [n for n, _ in frames])
+        self.assertEqual(
+            ["spot-technical-01"],
+            [card["evidence_id"] for card in frames[0][1]["evidence"]],
+        )
+        self.assertNotIn("evidence", frames[-1][1])
+
+    def test_a_reconnecting_stream_is_sent_the_sealed_cards_again(self):
+        """已送旗標是 per-stream 的：重連開的新 stream 從頭再送一次。"""
+        offset = append_events(
+            self.run_dir, [seat_message("spot-technical", "bullish", 12_000)]
+        )
+        self.seal(sealed_card("news"))
+        cursor = live.make_cursor(LIVE_RUN_ID, offset)
+
+        name, payload = self.frames(
+            "/live/events?run={}&after={}".format(LIVE_RUN_ID, quote(cursor))
+        )[0]
+
+        self.assertEqual("append", name)
+        self.assertEqual(
+            ["news-01"], [card["evidence_id"] for card in payload["evidence"]]
+        )
+
+    def test_the_cards_the_frame_carries_are_the_cards_the_page_renders(self):
+        self.seal(sealed_card("spot-technical"), sealed_card("news"))
+
+        page = self.get("/live?run=" + LIVE_RUN_ID).body
+        _, payload = self.frames()[0]
+
+        self.assertEqual(2, len(payload["evidence"]))
+        for card in payload["evidence"]:
+            with self.subTest(card=card["evidence_id"]):
+                self.assertIn(card["evidence_id"], page)
+                self.assertIn(card["seat_id"], page)
+                self.assertIn(card["statement"], page)
+                self.assertIn(card["excerpt"], page)
+                self.assertIn(
+                    "來源等級 {}・{}".format(
+                        card["source_tier"], card["source_origin"]
+                    ),
+                    page,
+                )
+                self.assertIn(
+                    '<a class="source-link" href="{}"'.format(card["source_href"]),
+                    page,
+                )
+
+    def test_an_unsafe_source_reaches_the_client_as_text_and_never_as_a_link(self):
+        """fail closed：不是 http(s) 的來源，frame 不給可點連結，文字照樣送。"""
+        self.seal(
+            sealed_card("spot-technical", source_url="javascript:alert(1)"),
+            sealed_card("news"),
+        )
+
+        page = self.get("/live?run=" + LIVE_RUN_ID).body
+        unsafe, safe = self.frames()[0][1]["evidence"]
+
+        self.assertEqual("javascript:alert(1)", unsafe["source_url"])
+        self.assertIsNone(unsafe["source_href"])
+        self.assertEqual(safe["source_url"], safe["source_href"])
+        self.assertNotIn('href="javascript:', page)
+        self.assertIn("javascript:alert(1)", page)
+
+
 class ProjectionConsistencyTest(PageFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.run_dir = write_live_run(self.data_root)
 
-    @staticmethod
-    def frames(body):
-        parsed = []
-        for block in body.split("\n\n"):
-            fields = {}
-            for line in block.splitlines():
-                name, separator, value = line.partition(": ")
-                if separator:
-                    fields.setdefault(name, value)
-            if "event" in fields:
-                parsed.append(
-                    (
-                        fields["event"],
-                        json.loads(fields["data"]) if "data" in fields else None,
-                    )
-                )
-        return parsed
+    frames = staticmethod(sse_frames)
 
     def test_initial_html_and_first_sse_snapshot_share_one_run_clock(self):
         elapsed_ms = 240_000
@@ -531,6 +1002,135 @@ class ProjectionConsistencyTest(PageFixture, unittest.TestCase):
         self.assertEqual(
             remaining_ms, first_payload["debate_start_remaining_ms"]
         )
+
+    VOTE_ROW = re.compile(r'<li class="(history-row[^"]*)">(.*?)</li>', re.S)
+    ROW_TEXT = re.compile(r">([^<>]+)<")
+
+    def rendered_vote_rows(self, page):
+        """The 票數變化 rows the server drew, as ``(class, words)`` per row."""
+        body = re.search(
+            r'id="vote-history-detail-body"[^>]*>(.*?)</div>', page, re.S
+        )
+        self.assertIsNotNone(body, "the page has no 票數變化 panel body")
+        return [
+            (
+                row_class,
+                " ".join(
+                    word.strip()
+                    for word in self.ROW_TEXT.findall(inner)
+                    if word.strip()
+                ),
+            )
+            for row_class, inner in self.VOTE_ROW.findall(body.group(1))
+        ]
+
+    def frame_vote_rows(self, changes):
+        """The same rows, written out from the frame in the Spec's row format."""
+        rows = []
+        for change in changes:
+            seconds = max(0, int(change["elapsed_ms"] or 0) // 1000)
+            stamp = "T+{:02d}:{:02d}".format(seconds // 60, seconds % 60)
+            if change["before"] is None:
+                rows.append(
+                    (
+                        "history-row",
+                        "{} {} 首次表態：{}".format(
+                            stamp, change["seat_label"], change["after_label"]
+                        ),
+                    )
+                )
+            else:
+                rows.append(
+                    (
+                        "history-row changed",
+                        "{} {} {} → {} 改票".format(
+                            stamp,
+                            change["seat_label"],
+                            change["before_label"],
+                            change["after_label"],
+                        ),
+                    )
+                )
+        return rows
+
+    def test_the_frame_and_the_reloaded_page_show_the_same_vote_history(self):
+        """即時追加的那一列，和重新整理同一場看到的那一列是同一列。
+
+        面板整頁渲染時讀的是這一場累積的改票紀錄；frame 帶的必須是同一份，否則
+        「不重新整理看到的」與「重新整理看到的」會變成兩套說法。
+        """
+        append_events(
+            self.run_dir,
+            [
+                seat_message("spot-technical", "bullish", 12_000),
+                seat_message("news", "bearish", 30_000),
+                seat_message(
+                    "spot-technical", "neutral", 90_000, change_reason="改看觀望"
+                ),
+            ],
+        )
+
+        page = self.get("/live?run=" + LIVE_RUN_ID).body
+        first_event, payload = self.frames(
+            self.get("/live/events?run=" + LIVE_RUN_ID).body
+        )[0]
+
+        self.assertEqual("snapshot", first_event)
+        drawn = self.rendered_vote_rows(page)
+        self.assertEqual(3, len(drawn))
+        self.assertEqual(
+            ["history-row", "history-row", "history-row changed"],
+            [row_class for row_class, _ in drawn],
+        )
+        self.assertEqual(drawn, self.frame_vote_rows(payload["changes"]))
+
+    RULE_ROW = re.compile(
+        r'<div class="(rule[^"]*)"><time>([^<]*)</time><span>([^<]*)</span></div>'
+    )
+
+    def frame_rule_rows(self, payload):
+        """The 規則與時間線 rows the frame implies, in the Spec's row format."""
+        rows = []
+        current = payload["current_rule_index"]
+        for index, rule in enumerate(payload["rules"]):
+            if index == current:
+                row_class = "rule current"
+            elif index < current:
+                row_class = "rule past"
+            else:
+                row_class = "rule"
+            seconds = max(0, int(rule["at_ms"]) // 1000)
+            votes = (
+                "（門檻 {} 票）".format(rule["required_votes"])
+                if rule["required_votes"]
+                else ""
+            )
+            rows.append(
+                (
+                    row_class,
+                    "T+{:02d}:{:02d}".format(seconds // 60, seconds % 60),
+                    rule["label"] + votes,
+                )
+            )
+        return rows
+
+    def test_the_frame_and_the_rendered_page_draw_the_same_rule_timeline(self):
+        """即時前進的那一列，和重新整理同一場看到的那一列是同一列。
+
+        current 索引只有一個算法（``live.current_rule_index``），伺服器渲染與
+        frame 都讀它，所以「不重新整理看到的」與「重新整理看到的」不會分家。
+        """
+        page = self.get("/live?run=" + LIVE_RUN_ID).body
+        name, payload = self.frames(
+            self.get("/live/events?run=" + LIVE_RUN_ID).body
+        )[0]
+
+        drawn = self.RULE_ROW.findall(page)
+
+        self.assertEqual("snapshot", name)
+        self.assertEqual(len(payload["rules"]), len(drawn))
+        self.assertEqual(1, [row[0] for row in drawn].count("rule current"))
+        self.assertEqual(self.frame_rule_rows(payload), drawn)
 
     def test_live_page_exposes_the_exact_run_surfaces_used_by_same_page_switch(self):
         page = self.get("/live?run=" + LIVE_RUN_ID).body

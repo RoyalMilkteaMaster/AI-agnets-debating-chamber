@@ -75,10 +75,12 @@ function transportFailure() {
 }
 
 // 伺服器替每一格 run-bound surface 標上「對一個還不知道任何事的 run，這一格讀什麼」
-// （pages.live_page._fresh_run_words）。換 run 的 frame 只帶 feed、席位、票數、輪次
-// 與時鐘，其餘每一格都還是上一場畫上去的，沒有任何 frame 會更正它們，所以清成標記
-// 的字是 client 唯一能做對的事。這裡的字面值只是伺服器標了什麼的樣本；哪些字是權威
-// 由 RunLocalResetSurfaceTest 綁在 Python 那一側。
+// （pages.live_page._fresh_run_words）。換 run 的 frame 帶 feed、席位、票數、票數變化、
+// 規則與時間線、階段、門檻、焦點列、可驗證證據、輪次與時鐘；題目、市場、信心燈號與票數
+// 說明還是上一場畫上去的，沒有任何 frame 會更正它們。而且就算是會被補寫的那幾格，第一個
+// frame 到達之前畫面上也還是上一場的內容 —— 所以清成標記的字仍是 client 換 run 時唯一能
+// 做對的事。這裡的字面值只是伺服器標了什麼的樣本；哪些字是權威由 RunLocalResetSurfaceTest
+// 綁在 Python 那一側。
 const RESET_WORDS = {
   "live-question": "等待新的市場題目",
   "live-round": "尚未進入辯論",
@@ -264,7 +266,7 @@ async function launchedScenario() {
   assert.strictEqual(env.ids["live-report-link"]["aria-disabled"], "true");
   assert.strictEqual(env.ids["live-debate-link"]["aria-disabled"], "true");
   // 這一場換到 run-b，但畫面上每一格非 feed／席位／票數／輪次／時鐘的欄位都還是
-  // run-a 的答案，而 run-b 的 frame 不會提到它們。清成伺服器標記的字之前，題目、
+  // run-a 的答案，而 run-b 的第一個 frame 還沒到。清成伺服器標記的字之前，題目、
   // 領先立場、信心、階段、門檻、規則、票數變化與證據都還在講上一場。
   Object.keys(RESET_WORDS).forEach((id) => {
     assert.strictEqual(env.ids[id].textContent, RESET_WORDS[id], id);
@@ -317,8 +319,8 @@ async function launchedScenario() {
   assert.deepStrictEqual(env.intervalErrors, []);
   assert.strictEqual(env.ids["live-total-remaining"].textContent, "03:27");
   assert.strictEqual(env.ids["live-elapsed"].dataset.elapsedMs, "812345");
-  // done 之後：這個分頁經歷過換 run 重置，規則／票數變化／證據等 run-bound surface
-  // 只剩占位文字且不會再有任何 frame 補寫 —— 唯一不建第二套渲染的做法，是把整頁
+  // done 之後：這個分頁經歷過換 run 重置，而題目／市場／信心燈號／票數說明這幾格
+  // 只剩占位文字，不會有任何 frame 補寫 —— 唯一不建第二套渲染的做法，是把整頁
   // 交還伺服器重新投影（與手動重新整理同義）。
   assert.deepStrictEqual(env.reloadCalls, [true]);
 }
@@ -562,6 +564,369 @@ async function theStartedLatchNeverFallsBackToACountdown() {
   assert.strictEqual(env.ids["live-debate-remaining"].dataset.remainingMs, "");
 }
 
+// 票數變化這一格是 frame 自己帶的：累積全量，所以每一幀都夠畫出完整清單，重畫幾次
+// 都是同一份。列的形狀跟伺服器渲染同一套 —— 首次表態一種、改票一種加「改票」旗標 ——
+// 因為讀者不重新整理看到的那一列，和重新整理後伺服器畫出來的必須是同一列。
+function historyRows(body) {
+  const list = body.children[0];
+  if (!list || list.className !== "history") { return []; }
+  return list.children.map((row) => ({className: row.className, text: row.textContent}));
+}
+
+async function theVoteHistoryPanelIsRepaintedByEveryFrameThatCarriesIt() {
+  const env = makeEnvironment([
+    response(202, {status: "pending", launch_token: "token-a"}),
+    response(200, {status: "launched", run_id: "run-b"}),
+  ]);
+  const first = FakeEventSource.instances[0];
+  const body = () => env.ids["vote-history-detail-body"];
+  const frame = (runId, extra) => Object.assign(
+    {run_id: runId, messages: [], tally: [], seats: [], elapsed_ms: 1000}, extra
+  );
+  const opened = {
+    seat_id: "spot-technical", seat_label: "現貨技術", before: null,
+    before_label: "尚未表態", after: "bullish", after_label: "看多",
+    after_class: "stance-bullish", changed: false, elapsed_ms: 12000,
+  };
+  const switched = {
+    seat_id: "spot-technical", seat_label: "現貨技術", before: "bullish",
+    before_label: "看多", after: "bearish", after_label: "看空",
+    after_class: "stance-bearish", changed: true, elapsed_ms: 90000,
+  };
+
+  // 頁面載入時面板是上一場的，第一個 frame 就整格換成這一場的。
+  assert.strictEqual(body().textContent, "T+03:00 現貨技術 首次表態：看多");
+  first.emit("snapshot", frame("run-a", {changes: [opened], cursor: "run-a@4"}));
+  assert.deepStrictEqual(historyRows(body()), [
+    {className: "history-row", text: "T+00:12現貨技術首次表態：看多"},
+  ]);
+
+  // 追加的那一幀只帶新發言，卻帶整份改票紀錄：面板照著它重畫就多出那一列。
+  first.emit("append", frame("run-a", {changes: [opened, switched], cursor: "run-a@5"}));
+  assert.deepStrictEqual(historyRows(body()), [
+    {className: "history-row", text: "T+00:12現貨技術首次表態：看多"},
+    {className: "history-row changed", text: "T+01:30現貨技術看多 → 看空改票"},
+  ]);
+
+  // 同一份再送一次不會變成四列：重畫是冪等的，不是接在後面追加。
+  first.emit("append", frame("run-a", {changes: [opened, switched], cursor: "run-a@6"}));
+  assert.strictEqual(historyRows(body()).length, 2);
+
+  // 沒提到這一格的 frame 不准動它 —— 沉默不是「清空」。
+  first.emit("append", frame("run-a", {cursor: "run-a@7"}));
+  assert.strictEqual(historyRows(body()).length, 2);
+
+  // 換 run：這一格先回到伺服器標好的等待字樣，新一場的 frame 才重新填上。
+  env.ids["launch-form"].requestSubmit();
+  await flush(); await flush(); await flush(); await flush();
+  assert.strictEqual(body().textContent, "尚未投票。");
+
+  const live = FakeEventSource.instances.at(-1);
+  assert.strictEqual(live.url, "/live/events?run=run-b");
+  // 新一場還沒有人表態：面板讀的還是同一句等待字樣，不是空白一格。
+  live.emit("snapshot", frame("run-b", {changes: [], cursor: "run-b@1"}));
+  assert.deepStrictEqual(historyRows(body()), []);
+  assert.strictEqual(body().textContent, "尚未投票。");
+
+  live.emit("append", frame("run-b", {changes: [opened], cursor: "run-b@2"}));
+  assert.deepStrictEqual(historyRows(body()), [
+    {className: "history-row", text: "T+00:12現貨技術首次表態：看多"},
+  ]);
+
+  // 上一場的死連線送來自己的清單也不准畫進這一場。
+  first.emit("append", frame("run-a", {changes: [opened, switched], cursor: "run-a@8"}));
+  assert.strictEqual(historyRows(body()).length, 1);
+
+  // 定稿那一幀同樣帶著改票紀錄，所以最後一次重畫不會把面板清空。
+  live.emit("done", frame("run-b", {
+    changes: [opened, switched], debate_started: true,
+    debate_start_remaining_ms: null,
+    completion: {report_href: "/run/run-b/report.html", debate_href: null},
+  }));
+  assert.strictEqual(historyRows(body()).length, 2);
+}
+
+// 規則與時間線這一格由伺服器說了算：時間線隨每條 stream 的第一個 frame 送到，
+// current 索引則是每一幀都帶 —— 瀏覽器不自己比對 at_ms 重算「現在走到哪一關」。
+// 列的形狀跟 pages.live_page._rule_row 同一套：時刻、標籤加門檻，current 一種、
+// 已過的一種（past）。
+function ruleRows(body) {
+  const holder = body.children[0];
+  if (!holder || holder.className !== "rules") { return []; }
+  return holder.children.map((row) => ({className: row.className, text: row.textContent}));
+}
+
+const GENERAL_RULES = [
+  {at_ms: 0, label: "開始多方蒐證", required_votes: null},
+  {at_ms: 90000, label: "允許可信二手來源", required_votes: null},
+  {at_ms: 360000, label: "封存證據並整理開場票", required_votes: null},
+  {at_ms: 420000, label: "第 1 輪開票", required_votes: 7},
+];
+// 比較題的封存與開票都往後 30 秒，所以換 run 之後畫出來的是另一組時刻。
+const COMPARISON_RULES = [
+  {at_ms: 0, label: "開始多方蒐證", required_votes: null},
+  {at_ms: 90000, label: "允許可信二手來源", required_votes: null},
+  {at_ms: 390000, label: "封存證據並整理開場票", required_votes: null},
+  {at_ms: 450000, label: "第 1 輪開票", required_votes: 7},
+];
+
+async function theRuleTimelineAndFocusAdvanceWithTheFramesTheServerPushes() {
+  const env = makeEnvironment([
+    response(202, {status: "pending", launch_token: "token-a"}),
+    response(200, {status: "launched", run_id: "run-b"}),
+  ]);
+  const first = FakeEventSource.instances[0];
+  const rules = () => env.ids["rules-detail-body"];
+  const frame = (runId, extra) => Object.assign(
+    {run_id: runId, messages: [], tally: [], seats: [], elapsed_ms: 240000}, extra
+  );
+  const standing = (index, phase, threshold, next, headline, tallyText) => ({
+    current_rule_index: index,
+    phase_label: phase,
+    threshold_label: threshold,
+    focus: {headline: headline, tally_text: tallyText, next_label: next},
+  });
+
+  // 頁面載入時面板是上一場的，第一個 frame 帶著這一場的時間線就整格換掉。
+  assert.strictEqual(rules().textContent, "T+09:00 第二輪投票（門檻 4 票）");
+  first.emit("snapshot", frame("run-a", Object.assign(
+    {rules: GENERAL_RULES, cursor: "run-a@4"},
+    standing(1, "允許可信二手來源", "尚未進入投票", "封存證據並整理開場票",
+             "目前看多領先", "看多 3｜看空 1")
+  )));
+  assert.deepStrictEqual(ruleRows(rules()), [
+    {className: "rule past", text: "T+00:00開始多方蒐證"},
+    {className: "rule current", text: "T+01:30允許可信二手來源"},
+    {className: "rule", text: "T+06:00封存證據並整理開場票"},
+    {className: "rule", text: "T+07:00第 1 輪開票（門檻 7 票）"},
+  ]);
+  assert.strictEqual(env.ids["live-phase"].textContent, "允許可信二手來源");
+  assert.strictEqual(env.ids["live-threshold"].textContent, "尚未進入投票");
+  assert.strictEqual(env.ids["focus-headline"].textContent, "目前看多領先");
+  // 焦點列的票數字樣讀 frame 的 focus.tally_text，不由這裡再拼一次 —— 一句話只有
+  // 一個來源。
+  assert.strictEqual(env.ids["focus-tally"].textContent, "看多 3｜看空 1");
+  assert.strictEqual(env.ids["focus-action"].textContent, "封存證據並整理開場票");
+
+  // 沒有新發言、只有時鐘跨過里程碑的那一幀：時間線不重送，current 索引照樣前進，
+  // 階段、門檻與「下一步」跟著換。
+  first.emit("append", frame("run-a", Object.assign(
+    {elapsed_ms: 430000, cursor: "run-a@5"},
+    standing(3, "第 1 輪開票", "7 票", "硬停結算", "目前看多領先", "看多 3｜看空 1")
+  )));
+  assert.deepStrictEqual(ruleRows(rules()).map((row) => row.className), [
+    "rule past", "rule past", "rule past", "rule current",
+  ]);
+  assert.strictEqual(env.ids["live-phase"].textContent, "第 1 輪開票");
+  assert.strictEqual(env.ids["live-threshold"].textContent, "7 票");
+  assert.strictEqual(env.ids["focus-action"].textContent, "硬停結算");
+
+  // 沒提到這幾格的 frame 不准動它們 —— 沉默不是「回到最前面」。
+  first.emit("append", frame("run-a", {cursor: "run-a@6"}));
+  assert.deepStrictEqual(ruleRows(rules()).map((row) => row.className), [
+    "rule past", "rule past", "rule past", "rule current",
+  ]);
+  assert.strictEqual(env.ids["live-phase"].textContent, "第 1 輪開票");
+  assert.strictEqual(env.ids["focus-tally"].textContent, "看多 3｜看空 1");
+
+  // 換 run：先回到伺服器標好的等待字樣，再由新一場自己的時間線重畫。
+  env.ids["launch-form"].requestSubmit();
+  await flush(); await flush(); await flush(); await flush();
+  assert.strictEqual(rules().textContent, RESET_WORDS["rules-detail-body"]);
+  assert.strictEqual(env.ids["live-phase"].textContent, RESET_WORDS["live-phase"]);
+  assert.strictEqual(env.ids["focus-tally"].textContent, RESET_WORDS["focus-tally"]);
+
+  const live = FakeEventSource.instances.at(-1);
+  live.emit("snapshot", frame("run-b", Object.assign(
+    {rules: COMPARISON_RULES, elapsed_ms: 1000, cursor: "run-b@1"},
+    standing(0, "開始多方蒐證", "尚未進入投票", "允許可信二手來源",
+             "尚未形成單一領先", "票數尚未開始累計")
+  )));
+  assert.deepStrictEqual(ruleRows(rules()), [
+    {className: "rule current", text: "T+00:00開始多方蒐證"},
+    {className: "rule", text: "T+01:30允許可信二手來源"},
+    {className: "rule", text: "T+06:30封存證據並整理開場票"},
+    {className: "rule", text: "T+07:30第 1 輪開票（門檻 7 票）"},
+  ]);
+  assert.strictEqual(env.ids["focus-headline"].textContent, "尚未形成單一領先");
+  assert.strictEqual(env.ids["focus-tally"].textContent, "票數尚未開始累計");
+
+  // 上一場的死連線送來自己的時間線也不准畫進這一場。
+  first.emit("append", frame("run-a", Object.assign(
+    {rules: GENERAL_RULES, cursor: "run-a@9"},
+    standing(3, "第 1 輪開票", "7 票", "硬停結算", "目前看多領先", "看多 3｜看空 1")
+  )));
+  assert.strictEqual(ruleRows(rules())[2].text, "T+06:30封存證據並整理開場票");
+  assert.strictEqual(env.ids["live-phase"].textContent, "開始多方蒐證");
+
+  // 定稿那一幀說的是完成後的話，畫上去的必須就是它 —— 隨後交還伺服器重繪。
+  live.emit("done", frame("run-b", Object.assign(
+    {elapsed_ms: 812345, debate_started: true, debate_start_remaining_ms: null,
+     completion: {report_href: "/run/run-b/report.html", debate_href: null}},
+    standing(3, "已完成", "4 票", "查看下一規則", "已達共識：看多", "看多 5｜看空 1")
+  )));
+  assert.strictEqual(env.ids["live-phase"].textContent, "已完成");
+  assert.strictEqual(env.ids["focus-headline"].textContent, "已達共識：看多");
+  assert.strictEqual(env.ids["focus-action"].textContent, "查看下一規則");
+  assert.deepStrictEqual(env.reloadCalls, [true]);
+}
+
+// 直接開啟一場已完成 run：頁面載入時伺服器已經把「已完成」和共識結論畫好了，而這條
+// stream 還是會送 snapshot 再送 done。這一場盯的是那段序列不准出現倒退 —— 中間任何
+// 一幀把階段降回進行中、把 headline 降回「目前…領先」，讀者都會看到一個沒有發生過的
+// 回頭。伺服器那一側由 RuleTimelineFrameTest 綁住首幀就用完成語意組裝。
+async function aFinishedRunsStreamNeverWalksTheEndingBack() {
+  const env = makeEnvironment([]);
+  env.ids["live-state"].dataset.state = "finished";
+  env.ids["live-state"].textContent = "已完成";
+  env.ids["live-phase"].textContent = "已完成";
+  env.ids["focus-headline"].textContent = "已達共識：正方";
+  env.ids["focus-action"].textContent = "查看下一規則";
+  const stream = FakeEventSource.instances[0];
+  const ending = {
+    current_rule_index: 3,
+    phase_label: "已完成",
+    threshold_label: "4 票",
+    focus: {
+      headline: "已達共識：正方", tally_text: "正方 6｜反方 1",
+      next_label: "查看下一規則",
+    },
+  };
+  const seen = [];
+  const record = () => seen.push([
+    env.ids["live-phase"].textContent, env.ids["focus-headline"].textContent,
+  ]);
+
+  record();
+  stream.emit("snapshot", Object.assign({
+    run_id: "run-a", messages: [], tally: [], seats: [], elapsed_ms: 812345,
+    rules: GENERAL_RULES, debate_started: true, debate_start_remaining_ms: null,
+    cursor: "run-a@9",
+  }, ending));
+  record();
+  stream.emit("done", Object.assign({
+    run_id: "run-a", messages: [], tally: [], seats: [], elapsed_ms: 812345,
+    debate_started: true, debate_start_remaining_ms: null,
+    outcome: {
+      confidence_level: "高信心", consensus_label: "已達共識", run_href: "/run/run-a",
+    },
+    completion: {report_href: "/run/run-a/report.html", debate_href: null},
+  }, ending));
+  record();
+
+  assert.deepStrictEqual(seen, [
+    ["已完成", "已達共識：正方"],
+    ["已完成", "已達共識：正方"],
+    ["已完成", "已達共識：正方"],
+  ]);
+  assert.strictEqual(env.ids["live-threshold"].textContent, "4 票");
+  assert.deepStrictEqual(ruleRows(env.ids["rules-detail-body"]).map((r) => r.className), [
+    "rule past", "rule past", "rule past", "rule current",
+  ]);
+  // 這個分頁沒經歷過換 run 重置，所以定稿不交還伺服器 —— 本來就是伺服器畫的。
+  assert.deepStrictEqual(env.reloadCalls, []);
+  assert.strictEqual(stream.closed, true);
+}
+
+// 可驗證證據這一格由 frame 補寫，而且只補一次：封存過的證據不可變，所以送達一次
+// 就是最終答案。卡片的形狀跟 pages.components._evidence_card 同一套 —— 編號與席位、
+// 陳述、引文、來源等級與來源。來源可不可點是伺服器判完放進 source_href 的
+// （report_contract.is_safe_source_url），這裡不再對 URL 判一次。
+function evidenceCards(body) {
+  const list = body.children[0];
+  if (!list || list.className !== "evidence") { return []; }
+  return list.children.map((item) => {
+    const source = item.children.at(-1);
+    const inner = source.children[0];
+    return {
+      text: item.textContent,
+      sourceClass: source.className,
+      tag: inner.tagName,
+      innerClass: inner.className,
+      href: inner.href,
+      sourceText: inner.textContent,
+    };
+  });
+}
+
+const SEALED = [
+  {
+    evidence_id: "spot-technical-01", seat_id: "spot-technical",
+    statement: "四小時線站上均線", excerpt: "價格站上 200 日均線",
+    source_tier: "1", source_origin: "example.invalid",
+    source_url: "https://example.invalid/spot",
+    source_href: "https://example.invalid/spot",
+  },
+  // 不是 http(s) 的來源：伺服器已經判定它不可點（source_href 是 null），文字照樣
+  // 顯示。client 拿到的是判定結果，不是判準。
+  {
+    evidence_id: "news-01", seat_id: "news",
+    statement: "監管草案尚未定案", excerpt: "草案仍在審議",
+    source_tier: "2", source_origin: "內部檔案",
+    source_url: "javascript:alert(1)", source_href: null,
+  },
+];
+
+async function theEvidencePanelIsFilledByTheFrameThatFirstCarriesTheSeal() {
+  const env = makeEnvironment([
+    response(202, {status: "pending", launch_token: "token-a"}),
+    response(200, {status: "launched", run_id: "run-b"}),
+  ]);
+  const first = FakeEventSource.instances[0];
+  const body = () => env.ids["evidence-panel-body"];
+  const frame = (runId, extra) => Object.assign(
+    {run_id: runId, messages: [], tally: [], seats: [], elapsed_ms: 1000}, extra
+  );
+
+  // 還沒封存的那幾幀不帶這一格，所以畫面上還是頁面載入時的那一份。
+  assert.strictEqual(body().textContent, "E-1 上一場封存的證據");
+  first.emit("snapshot", frame("run-a", {cursor: "run-a@4"}));
+  assert.strictEqual(body().textContent, "E-1 上一場封存的證據");
+
+  // 封存那一幀帶全量：整格換成這一場的證據卡。
+  first.emit("append", frame("run-a", {evidence: SEALED, cursor: "run-a@5"}));
+  assert.deepStrictEqual(evidenceCards(body()), [
+    {
+      text: "spot-technical-01spot-technical四小時線站上均線價格站上 200 日均線"
+        + "來源等級 1・example.invalid開啟原始來源：https://example.invalid/spot",
+      sourceClass: "source", tag: "a", innerClass: "source-link",
+      href: "https://example.invalid/spot",
+      sourceText: "開啟原始來源：https://example.invalid/spot",
+    },
+    {
+      text: "news-01news監管草案尚未定案草案仍在審議來源等級 2・內部檔案"
+        + "javascript:alert(1)",
+      sourceClass: "source", tag: "code", innerClass: "",
+      href: undefined, sourceText: "javascript:alert(1)",
+    },
+  ]);
+
+  // 之後的每一幀都不再帶它 —— 沉默是「這一幀沒說」，不是「這一格該清空」。
+  first.emit("append", frame("run-a", {cursor: "run-a@6"}));
+  assert.strictEqual(evidenceCards(body()).length, 2);
+  // 同一份再送一次也只有兩張：重畫是整格換，不是接在後面追加。
+  first.emit("append", frame("run-a", {evidence: SEALED, cursor: "run-a@7"}));
+  assert.strictEqual(evidenceCards(body()).length, 2);
+
+  // 換 run：先回到伺服器標好的等待字樣，新一場封存後才回填。
+  env.ids["launch-form"].requestSubmit();
+  await flush(); await flush(); await flush(); await flush();
+  assert.strictEqual(body().textContent, RESET_WORDS["evidence-panel-body"]);
+
+  const live = FakeEventSource.instances.at(-1);
+  live.emit("snapshot", frame("run-b", {cursor: "run-b@1"}));
+  assert.deepStrictEqual(evidenceCards(body()), []);
+  assert.strictEqual(body().textContent, RESET_WORDS["evidence-panel-body"]);
+
+  // 上一場的死連線送來自己的封存也不准畫進這一場。
+  first.emit("append", frame("run-a", {evidence: SEALED, cursor: "run-a@8"}));
+  assert.strictEqual(body().textContent, RESET_WORDS["evidence-panel-body"]);
+
+  live.emit("append", frame("run-b", {evidence: [SEALED[0]], cursor: "run-b@2"}));
+  assert.strictEqual(evidenceCards(body()).length, 1);
+  assert.strictEqual(evidenceCards(body())[0].href, "https://example.invalid/spot");
+}
+
 async function busyScenario() {
   const env = makeEnvironment([
     response(409, {status: "busy", reason: "已有 run 執行中"}),
@@ -592,8 +957,12 @@ Promise.resolve()
   .then(failureAndRetryScenario)
   .then(aStatusTransportFailureKeepsTheIssuedToken)
   .then(theStartedLatchNeverFallsBackToACountdown)
+  .then(theVoteHistoryPanelIsRepaintedByEveryFrameThatCarriesIt)
+  .then(theRuleTimelineAndFocusAdvanceWithTheFramesTheServerPushes)
+  .then(aFinishedRunsStreamNeverWalksTheEndingBack)
+  .then(theEvidencePanelIsFilledByTheFrameThatFirstCarriesTheSeal)
   .then(busyScenario)
   .then(multilineFailureIsRenderedAsOneLine)
   .then(aFreshPageDoneNeverReloads)
-  .then(() => console.log("LIVE_JS_VM_EXECUTED: submit pending launched busy failed retry one-line-error status-transport-retry css-pending-animation started-latch-no-downgrade snapshot append done reconnect run-switch state-reset stale-source-gate run-local-reset frozen-total-remaining exact-artifact-links done-reload-after-run-switch fresh-page-done-no-reload"))
+  .then(() => console.log("LIVE_JS_VM_EXECUTED: submit pending launched busy failed retry one-line-error status-transport-retry css-pending-animation started-latch-no-downgrade snapshot append done reconnect run-switch state-reset stale-source-gate run-local-reset frozen-total-remaining exact-artifact-links done-reload-after-run-switch fresh-page-done-no-reload vote-history-live-append vote-history-idempotent-redraw vote-history-refilled-after-run-switch finished-run-no-ending-walkback rule-timeline-redraw rule-timeline-current-advance rule-timeline-refilled-after-run-switch phase-threshold-live-update focus-bar-from-frame evidence-sealed-reveal evidence-unsafe-source-stays-text evidence-sent-once-per-stream evidence-refilled-after-run-switch"))
   .catch((error) => { console.error(error); process.exitCode = 1; });
