@@ -83,8 +83,9 @@ bash setup-wsl.sh
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
 codex
 ```
-# [powershell]
+
 ```
+# [powershell]
 wsl -d Ubuntu -- bash -lc "codex"
 ```
 **Claude Code（Anthropic）**
@@ -94,8 +95,9 @@ wsl -d Ubuntu -- bash -lc "codex"
 curl -fsSL https://claude.ai/install.sh | bash
 claude
 ```
-# [powershell]
+
 ```
+# [powershell]
 wsl -d Ubuntu -- bash -lc "claude"
 ```
 
@@ -106,8 +108,9 @@ wsl -d Ubuntu -- bash -lc "claude"
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy
 ```
-# [powershell]
+
 ```
+# [powershell]
 wsl -d Ubuntu -- bash -lc "agy"
 ```
 
