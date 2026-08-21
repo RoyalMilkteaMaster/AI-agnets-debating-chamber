@@ -83,13 +83,20 @@ bash setup-wsl.sh
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
 codex
 ```
-
+# [powershell]
+```
+wsl -d Ubuntu -- bash -lc "codex"
+```
 **Claude Code（Anthropic）**
 
 ```bash
 # [WSL／Ubuntu]
 curl -fsSL https://claude.ai/install.sh | bash
 claude
+```
+# [powershell]
+```
+wsl -d Ubuntu -- bash -lc "claude"
 ```
 
 **Antigravity CLI（Google）**
@@ -98,6 +105,10 @@ claude
 # [WSL／Ubuntu]
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy
+```
+# [powershell]
+```
+wsl -d Ubuntu -- bash -lc "agy"
 ```
 
 裝完後關掉 Ubuntu 視窗再開一次，讓 `PATH` 生效。用下面這行確認三個都找得到：
